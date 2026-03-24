@@ -112,6 +112,8 @@ pub const OBJECT_DELETE_PROPERTY_STRICT: u16 = 0x003C;
 pub const OBJECT_DEFINE_CLASS_PROPERTY: u16 = 0x003D;
 /// Object.getOwnPropertySymbols helper.
 pub const OBJECT_GET_OWN_PROPERTY_SYMBOLS: u16 = 0x003E;
+/// `String.fromCharCode(...codeUnits)` helper.
+pub const OBJECT_STRING_FROM_CHAR_CODE: u16 = 0x003F;
 /// Read the current JS `new.target` value.
 pub const OBJECT_CURRENT_NEW_TARGET: u16 = 0x0032;
 /// Resolve `super.prop` using the current callable home object.
@@ -136,8 +138,8 @@ pub const OBJECT_PARSE_BIGINT_LITERAL: u16 = 0x0040;
 pub const OBJECT_JS_UNARY_MINUS: u16 = 0x0041;
 /// Copy enumerable own properties from source into target using JS object-spread semantics.
 pub const OBJECT_COPY_DATA_PROPERTIES: u16 = 0x0042;
-/// `String.fromCharCode(...codeUnits)` helper.
-pub const OBJECT_STRING_FROM_CHAR_CODE: u16 = 0x003F;
+/// Raise a JS ReferenceError for an explicitly invalid binding access.
+pub const OBJECT_THROW_REFERENCE_ERROR: u16 = 0x0043;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -662,6 +664,9 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_EVAL_ENV_DECLARE_LEXICAL => "Object.evalEnvDeclareLexical",
         OBJECT_DELETE_PROPERTY_STRICT => "Object.deletePropertyStrict",
         OBJECT_DEFINE_CLASS_PROPERTY => "Object.defineClassElement",
+        OBJECT_GET_OWN_PROPERTY_SYMBOLS => "Object.getOwnPropertySymbols",
+        OBJECT_STRING_FROM_CHAR_CODE => "Object.stringFromCharCode",
+        OBJECT_THROW_REFERENCE_ERROR => "Object.throwReferenceError",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",
@@ -673,7 +678,6 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_PARSE_BIGINT_LITERAL => "Object.parseBigIntLiteral",
         OBJECT_JS_UNARY_MINUS => "Object.jsUnaryMinus",
         OBJECT_COPY_DATA_PROPERTIES => "Object.copyDataProperties",
-
         // Array
         ARRAY_PUSH => "Array.push",
         ARRAY_POP => "Array.pop",

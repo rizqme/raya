@@ -772,6 +772,10 @@ pub struct Lowerer<'a> {
     /// Whether the current lowering context is inside a parameter initializer or a closure
     /// created from one, where direct-eval bindings must shadow later body declarations.
     parameter_scope_eval_mode: bool,
+    /// Parameter names that are currently in the JS parameter TDZ while initializers run.
+    parameter_tdz_symbols: FxHashSet<Symbol>,
+    /// Whether pattern binding should reuse preallocated parameter locals.
+    parameter_binding_mode: bool,
     /// Whether the current function body is an arrow-compatible body where `arguments`
     /// should first consult any carried parameter-scope eval bindings.
     body_scope_eval_arguments_mode: bool,
@@ -1478,6 +1482,8 @@ impl<'a> Lowerer<'a> {
             script_global_bindings_configurable: false,
             in_direct_eval_function: false,
             parameter_scope_eval_mode: false,
+            parameter_tdz_symbols: FxHashSet::default(),
+            parameter_binding_mode: false,
             body_scope_eval_arguments_mode: false,
             parameter_symbols: FxHashSet::default(),
             visible_js_lexical_symbols: FxHashSet::default(),
@@ -5665,15 +5671,191 @@ impl<'a> Lowerer<'a> {
             .add_block(BasicBlock::with_label(exit_block, "rest.exit"));
         self.current_block = exit_block;
 
-        // Allocate rest parameter local at a high slot to avoid conflicts with arguments
-        // Arguments occupy slots 0..N, so we use slot 100 to ensure no overlap
-        let rest_local_idx = 100u16;
-        self.local_map.insert(rest_name, rest_local_idx);
+        let rest_local_idx = self
+            .lookup_local(rest_name)
+            .unwrap_or_else(|| self.allocate_local(rest_name));
         self.emit(IrInstr::StoreLocal {
             index: rest_local_idx,
             value: array_reg.clone(),
         });
         self.local_registers.insert(rest_local_idx, array_reg);
+    }
+
+    pub(super) fn js_parameter_environment_required(&self, params: &[ast::Parameter]) -> bool {
+        self.js_this_binding_compat
+            && params.iter().any(|param| {
+                param.default_value.is_some()
+                    || param.optional
+                    || !matches!(param.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
+            })
+    }
+
+    pub(super) fn preallocate_parameter_pattern_locals(&mut self, pattern: &ast::Pattern) {
+        match pattern {
+            Pattern::Identifier(ident) => {
+                if !self.local_map.contains_key(&ident.name) {
+                    self.allocate_local(ident.name);
+                }
+            }
+            Pattern::Array(array) => {
+                for element in array.elements.iter().flatten() {
+                    self.preallocate_parameter_pattern_locals(&element.pattern);
+                }
+                if let Some(rest) = &array.rest {
+                    self.preallocate_parameter_pattern_locals(rest);
+                }
+            }
+            Pattern::Object(object) => {
+                for property in &object.properties {
+                    self.preallocate_parameter_pattern_locals(&property.value);
+                }
+                if let Some(rest) = &object.rest {
+                    if !self.local_map.contains_key(&rest.name) {
+                        self.allocate_local(rest.name);
+                    }
+                }
+            }
+            Pattern::Rest(rest) => {
+                self.preallocate_parameter_pattern_locals(&rest.argument);
+            }
+        }
+    }
+
+    pub(super) fn clear_parameter_tdz_for_pattern(&mut self, pattern: &ast::Pattern) {
+        let mut names = FxHashSet::default();
+        collect_pattern_names(pattern, &mut names);
+        for name in names {
+            self.parameter_tdz_symbols.remove(&name);
+        }
+    }
+
+    fn emit_parameter_default_selection(
+        &mut self,
+        param: &ast::Parameter,
+        raw_slot: u16,
+        fallback_ty: TypeId,
+    ) -> Register {
+        let raw_value = self.alloc_register(fallback_ty);
+        self.emit(IrInstr::LoadLocal {
+            dest: raw_value.clone(),
+            index: raw_slot,
+        });
+
+        let Some(default_expr) = &param.default_value else {
+            return raw_value;
+        };
+
+        let temp_local = self.allocate_anonymous_local();
+        let missing_block = self.alloc_block();
+        let present_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+
+        let undefined_reg = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::Assign {
+            dest: undefined_reg.clone(),
+            value: IrValue::Constant(IrConstant::Undefined),
+        });
+        let is_undefined = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: is_undefined.clone(),
+            op: BinaryOp::StrictEqual,
+            left: raw_value.clone(),
+            right: undefined_reg,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: is_undefined,
+            then_block: missing_block,
+            else_block: present_block,
+        });
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(present_block, "param.present"));
+        self.current_block = present_block;
+        self.emit(IrInstr::StoreLocal {
+            index: temp_local,
+            value: raw_value,
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(missing_block, "param.default"));
+        self.current_block = missing_block;
+        let replacement = self.lower_expr(default_expr);
+        self.emit(IrInstr::StoreLocal {
+            index: temp_local,
+            value: replacement,
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(merge_block, "param.merge"));
+        self.current_block = merge_block;
+
+        let final_value = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            dest: final_value.clone(),
+            index: temp_local,
+        });
+        final_value
+    }
+
+    pub(super) fn emit_js_parameter_initialization(
+        &mut self,
+        params: &[ast::Parameter],
+        raw_param_slots: &[u16],
+    ) {
+        let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
+        let saved_parameter_binding_mode = self.parameter_binding_mode;
+        let saved_parameter_tdz_symbols = std::mem::take(&mut self.parameter_tdz_symbols);
+
+        self.parameter_scope_eval_mode = true;
+        self.parameter_binding_mode = true;
+
+        for param in params {
+            let mut names = FxHashSet::default();
+            collect_pattern_names(&param.pattern, &mut names);
+            self.parameter_tdz_symbols.extend(names);
+        }
+
+        let mut raw_slot_iter = raw_param_slots.iter().copied();
+        for param in params {
+            if param.is_rest {
+                continue;
+            }
+
+            let raw_slot = raw_slot_iter
+                .next()
+                .expect("raw parameter slots must cover all non-rest parameters");
+            let fallback_ty = param
+                .type_annotation
+                .as_ref()
+                .map(|type_ann| self.resolve_type_annotation(type_ann))
+                .unwrap_or(UNRESOLVED);
+            let value = self.emit_parameter_default_selection(param, raw_slot, fallback_ty);
+
+            if let ast::Pattern::Object(_) = &param.pattern {
+                if let Some(type_ann) = &param.type_annotation {
+                    if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
+                        self.register_object_fields.insert(value.id, field_layout);
+                    }
+                    if let Some(nested_array_layouts) =
+                        self.extract_array_element_object_layouts_from_type(type_ann)
+                    {
+                        for (field_idx, layout) in nested_array_layouts {
+                            self.register_nested_array_element_object_fields
+                                .insert((value.id, field_idx), layout);
+                        }
+                    }
+                }
+            }
+
+            self.bind_pattern(&param.pattern, value);
+            self.clear_parameter_tdz_for_pattern(&param.pattern);
+        }
+
+        self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
+        self.parameter_binding_mode = saved_parameter_binding_mode;
+        self.parameter_tdz_symbols = saved_parameter_tdz_symbols;
     }
 
     /// Emit missing-argument normalization and default-value assignment for parameters.

@@ -1582,6 +1582,13 @@ impl<'a> Interpreter<'a> {
                         .construct_builtin_object(callable, task, module)
                         .map(Some);
                 }
+                if self.is_symbol_value(first) {
+                    if let Some(constructor) = self.builtin_global_value("Symbol") {
+                        return self
+                            .alloc_boxed_primitive_object(constructor, "Symbol", first)
+                            .map(Some);
+                    }
+                }
                 if self.is_js_object_value(first) || Self::is_callable_value(first) {
                     return Ok(Some(first));
                 }
@@ -3575,6 +3582,45 @@ impl<'a> Interpreter<'a> {
                     }
                     CallableKind::Bound { target: t, .. } => {
                         return self.callable_is_strict_js(*t);
+                    }
+                    _ => return false,
+                }
+            }
+        }
+
+        false
+    }
+
+    pub(in crate::vm::interpreter) fn callable_is_arrow_function(&self, target: Value) -> bool {
+        let target = self
+            .unwrapped_proxy_like(target)
+            .map(|proxy| proxy.target)
+            .unwrap_or(target);
+
+        let Some(raw_ptr) = (unsafe { target.as_ptr::<u8>() }) else {
+            return false;
+        };
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let Some(co_ptr) = (unsafe { target.as_ptr::<Object>() }) else {
+                return false;
+            };
+            let co = unsafe { &*co_ptr.as_ptr() };
+            if let Some(ref cd) = co.callable {
+                match &cd.kind {
+                    CallableKind::Closure { func_id }
+                    | CallableKind::BoundMethod { func_id, .. } => {
+                        let Some(module) = co.callable_module() else {
+                            return false;
+                        };
+                        return module
+                            .functions
+                            .get(*func_id)
+                            .is_some_and(|f| f.name.starts_with("__arrow_"));
+                    }
+                    CallableKind::Bound { target: t, .. } => {
+                        return self.callable_is_arrow_function(*t);
                     }
                     _ => return false,
                 }
@@ -7158,6 +7204,7 @@ impl<'a> Interpreter<'a> {
         if matches!(key, "caller" | "arguments")
             && self.callable_function_info(target).is_some()
             && !self.callable_is_strict_js(target)
+            && !self.callable_is_arrow_function(target)
         {
             return Some(Value::undefined());
         }
@@ -7209,6 +7256,7 @@ impl<'a> Interpreter<'a> {
         if matches!(key, "caller" | "arguments")
             && self.callable_function_info(target).is_some()
             && !self.callable_is_strict_js(target)
+            && !self.callable_is_arrow_function(target)
         {
             return Some((false, false, false));
         }
@@ -12713,6 +12761,26 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_THROW_REFERENCE_ERROR => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.throwReferenceError expects exactly one string argument"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.throwReferenceError expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        return OpcodeResult::Error(self.raise_task_builtin_error(
+                            task,
+                            "ReferenceError",
+                            format!("{} is not defined", name.data),
+                        ));
                     }
 
                     id if id == crate::compiler::native_id::TRY_GET_GLOBAL => {

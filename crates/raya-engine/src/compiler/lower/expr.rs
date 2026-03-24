@@ -343,6 +343,21 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    fn emit_parameter_tdz_reference_error(&mut self, name: &str) -> Register {
+        let dest = self.alloc_register(UNRESOLVED);
+        let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: name_reg.clone(),
+            value: IrValue::Constant(IrConstant::String(name.to_string())),
+        });
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_THROW_REFERENCE_ERROR,
+            args: vec![name_reg],
+        });
+        dest
+    }
+
     fn emit_js_member_call_helper(
         &mut self,
         dest: Register,
@@ -1286,6 +1301,10 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
             _ => {}
+        }
+
+        if self.parameter_scope_eval_mode && self.parameter_tdz_symbols.contains(&ident.name) {
+            return self.emit_parameter_tdz_reference_error(name);
         }
 
         // Look up the variable in the local map (current function's locals)
@@ -8584,9 +8603,10 @@ impl<'a> Lowerer<'a> {
                 ast::Pattern::Identifier(_) | ast::Pattern::Rest(_)
             )
         });
+        let use_js_parameter_env = self.js_parameter_environment_required(&func.params);
         let has_js_this_slot = self.js_this_binding_compat;
         let js_this_slots = usize::from(has_js_this_slot);
-        if has_destructuring_params {
+        if use_js_parameter_env || has_destructuring_params {
             let fixed_param_count =
                 func.params.iter().filter(|p| !p.is_rest).count() + js_this_slots;
             self.next_local = fixed_param_count as u16;
@@ -8594,11 +8614,18 @@ impl<'a> Lowerer<'a> {
             self.next_local = js_this_slots as u16;
         }
 
+        if use_js_parameter_env {
+            for param in &func.params {
+                self.preallocate_parameter_pattern_locals(&param.pattern);
+            }
+        }
+
         let mut params = Vec::new();
         let mut rest_param_info = None;
         let mut fixed_param_count = js_this_slots;
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
         let mut param_local_indices = Vec::with_capacity(func.params.len());
+        let mut raw_param_slots = Vec::new();
 
         if has_js_this_slot {
             let this_reg = self.alloc_register(UNRESOLVED);
@@ -8638,9 +8665,13 @@ impl<'a> Lowerer<'a> {
                 .map(|t| self.resolve_type_annotation(t))
                 .unwrap_or_else(|| self.default_js_function_type());
             let reg = self.alloc_register(ty);
+            raw_param_slots.push(params.len() as u16);
 
             if let ast::Pattern::Identifier(ident) = &param.pattern {
-                let local_idx = if has_destructuring_params {
+                let local_idx = if use_js_parameter_env {
+                    self.lookup_local(ident.name)
+                        .expect("preallocated parameter local must exist")
+                } else if has_destructuring_params {
                     let local_idx = decl_param_idx as u16 + u16::from(has_js_this_slot);
                     self.local_map.insert(ident.name, local_idx);
                     local_idx
@@ -8740,28 +8771,32 @@ impl<'a> Lowerer<'a> {
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
 
-        for (param_idx, pattern, value_reg) in destructure_params {
-            if let ast::Pattern::Object(_) = pattern {
-                if let Some(type_ann) = func
-                    .params
-                    .get(param_idx)
-                    .and_then(|p| p.type_annotation.as_ref())
-                {
-                    if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
-                        self.register_object_fields
-                            .insert(value_reg.id, field_layout);
-                    }
-                    if let Some(nested_array_layouts) =
-                        self.extract_array_element_object_layouts_from_type(type_ann)
+        if use_js_parameter_env {
+            self.emit_js_parameter_initialization(&func.params, &raw_param_slots);
+        } else {
+            for (param_idx, pattern, value_reg) in destructure_params {
+                if let ast::Pattern::Object(_) = pattern {
+                    if let Some(type_ann) = func
+                        .params
+                        .get(param_idx)
+                        .and_then(|p| p.type_annotation.as_ref())
                     {
-                        for (field_idx, layout) in nested_array_layouts {
-                            self.register_nested_array_element_object_fields
-                                .insert((value_reg.id, field_idx), layout);
+                        if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
+                            self.register_object_fields
+                                .insert(value_reg.id, field_layout);
+                        }
+                        if let Some(nested_array_layouts) =
+                            self.extract_array_element_object_layouts_from_type(type_ann)
+                        {
+                            for (field_idx, layout) in nested_array_layouts {
+                                self.register_nested_array_element_object_fields
+                                    .insert((value_reg.id, field_idx), layout);
+                            }
                         }
                     }
                 }
+                self.bind_pattern(pattern, value_reg);
             }
-            self.bind_pattern(pattern, value_reg);
         }
 
         self.emit_js_arguments_prologue(
@@ -8773,9 +8808,16 @@ impl<'a> Lowerer<'a> {
 
         if let Some((rest_name, rest_ty)) = rest_param_info {
             self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+            if use_js_parameter_env {
+                if let Some(rest_param) = func.params.iter().find(|param| param.is_rest) {
+                    self.clear_parameter_tdz_for_pattern(&rest_param.pattern);
+                }
+            }
         }
 
-        self.emit_default_params(&func.params);
+        if !use_js_parameter_env {
+            self.emit_default_params(&func.params);
+        }
         self.emit_js_function_var_hoists(&func.body.statements);
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
@@ -9132,13 +9174,20 @@ impl<'a> Lowerer<'a> {
                 ast::Pattern::Identifier(_) | ast::Pattern::Rest(_)
             )
         });
+        let use_js_parameter_env = self.js_parameter_environment_required(&arrow.params);
 
         // IMPORTANT: If there are destructuring parameters, start local allocation AFTER parameter slots
-        if has_destructuring_params {
+        if use_js_parameter_env || has_destructuring_params {
             let fixed_param_count = arrow.params.iter().filter(|p| !p.is_rest).count();
             self.next_local = fixed_param_count as u16;
         } else {
             self.next_local = 0;
+        }
+
+        if use_js_parameter_env {
+            for param in &arrow.params {
+                self.preallocate_parameter_pattern_locals(&param.pattern);
+            }
         }
 
         // Create parameter registers (excluding rest parameters)
@@ -9147,6 +9196,7 @@ impl<'a> Lowerer<'a> {
         let mut fixed_param_count = 0;
         // Track parameters with destructuring patterns for later binding
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
+        let mut raw_param_slots = Vec::new();
 
         for (decl_param_idx, param) in arrow.params.iter().enumerate() {
             super::collect_pattern_names(&param.pattern, &mut self.parameter_symbols);
@@ -9180,9 +9230,13 @@ impl<'a> Lowerer<'a> {
                 .map(|t| self.resolve_type_annotation(t))
                 .unwrap_or_else(|| self.default_js_function_type());
             let reg = self.alloc_register(ty);
+            raw_param_slots.push(params.len() as u16);
 
             if let ast::Pattern::Identifier(ident) = &param.pattern {
-                let local_idx = if has_destructuring_params {
+                let local_idx = if use_js_parameter_env {
+                    self.lookup_local(ident.name)
+                        .expect("preallocated parameter local must exist")
+                } else if has_destructuring_params {
                     let local_idx = decl_param_idx as u16;
                     self.local_map.insert(ident.name, local_idx);
                     local_idx
@@ -9310,40 +9364,50 @@ impl<'a> Lowerer<'a> {
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
 
-        // Bind destructuring patterns in arrow parameters
-        // This must happen after entry block is created so we can emit instructions
-        for (param_idx, pattern, value_reg) in destructure_params {
-            // Register object field layout for destructuring
-            if let ast::Pattern::Object(_) = pattern {
-                if let Some(type_ann) = arrow
-                    .params
-                    .get(param_idx)
-                    .and_then(|p| p.type_annotation.as_ref())
-                {
-                    if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
-                        self.register_object_fields
-                            .insert(value_reg.id, field_layout);
-                    }
-                    if let Some(nested_array_layouts) =
-                        self.extract_array_element_object_layouts_from_type(type_ann)
+        if use_js_parameter_env {
+            self.emit_js_parameter_initialization(&arrow.params, &raw_param_slots);
+        } else {
+            // Bind destructuring patterns in arrow parameters
+            // This must happen after entry block is created so we can emit instructions
+            for (param_idx, pattern, value_reg) in destructure_params {
+                // Register object field layout for destructuring
+                if let ast::Pattern::Object(_) = pattern {
+                    if let Some(type_ann) = arrow
+                        .params
+                        .get(param_idx)
+                        .and_then(|p| p.type_annotation.as_ref())
                     {
-                        for (field_idx, layout) in nested_array_layouts {
-                            self.register_nested_array_element_object_fields
-                                .insert((value_reg.id, field_idx), layout);
+                        if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
+                            self.register_object_fields
+                                .insert(value_reg.id, field_layout);
+                        }
+                        if let Some(nested_array_layouts) =
+                            self.extract_array_element_object_layouts_from_type(type_ann)
+                        {
+                            for (field_idx, layout) in nested_array_layouts {
+                                self.register_nested_array_element_object_fields
+                                    .insert((value_reg.id, field_idx), layout);
+                            }
                         }
                     }
                 }
+                self.bind_pattern(pattern, value_reg);
             }
-            self.bind_pattern(pattern, value_reg);
         }
 
         // Emit rest array collection code if present
         if let Some((rest_name, rest_ty)) = rest_param_info {
             self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+            if use_js_parameter_env {
+                if let Some(rest_param) = arrow.params.iter().find(|param| param.is_rest) {
+                    self.clear_parameter_tdz_for_pattern(&rest_param.pattern);
+                }
+            }
         }
 
-        // Emit null-check + default-value for parameters with defaults
-        self.emit_default_params(&arrow.params);
+        if !use_js_parameter_env {
+            self.emit_default_params(&arrow.params);
+        }
 
         // Lower arrow body
         match &arrow.body {

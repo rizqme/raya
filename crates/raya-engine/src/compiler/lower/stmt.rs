@@ -1218,9 +1218,11 @@ impl<'a> Lowerer<'a> {
                     && self.block_depth == 0
                     && self.refcell_vars.contains(&ident.name)
                     && self.local_map.contains_key(&ident.name);
-                let local_idx = if reuses_preallocated_capture {
+                let reuses_preallocated_parameter =
+                    self.parameter_binding_mode && self.local_map.contains_key(&ident.name);
+                let local_idx = if reuses_preallocated_capture || reuses_preallocated_parameter {
                     self.lookup_local(ident.name)
-                        .expect("preallocated captured local must exist")
+                        .expect("preallocated local must exist")
                 } else {
                     self.allocate_local(ident.name)
                 };
@@ -1256,14 +1258,19 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::Pattern::Array(array_pat) => {
+                if array_pat.elements.iter().all(Option::is_none) && array_pat.rest.is_none() {
+                    return;
+                }
                 let element_layout_hint = self
                     .register_array_element_object_fields
                     .get(&value_reg.id)
                     .cloned()
                     .or_else(|| self.array_element_object_layout_from_type(value_reg.ty));
                 let iterator_reg = self.emit_iterator_get_helper(value_reg.clone());
+                let mut last_step_result: Option<Register> = None;
                 for (i, elem_opt) in array_pat.elements.iter().enumerate() {
                     let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
+                    last_step_result = Some(step_result.clone());
 
                     if elem_opt.is_none() {
                         continue;
@@ -1287,17 +1294,29 @@ impl<'a> Lowerer<'a> {
                         );
                         self.current_block = value_block;
                         let elem_reg = self.emit_iterator_value_helper(step_result);
-                        let not_null_block = self.alloc_block();
-                        self.set_terminator(Terminator::BranchIfNull {
-                            value: elem_reg.clone(),
-                            null_block: default_block,
-                            not_null_block,
+                        let present_block = self.alloc_block();
+                        let undefined_reg = self.alloc_register(TypeId::new(0));
+                        self.emit(IrInstr::Assign {
+                            dest: undefined_reg.clone(),
+                            value: IrValue::Constant(crate::ir::IrConstant::Undefined),
+                        });
+                        let is_undefined = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
+                        self.emit(IrInstr::BinaryOp {
+                            dest: is_undefined.clone(),
+                            op: crate::ir::BinaryOp::StrictEqual,
+                            left: elem_reg.clone(),
+                            right: undefined_reg,
+                        });
+                        self.set_terminator(Terminator::Branch {
+                            cond: is_undefined,
+                            then_block: default_block,
+                            else_block: present_block,
                         });
 
                         self.current_function_mut().add_block(
-                            crate::ir::BasicBlock::with_label(not_null_block, "destr.iter.hasval"),
+                            crate::ir::BasicBlock::with_label(present_block, "destr.iter.hasval"),
                         );
-                        self.current_block = not_null_block;
+                        self.current_block = present_block;
                         self.emit(IrInstr::Assign {
                             dest: final_val.clone(),
                             value: IrValue::Register(elem_reg),
@@ -1406,6 +1425,24 @@ impl<'a> Lowerer<'a> {
                     self.current_block = exit;
 
                     self.bind_pattern(rest_pat, rest_arr);
+                } else if let Some(step_result) = last_step_result {
+                    let close_block = self.alloc_block();
+                    let exit_block = self.alloc_block();
+                    self.set_terminator(Terminator::BranchIfNull {
+                        value: step_result,
+                        null_block: exit_block,
+                        not_null_block: close_block,
+                    });
+
+                    self.current_function_mut()
+                        .add_block(crate::ir::BasicBlock::with_label(close_block, "iter.close"));
+                    self.current_block = close_block;
+                    self.emit_iterator_close_helper(iterator_reg.clone());
+                    self.set_terminator(Terminator::Jump(exit_block));
+
+                    self.current_function_mut()
+                        .add_block(crate::ir::BasicBlock::with_label(exit_block, "iter.done"));
+                    self.current_block = exit_block;
                 }
             }
             ast::Pattern::Object(obj_pat) => {
@@ -1460,8 +1497,12 @@ impl<'a> Lowerer<'a> {
                                 let default_val = self.lower_expr(default_expr);
                                 self.bind_pattern(&property.value, default_val);
                             } else {
-                                let null_reg = self.lower_null_literal();
-                                self.bind_pattern(&property.value, null_reg);
+                                let undefined_reg = self.alloc_register(TypeId::new(0));
+                                self.emit(IrInstr::Assign {
+                                    dest: undefined_reg.clone(),
+                                    value: IrValue::Constant(crate::ir::IrConstant::Undefined),
+                                });
+                                self.bind_pattern(&property.value, undefined_reg);
                             }
                             continue;
                         };
@@ -1547,23 +1588,34 @@ impl<'a> Lowerer<'a> {
 
                     // Handle default values
                     if let Some(default_expr) = &property.default {
-                        let not_null_block = self.alloc_block();
+                        let present_block = self.alloc_block();
                         let default_block = self.alloc_block();
                         let merge_block = self.alloc_block();
                         let final_val = self.alloc_register(TypeId::new(0));
-
-                        self.set_terminator(Terminator::BranchIfNull {
-                            value: field_reg.clone(),
-                            null_block: default_block,
-                            not_null_block,
+                        let undefined_reg = self.alloc_register(TypeId::new(0));
+                        self.emit(IrInstr::Assign {
+                            dest: undefined_reg.clone(),
+                            value: IrValue::Constant(crate::ir::IrConstant::Undefined),
+                        });
+                        let is_undefined = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
+                        self.emit(IrInstr::BinaryOp {
+                            dest: is_undefined.clone(),
+                            op: crate::ir::BinaryOp::StrictEqual,
+                            left: field_reg.clone(),
+                            right: undefined_reg,
+                        });
+                        self.set_terminator(Terminator::Branch {
+                            cond: is_undefined,
+                            then_block: default_block,
+                            else_block: present_block,
                         });
 
                         self.current_function_mut()
                             .add_block(crate::ir::BasicBlock::with_label(
-                                not_null_block,
+                                present_block,
                                 "objd.hasval",
                             ));
-                        self.current_block = not_null_block;
+                        self.current_block = present_block;
                         self.emit(IrInstr::Assign {
                             dest: final_val.clone(),
                             value: IrValue::Register(field_reg),
