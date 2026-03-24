@@ -9,6 +9,15 @@ use crate::vm::value::Value;
 use crate::vm::VmError;
 
 impl<'a> Interpreter<'a> {
+    fn finalize_js_array_value(&self, value: Value) {
+        let prototype = self
+            .ambient_global_value_sync("Array")
+            .and_then(|ctor| self.array_constructor_prototype_value(ctor));
+        if let Some(prototype) = prototype {
+            self.set_constructed_object_prototype_from_value(value, prototype);
+        }
+    }
+
     pub(in crate::vm::interpreter) fn exec_array_ops(
         &mut self,
         stack: &mut Stack,
@@ -40,6 +49,7 @@ impl<'a> Interpreter<'a> {
                 let gc_ptr = self.gc.lock().allocate(arr);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.finalize_js_array_value(value);
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -221,6 +231,7 @@ impl<'a> Interpreter<'a> {
                 let gc_ptr = self.gc.lock().allocate(arr);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.finalize_js_array_value(value);
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

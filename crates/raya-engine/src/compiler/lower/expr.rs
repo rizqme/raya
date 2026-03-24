@@ -7031,6 +7031,14 @@ impl<'a> Lowerer<'a> {
                     }
                     ast::ObjectProperty::Spread(spread) => {
                         let spread_reg = self.lower_expr(&spread.argument);
+                        if self.js_this_binding_compat {
+                            self.emit(IrInstr::NativeCall {
+                                dest: Some(dest.clone()),
+                                native_id: crate::compiler::native_id::OBJECT_COPY_DATA_PROPERTIES,
+                                args: vec![dest.clone(), spread_reg],
+                            });
+                            continue;
+                        }
                         let Some(source_fields) =
                             self.resolve_spread_source_fields(&spread.argument, Some(&spread_reg))
                         else {
@@ -7101,6 +7109,9 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 ast::ObjectProperty::Spread(spread) => {
+                    if self.js_this_binding_compat {
+                        continue;
+                    }
                     if let Some(source_fields) =
                         self.resolve_spread_source_fields(&spread.argument, None)
                     {
@@ -7240,6 +7251,14 @@ impl<'a> Lowerer<'a> {
                 }
                 ast::ObjectProperty::Spread(spread) => {
                     let spread_reg = self.lower_expr(&spread.argument);
+                    if self.js_this_binding_compat {
+                        self.emit(IrInstr::NativeCall {
+                            dest: Some(dest.clone()),
+                            native_id: crate::compiler::native_id::OBJECT_COPY_DATA_PROPERTIES,
+                            args: vec![dest.clone(), spread_reg],
+                        });
+                        continue;
+                    }
                     let Some(source_fields) =
                         self.resolve_spread_source_fields(&spread.argument, Some(&spread_reg))
                     else {

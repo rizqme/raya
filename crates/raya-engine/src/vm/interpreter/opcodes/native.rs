@@ -44,6 +44,8 @@ use std::sync::Arc;
 pub(crate) const NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY: &str = "__dynamic_value_property";
 pub(crate) const NON_OBJECT_DESCRIPTOR_METADATA_KEY: &str = "__dynamic_descriptor_property";
 const CALLABLE_VIRTUAL_VALUE_METADATA_KEY: &str = "__callable_virtual_value";
+const CALLABLE_VIRTUAL_DELETED_METADATA_KEY: &str = "__callable_virtual_deleted";
+const FIXED_PROPERTY_DELETED_METADATA_KEY: &str = "__fixed_property_deleted";
 const OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY: &str = "__object_prototype_override__";
 const OBJECT_EXTENSIBLE_METADATA_KEY: &str = "__object_extensible__";
 const FIELD_PRESENT_MASK_KEY: &str = "__field_present_mask__";
@@ -2328,11 +2330,13 @@ impl<'a> Interpreter<'a> {
 
     pub(in crate::vm::interpreter) fn callable_virtual_property_deleted(
         &self,
-        _target: Value,
-        _key: &str,
+        target: Value,
+        key: &str,
     ) -> bool {
-        // No-op: property kernel handles presence via dyn_props
-        false
+        self.metadata
+            .lock()
+            .get_metadata_property(CALLABLE_VIRTUAL_DELETED_METADATA_KEY, target, key)
+            .is_some_and(|value| value.is_truthy())
     }
 
     fn cached_callable_virtual_property_value(&self, target: Value, key: &str) -> Option<Value> {
@@ -2366,29 +2370,52 @@ impl<'a> Interpreter<'a> {
 
     pub(in crate::vm::interpreter) fn set_callable_virtual_property_deleted(
         &self,
-        _target: Value,
-        _key: &str,
-        _deleted: bool,
+        target: Value,
+        key: &str,
+        deleted: bool,
     ) {
-        // No-op: property kernel handles presence via dyn_props
+        let mut metadata = self.metadata.lock();
+        if deleted {
+            metadata.define_metadata_property(
+                CALLABLE_VIRTUAL_DELETED_METADATA_KEY.to_string(),
+                Value::bool(true),
+                target,
+                key.to_string(),
+            );
+        } else {
+            let _ =
+                metadata.delete_metadata_property(CALLABLE_VIRTUAL_DELETED_METADATA_KEY, target, key);
+        }
     }
 
     pub(in crate::vm::interpreter) fn fixed_property_deleted(
         &self,
-        _target: Value,
-        _key: &str,
+        target: Value,
+        key: &str,
     ) -> bool {
-        // No-op: property kernel handles presence via dyn_props
-        false
+        self.metadata
+            .lock()
+            .get_metadata_property(FIXED_PROPERTY_DELETED_METADATA_KEY, target, key)
+            .is_some_and(|value| value.is_truthy())
     }
 
     pub(in crate::vm::interpreter) fn set_fixed_property_deleted(
         &self,
-        _target: Value,
-        _key: &str,
-        _deleted: bool,
+        target: Value,
+        key: &str,
+        deleted: bool,
     ) {
-        // No-op: property kernel handles presence via dyn_props
+        let mut metadata = self.metadata.lock();
+        if deleted {
+            metadata.define_metadata_property(
+                FIXED_PROPERTY_DELETED_METADATA_KEY.to_string(),
+                Value::bool(true),
+                target,
+                key.to_string(),
+            );
+        } else {
+            let _ = metadata.delete_metadata_property(FIXED_PROPERTY_DELETED_METADATA_KEY, target, key);
+        }
     }
 
     pub(in crate::vm::interpreter) fn is_runtime_global_object(&self, target: Value) -> bool {
@@ -5322,6 +5349,43 @@ impl<'a> Interpreter<'a> {
         ))
     }
 
+    pub(in crate::vm::interpreter) fn ambient_global_value_sync(&self, name: &str) -> Option<Value> {
+        self.builtin_global_value(name).or_else(|| {
+            let binding = self.shared_js_global_binding(name)?;
+            if !binding.initialized {
+                return None;
+            }
+            self.globals_by_index.read().get(binding.slot).copied()
+        }).or_else(|| {
+            if name == "globalThis" {
+                return None;
+            }
+            let global_this = self.builtin_global_value("globalThis")?;
+            self.get_own_js_property_value_by_name(global_this, name)
+        })
+    }
+
+    fn intrinsic_class_prototype_value(&self, class_name: &str) -> Option<Value> {
+        let lookup_name = {
+            let classes = self.classes.read();
+            if classes.get_class_by_name(class_name).is_some() {
+                class_name.to_string()
+            } else {
+                boxed_primitive_helper_class_name(class_name)?.to_string()
+            }
+        };
+        let ntid = self.classes.read().get_class_by_name(&lookup_name)?.id;
+        if let Some(existing) = self
+            .classes
+            .read()
+            .get_class(ntid)
+            .and_then(|class| class.prototype_value)
+        {
+            return Some(existing);
+        }
+        self.create_prototype_for_class(ntid, &lookup_name, Value::null())
+    }
+
     fn set_shared_js_global_binding_value(
         &mut self,
         name: &str,
@@ -5640,12 +5704,40 @@ impl<'a> Interpreter<'a> {
     }
 
     fn ordinary_object_prototype_value(&self) -> Option<Value> {
-        let constructor_value = self.builtin_global_value("Object")?;
-        self.object_constructor_prototype_value(constructor_value)
+        self.ambient_global_value_sync("Object")
+            .and_then(|constructor_value| self.object_constructor_prototype_value(constructor_value))
+            .or_else(|| self.intrinsic_class_prototype_value("Object"))
     }
 
     pub(in crate::vm::interpreter) fn prototype_of_value(&self, value: Value) -> Option<Value> {
         let debug_proto_resolve = std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok();
+        if checked_array_ptr(value).is_some() {
+            if let Some(prototype) = self.explicit_object_prototype(value) {
+                if !prototype.is_null() {
+                    if debug_proto_resolve {
+                        eprintln!(
+                            "[proto-of] value={:#x} array-explicit={:#x}",
+                            value.raw(),
+                            prototype.raw()
+                        );
+                    }
+                    return Some(prototype);
+                }
+            }
+            let prototype = self
+                .ambient_global_value_sync("Array")
+                .and_then(|ctor| self.array_constructor_prototype_value(ctor))
+                .or_else(|| self.intrinsic_class_prototype_value("Array"));
+            if debug_proto_resolve {
+                eprintln!(
+                    "[proto-of] value={:#x} array-fallback -> {:?}",
+                    value.raw(),
+                    prototype.map(|v| format!("{:#x}", v.raw()))
+                );
+            }
+            return prototype;
+        }
+
         // Property kernel: check Object.prototype field first
         if let Some(obj_ptr) = checked_object_ptr(value) {
             let obj = unsafe { &*obj_ptr.as_ptr() };
@@ -5739,16 +5831,11 @@ impl<'a> Interpreter<'a> {
             return self.ordinary_object_prototype_value();
         }
 
-        if checked_array_ptr(value).is_some() {
-            return self
-                .builtin_global_value("Array")
-                .and_then(|ctor| self.array_constructor_prototype_value(ctor));
-        }
-
         if checked_string_ptr(value).is_some() {
             return self
-                .builtin_global_value("String")
-                .and_then(|ctor| self.string_constructor_prototype_value(ctor));
+                .ambient_global_value_sync("String")
+                .and_then(|ctor| self.string_constructor_prototype_value(ctor))
+                .or_else(|| self.intrinsic_class_prototype_value("String"));
         }
 
         None
@@ -12042,6 +12129,61 @@ impl<'a> Interpreter<'a> {
             .collect()
     }
 
+    fn copy_data_properties_with_context(
+        &mut self,
+        target: Value,
+        source: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<(), VmError> {
+        if source.is_null() || source.is_undefined() {
+            return Ok(());
+        }
+
+        let mut property_keys = self.js_own_property_names(source);
+        for symbol in self.js_own_property_symbols(source) {
+            let (Some(symbol_key), _) = self.property_key_parts_with_context(
+                symbol,
+                "Object.copyDataProperties",
+                caller_task,
+                caller_module,
+            )?
+            else {
+                continue;
+            };
+            property_keys.push(symbol_key);
+        }
+
+        for key in property_keys {
+            let Some(shape) = self.resolve_own_property_shape(source, &key) else {
+                continue;
+            };
+            if !shape.enumerable {
+                continue;
+            }
+            let value = self
+                .get_own_property_value_via_js_semantics_with_context(
+                    source,
+                    &key,
+                    caller_task,
+                    caller_module,
+                )?
+                .unwrap_or(Value::undefined());
+            self.define_data_property_on_target_with_context(
+                target,
+                &key,
+                value,
+                true,
+                true,
+                true,
+                caller_task,
+                caller_module,
+            )?;
+        }
+
+        Ok(())
+    }
+
     fn alloc_plain_object(&self) -> Result<Value, VmError> {
         let field_names: Vec<String> = Vec::new();
         let layout_id = layout_id_from_ordered_names(&field_names);
@@ -13551,6 +13693,67 @@ impl<'a> Interpreter<'a> {
                         } else {
                             Vec::new()
                         };
+
+                        if let Some(target_ptr) = unsafe { target_callable.as_ptr::<u8>() } {
+                            let header =
+                                unsafe { &*header_ptr_from_value_ptr(target_ptr.as_ptr()) };
+                            if header.type_id() == std::any::TypeId::of::<Object>() {
+                                let co = unsafe {
+                                    &*target_callable
+                                        .as_ptr::<Object>()
+                                        .expect("callable target")
+                                        .as_ptr()
+                                };
+                                if let Some(ref cd) = co.callable {
+                                    match &cd.kind {
+                                        CallableKind::BoundNative { native_id, .. } => {
+                                            return self.exec_bound_native_method_call(
+                                                stack,
+                                                this_arg,
+                                                *native_id,
+                                                rest_args,
+                                                module,
+                                                task,
+                                            );
+                                        }
+                                        CallableKind::BoundMethod { func_id, .. } => {
+                                            let receiver = if self
+                                                .callable_uses_js_this_slot(target_callable)
+                                            {
+                                                match self.js_this_value_for_callable(
+                                                    target_callable,
+                                                    Some(this_arg),
+                                                ) {
+                                                    Ok(value) => value,
+                                                    Err(error) => {
+                                                        return OpcodeResult::Error(error)
+                                                    }
+                                                }
+                                            } else {
+                                                this_arg
+                                            };
+                                            if let Err(e) = stack.push(receiver) {
+                                                return OpcodeResult::Error(e);
+                                            }
+                                            for arg in &rest_args {
+                                                if let Err(e) = stack.push(*arg) {
+                                                    return OpcodeResult::Error(e);
+                                                }
+                                            }
+                                            return OpcodeResult::PushFrame {
+                                                func_id: *func_id,
+                                                arg_count: rest_args.len() + 1,
+                                                is_closure: false,
+                                                closure_val: None,
+                                                module: cd.module.clone(),
+                                                return_action: ReturnAction::PushReturnValue,
+                                            };
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
                         self.dispatch_call_with_explicit_this(
                             stack,
                             target_callable,
@@ -15509,6 +15712,28 @@ impl<'a> Interpreter<'a> {
                         };
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_COPY_DATA_PROPERTIES => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.copyDataProperties requires target and source"
+                                    .to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        let source = args[1];
+                        if let Err(error) = self.copy_data_properties_with_context(
+                            target,
+                            source,
+                            task,
+                            module,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(target) {
+                            return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
                     }

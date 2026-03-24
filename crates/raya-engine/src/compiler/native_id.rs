@@ -134,6 +134,8 @@ pub const OBJECT_GENERATOR_SNAPSHOT_ITERATOR: u16 = 0x003A;
 pub const OBJECT_PARSE_BIGINT_LITERAL: u16 = 0x0040;
 /// Apply JS unary minus using ToNumeric semantics.
 pub const OBJECT_JS_UNARY_MINUS: u16 = 0x0041;
+/// Copy enumerable own properties from source into target using JS object-spread semantics.
+pub const OBJECT_COPY_DATA_PROPERTIES: u16 = 0x0042;
 /// `String.fromCharCode(...codeUnits)` helper.
 pub const OBJECT_STRING_FROM_CHAR_CODE: u16 = 0x003F;
 
@@ -670,6 +672,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_HAS_PROPERTY => "Object.hasProperty",
         OBJECT_PARSE_BIGINT_LITERAL => "Object.parseBigIntLiteral",
         OBJECT_JS_UNARY_MINUS => "Object.jsUnaryMinus",
+        OBJECT_COPY_DATA_PROPERTIES => "Object.copyDataProperties",
 
         // Array
         ARRAY_PUSH => "Array.push",

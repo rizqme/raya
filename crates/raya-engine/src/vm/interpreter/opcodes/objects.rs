@@ -236,7 +236,14 @@ impl<'a> Interpreter<'a> {
                     CallableKind::Closure { func_id } => {
                         let closure_module = co.callable_module();
                         let mut arg_count = args.len();
-                        if self.callable_uses_js_this_slot(callable) {
+                        let should_use_explicit_js_this = explicit_this.is_some()
+                            && closure_module
+                                .as_ref()
+                                .and_then(|module| module.functions.get(*func_id))
+                                .is_some_and(|function| !function.name.starts_with("__arrow_"));
+                        if self.callable_uses_js_this_slot(callable)
+                            || should_use_explicit_js_this
+                        {
                             stack
                                 .push(self.js_this_value_for_callable(callable, explicit_this)?)?;
                             arg_count += 1;
