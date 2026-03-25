@@ -8351,13 +8351,6 @@ impl<'a> Lowerer<'a> {
     ) {
         let ident = match target {
             Expression::Identifier(ident) => Some(ident.clone()),
-            Expression::Parenthesized(paren) => {
-                return self.maybe_assign_anonymous_assignment_target_name(
-                    &paren.expression,
-                    initializer,
-                    value,
-                );
-            }
             Expression::Assignment(assign) if assign.operator == AssignmentOperator::Assign => {
                 return self.maybe_assign_anonymous_assignment_target_name(
                     &assign.left,
@@ -9284,11 +9277,21 @@ impl<'a> Lowerer<'a> {
         } else {
             rhs
         };
+        if assign.operator == AssignmentOperator::Assign {
+            self.maybe_assign_anonymous_assignment_target_name(&assign.left, &assign.right, &value);
+        }
         let callable_assign_hint = assign.operator == AssignmentOperator::Assign
             && self.expression_is_callable_hint(&assign.right);
 
         if assign.operator == AssignmentOperator::Assign
             && matches!(&*assign.left, Expression::Array(_) | Expression::Object(_))
+        {
+            self.lower_destructuring_assignment_target(&assign.left, value.clone());
+            return value;
+        }
+
+        if assign.operator == AssignmentOperator::Assign
+            && matches!(&*assign.left, Expression::Parenthesized(_))
         {
             self.lower_destructuring_assignment_target(&assign.left, value.clone());
             return value;
@@ -9881,8 +9884,13 @@ impl<'a> Lowerer<'a> {
             preassigned_func_id
         };
 
-        let function_name = format!("__function_{}", self.arrow_counter);
-        self.arrow_counter += 1;
+        let function_name = if self.js_this_binding_compat && func.name.is_none() {
+            String::new()
+        } else {
+            let generated = format!("__function_{}", self.arrow_counter);
+            self.arrow_counter += 1;
+            generated
+        };
 
         let func_id = if let Some(func_id) = resolved_preassigned {
             if func_id.as_u32() >= self.next_function_id {

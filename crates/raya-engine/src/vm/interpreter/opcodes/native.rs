@@ -390,6 +390,7 @@ impl Visitor for DirectEvalDeclarationCollector<'_> {
 enum JsOwnPropertySource {
     ArgumentsExotic,
     ArrayExotic,
+    StringExotic,
     TypedArrayExotic,
     BuiltinObjectConstant,
     Ordinary,
@@ -517,6 +518,7 @@ struct JsResolvedPropertyRecord {
 enum JsExoticAdapterKind {
     Arguments,
     Array,
+    String,
     TypedArray,
 }
 
@@ -9110,6 +9112,19 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                 }
+                JsExoticAdapterKind::String => {
+                    if key == "length" {
+                        let len = self.string_exotic_length(target)?;
+                        return Some(if len <= i32::MAX as usize {
+                            Value::i32(len as i32)
+                        } else {
+                            Value::f64(len as f64)
+                        });
+                    }
+                    if let Some(index) = parse_js_array_index_name(key) {
+                        return self.string_exotic_index_value(target, index);
+                    }
+                }
                 JsExoticAdapterKind::TypedArray => {
                     if key == "length" {
                         let len = self.typed_array_live_length_direct(target)?;
@@ -10260,10 +10275,25 @@ impl<'a> Interpreter<'a> {
         if checked_array_ptr(target).is_some() {
             return Some(JsExoticAdapterKind::Array);
         }
+        if checked_string_ptr(target).is_some() {
+            return Some(JsExoticAdapterKind::String);
+        }
         if self.is_typed_array_like_value(target) {
             return Some(JsExoticAdapterKind::TypedArray);
         }
         None
+    }
+
+    fn string_exotic_length(&self, target: Value) -> Option<usize> {
+        let string_ptr = checked_string_ptr(target)?;
+        Some(unsafe { &*string_ptr.as_ptr() }.data.chars().count())
+    }
+
+    fn string_exotic_index_value(&self, target: Value, index: usize) -> Option<Value> {
+        let string_ptr = checked_string_ptr(target)?;
+        let data = &unsafe { &*string_ptr.as_ptr() }.data;
+        let ch = data.chars().nth(index)?;
+        Some(self.alloc_string_value(ch.to_string()))
     }
 
     fn exotic_own_property_shape(
@@ -10374,6 +10404,39 @@ impl<'a> Interpreter<'a> {
                 }
                 None
             }
+            JsExoticAdapterKind::String => {
+                if key == "length" {
+                    let (writable, configurable, enumerable) = self
+                        .property_attributes_from_descriptor_metadata(
+                            target,
+                            key,
+                            (false, false, false),
+                        );
+                    return Some(JsOwnPropertyShape::data(
+                        JsOwnPropertySource::StringExotic,
+                        writable,
+                        configurable,
+                        enumerable,
+                    ));
+                }
+                if let Some(index) = parse_js_array_index_name(key) {
+                    if index < self.string_exotic_length(target)? {
+                        let (writable, configurable, enumerable) = self
+                            .property_attributes_from_descriptor_metadata(
+                                target,
+                                key,
+                                (false, false, true),
+                            );
+                        return Some(JsOwnPropertyShape::data(
+                            JsOwnPropertySource::StringExotic,
+                            writable,
+                            configurable,
+                            enumerable,
+                        ));
+                    }
+                }
+                None
+            }
             JsExoticAdapterKind::TypedArray => {
                 if key == "length"
                     || matches!(key, "buffer" | "byteOffset" | "byteLength")
@@ -10467,6 +10530,22 @@ impl<'a> Interpreter<'a> {
                 };
                 JsOwnPropertyRecord::accessor(shape, Some(get), Some(set))
             }
+            (JsExoticAdapterKind::String, JsOwnPropertyKind::Data) => {
+                let value = if key == "length" {
+                    let len = self.string_exotic_length(target).unwrap_or(0);
+                    if len <= i32::MAX as usize {
+                        Value::i32(len as i32)
+                    } else {
+                        Value::f64(len as f64)
+                    }
+                } else if let Some(index) = parse_js_array_index_name(key) {
+                    self.string_exotic_index_value(target, index)
+                        .unwrap_or(Value::undefined())
+                } else {
+                    Value::undefined()
+                };
+                JsOwnPropertyRecord::data(shape, value)
+            }
             (JsExoticAdapterKind::TypedArray, JsOwnPropertyKind::Data) => {
                 JsOwnPropertyRecord::data(
                     shape,
@@ -10519,6 +10598,7 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(None)
             }
+            JsExoticAdapterKind::String => Ok(None),
             JsExoticAdapterKind::TypedArray => {
                 let Some(index) = parse_js_array_index_name(key) else {
                     return Ok(None);
@@ -10567,6 +10647,7 @@ impl<'a> Interpreter<'a> {
                 );
                 Ok(Some(true))
             }
+            JsExoticAdapterKind::String => Ok(None),
             JsExoticAdapterKind::TypedArray => {
                 if self.typed_array_index_property_flags(target, key).is_some() {
                     return Ok(Some(false));
@@ -12881,6 +12962,19 @@ impl<'a> Interpreter<'a> {
                 collector.extend(self.metadata_backed_property_names(target));
                 collector.extend(self.metadata_descriptor_property_names(target));
             }
+            JsExoticAdapterKind::String => {
+                let Some(length) = self.string_exotic_length(target) else {
+                    return;
+                };
+
+                for index in 0..length {
+                    collector.push(index.to_string());
+                }
+
+                collector.push("length".to_string());
+                collector.extend(self.metadata_backed_property_names(target));
+                collector.extend(self.metadata_descriptor_property_names(target));
+            }
             JsExoticAdapterKind::TypedArray => {
                 let Some(length) = self.typed_array_live_length_direct(target) else {
                     return;
@@ -14292,6 +14386,12 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let target = self.proxy_wrapper_proxy_value(args[0]).unwrap_or(args[0]);
+                        if target.is_null() || target.is_undefined() {
+                            return OpcodeResult::Error(VmError::TypeError(format!(
+                                "Cannot set property '{}' of null or undefined",
+                                key_str
+                            )));
+                        }
                         let written = match self.set_property_value_via_js_semantics(
                             target, &key_str, args[2], target, task, module,
                         ) {

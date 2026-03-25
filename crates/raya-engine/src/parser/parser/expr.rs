@@ -1478,9 +1478,13 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
 
             // Parse as regular expression (parentheses just group, don't wrap)
             let expr = parse_expression(parser)?;
+            let end_span = parser.current_span();
             parser.expect(Token::RightParen)?;
 
-            Ok(expr)
+            Ok(Expression::Parenthesized(ParenthesizedExpression {
+                expression: Box::new(expr),
+                span: parser.combine_spans(&start_span, &end_span),
+            }))
         }
 
         // Array literal: [1, 2, 3], [...arr1, ...arr2]

@@ -87,6 +87,56 @@ impl Default for ScopeFrame {
     }
 }
 
+fn is_reserved_word_identifier(name: &str) -> bool {
+    matches!(
+        name,
+        "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "implements"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "interface"
+            | "let"
+            | "new"
+            | "null"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "static"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+    )
+}
+
 pub fn check_early_errors(
     module: &Module,
     interner: &Interner,
@@ -1475,9 +1525,7 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::Object(obj) => {
                 for (index, prop) in obj.properties.iter().enumerate() {
                     match prop {
-                        ObjectProperty::Property(prop) => {
-                            self.check_assignment_pattern_target(&prop.value)
-                        }
+                        ObjectProperty::Property(prop) => self.check_assignment_property_target(prop),
                         ObjectProperty::Spread(spread) => {
                             if index + 1 != obj.properties.len() {
                                 self.error(
@@ -1553,7 +1601,7 @@ impl<'a> EarlyErrorPass<'a> {
                 for (index, prop) in obj.properties.iter().enumerate() {
                     match prop {
                         ObjectProperty::Property(prop) => {
-                            self.check_assignment_pattern_target(&prop.value)
+                            self.check_assignment_property_target(prop)
                         }
                         ObjectProperty::Spread(spread) => {
                             if index + 1 != obj.properties.len() {
@@ -1569,6 +1617,36 @@ impl<'a> EarlyErrorPass<'a> {
             }
             _ => {}
         }
+    }
+
+    fn check_assignment_property_target(&mut self, prop: &Property) {
+        if self.mode == TypeSystemMode::Js && prop.shorthand {
+            let reserved_ident = match &prop.value {
+                Expression::Identifier(ident) => Some(ident),
+                Expression::Assignment(assign)
+                    if assign.operator == AssignmentOperator::Assign =>
+                {
+                    match assign.left.as_ref() {
+                        Expression::Identifier(ident) => Some(ident),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(ident) = reserved_ident {
+                let name = self.interner.resolve(ident.name);
+                let invalid_yield = name == "yield"
+                    && (self.current_strict()
+                        || self.current_function().is_some_and(|ctx| ctx.is_generator));
+                if invalid_yield || is_reserved_word_identifier(name) {
+                    self.error(
+                        "Reserved words cannot appear in object-assignment shorthand bindings",
+                        ident.span,
+                    );
+                }
+            }
+        }
+        self.check_assignment_pattern_target(&prop.value);
     }
 
     fn is_valid_assignment_target(expr: &Expression, allow_pattern_defaults: bool) -> bool {
