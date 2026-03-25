@@ -3569,6 +3569,37 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
+    fn preflight_direct_eval_parameter_var_collisions(
+        &self,
+        env: Value,
+        declarations: &DirectEvalDeclarations,
+        task: &Arc<Task>,
+    ) -> Result<(), VmError> {
+        for name in declarations
+            .var_names
+            .iter()
+            .chain(declarations.function_names.iter())
+        {
+            let Some(binding_env) = self.resolve_direct_eval_binding_env(env, name) else {
+                continue;
+            };
+            if binding_env.raw() == env.raw()
+                && self.direct_eval_binding_is_lexical(binding_env, name)
+                && !self.direct_eval_binding_is_outer_snapshot(binding_env, name)
+            {
+                return Err(self.raise_task_builtin_error(
+                    task,
+                    "SyntaxError",
+                    format!(
+                        "direct eval may not declare '{}' during parameter initialization",
+                        name
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn delete_js_identifier_reference(
         &mut self,
         task: &Arc<Task>,
@@ -8599,6 +8630,12 @@ impl<'a> Interpreter<'a> {
                 "SyntaxError",
                 "direct eval may not declare 'arguments' during parameter initialization when the caller already provides an arguments binding",
             ));
+        }
+        if let (Some(env), Some(declarations)) = (
+            direct_env.filter(|_| in_parameter_initializer && !behavior.is_strict),
+            direct_eval_declarations.as_ref(),
+        ) {
+            self.preflight_direct_eval_parameter_var_collisions(env, declarations, task)?;
         }
         if direct_env.is_none() {
             let source_is_strict = raw_eval_declarations
