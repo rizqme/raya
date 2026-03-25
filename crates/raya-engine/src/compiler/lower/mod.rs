@@ -489,6 +489,8 @@ struct AncestorVar {
     ty: crate::parser::TypeId,
     /// Whether this variable is stored in a RefCell (for mutable capture-by-reference)
     is_refcell: bool,
+    /// Whether writes to this binding must throw (e.g. `const`).
+    is_immutable: bool,
 }
 
 /// Captured variable information
@@ -504,6 +506,8 @@ struct CaptureInfo {
     ty: crate::parser::TypeId,
     /// Whether this capture is a RefCell (for mutable capture-by-reference)
     is_refcell: bool,
+    /// Whether writes to this capture must throw (e.g. captured `const`).
+    is_immutable: bool,
 }
 
 /// AST to IR lowerer
@@ -598,6 +602,8 @@ pub struct Lowerer<'a> {
     last_arrow_func_id: Option<FunctionId>,
     /// Variables that need RefCell wrapping (captured and potentially modified)
     refcell_vars: FxHashSet<Symbol>,
+    /// Local bindings that are immutable in the current scope (e.g. `const`).
+    immutable_bindings: FxHashSet<Symbol>,
     /// Map from local variable to its RefCell register (for variables stored in RefCells)
     refcell_registers: FxHashMap<u16, Register>,
     /// Variables that are captured by any closure (read or write) - used for per-iteration bindings in loops
@@ -1430,6 +1436,7 @@ impl<'a> Lowerer<'a> {
             last_closure_info: None,
             last_arrow_func_id: None,
             refcell_vars: FxHashSet::default(),
+            immutable_bindings: FxHashSet::default(),
             refcell_registers: FxHashMap::default(),
             loop_captured_vars: FxHashSet::default(),
             refcell_inner_types: FxHashMap::default(),

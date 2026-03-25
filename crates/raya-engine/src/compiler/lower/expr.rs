@@ -1830,6 +1830,7 @@ impl<'a> Lowerer<'a> {
                 let ty = ancestor_var.ty;
                 let narrowed_ty = self.effective_identifier_value_type(ident, ty);
                 let is_refcell = ancestor_var.is_refcell;
+                let is_immutable = ancestor_var.is_immutable;
                 let capture_idx = self.next_capture_slot;
                 self.next_capture_slot += 1;
                 self.captures.push(super::CaptureInfo {
@@ -1838,6 +1839,7 @@ impl<'a> Lowerer<'a> {
                     capture_idx,
                     ty: narrowed_ty,
                     is_refcell,
+                    is_immutable,
                 });
 
                 if self.allow_unresolved_runtime_fallback && self.js_this_binding_compat {
@@ -7919,9 +7921,10 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Some(idx) = self.captures.iter().position(|c| c.symbol == symbol) {
-            let is_refcell = self.captures[idx].is_refcell;
-            let capture_idx = self.captures[idx].capture_idx;
-            if !is_refcell {
+            let capture = &self.captures[idx];
+            let is_refcell = capture.is_refcell;
+            let capture_idx = capture.capture_idx;
+            if capture.is_immutable {
                 let _ = self.emit_type_error_throw("Assignment to constant variable.");
                 return;
             }
@@ -7946,7 +7949,7 @@ impl<'a> Lowerer<'a> {
 
         if let Some(ref ancestors) = self.ancestor_variables.clone() {
             if let Some(ancestor_var) = ancestors.get(&symbol) {
-                if !ancestor_var.is_refcell {
+                if ancestor_var.is_immutable {
                     let _ = self.emit_type_error_throw("Assignment to constant variable.");
                     return;
                 }
@@ -7958,6 +7961,7 @@ impl<'a> Lowerer<'a> {
                     capture_idx,
                     ty: ancestor_var.ty,
                     is_refcell: ancestor_var.is_refcell,
+                    is_immutable: ancestor_var.is_immutable,
                 });
                 if ancestor_var.is_refcell {
                     let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
@@ -8577,8 +8581,13 @@ impl<'a> Lowerer<'a> {
                     {
                         assigned_symbol = true;
                         // Captured variable from outer scope
-                        let is_refcell = self.captures[idx].is_refcell;
-                        let capture_idx = self.captures[idx].capture_idx;
+                        let capture = &self.captures[idx];
+                        let is_refcell = capture.is_refcell;
+                        let capture_idx = capture.capture_idx;
+                        if capture.is_immutable {
+                            let _ = self.emit_type_error_throw("Assignment to constant variable.");
+                            return assigned_value;
+                        }
                         if is_refcell {
                             let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                             self.emit(IrInstr::LoadCaptured {
@@ -8601,6 +8610,12 @@ impl<'a> Lowerer<'a> {
                             assigned_symbol = true;
                             let ty = ancestor_var.ty;
                             let is_refcell = ancestor_var.is_refcell;
+                            let is_immutable = ancestor_var.is_immutable;
+                            if is_immutable {
+                                let _ =
+                                    self.emit_type_error_throw("Assignment to constant variable.");
+                                return assigned_value;
+                            }
                             let capture_idx = self.next_capture_slot;
                             self.next_capture_slot += 1;
                             self.captures.push(super::CaptureInfo {
@@ -8609,6 +8624,7 @@ impl<'a> Lowerer<'a> {
                                 capture_idx,
                                 ty,
                                 is_refcell,
+                                is_immutable,
                             });
                             if is_refcell {
                                 let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
@@ -9045,8 +9061,13 @@ impl<'a> Lowerer<'a> {
                 {
                     assigned_symbol = true;
                     // Variable is captured - handle assignment to captured variable
-                    let is_refcell = self.captures[idx].is_refcell;
-                    let capture_idx = self.captures[idx].capture_idx;
+                    let capture = &self.captures[idx];
+                    let is_refcell = capture.is_refcell;
+                    let capture_idx = capture.capture_idx;
+                    if capture.is_immutable {
+                        let _ = self.emit_type_error_throw("Assignment to constant variable.");
+                        return value;
+                    }
 
                     if is_refcell {
                         // Load the RefCell pointer from captured
@@ -9074,6 +9095,11 @@ impl<'a> Lowerer<'a> {
                         assigned_symbol = true;
                         let ty = ancestor_var.ty;
                         let is_refcell = ancestor_var.is_refcell;
+                        let is_immutable = ancestor_var.is_immutable;
+                        if is_immutable {
+                            let _ = self.emit_type_error_throw("Assignment to constant variable.");
+                            return value;
+                        }
                         let capture_idx = self.next_capture_slot;
                         self.next_capture_slot += 1;
                         self.captures.push(super::CaptureInfo {
@@ -9082,6 +9108,7 @@ impl<'a> Lowerer<'a> {
                             capture_idx,
                             ty,
                             is_refcell,
+                            is_immutable,
                         });
 
                         if is_refcell {
@@ -9512,6 +9539,7 @@ impl<'a> Lowerer<'a> {
         let saved_callable_symbol_hints = self.callable_symbol_hints.clone();
         let saved_bound_method_vars = self.bound_method_vars.clone();
         let saved_refcell_vars = self.refcell_vars.clone();
+        let saved_immutable_bindings = self.immutable_bindings.clone();
         let saved_refcell_registers = self.refcell_registers.clone();
         let saved_loop_captured_vars = self.loop_captured_vars.clone();
         let saved_refcell_inner_types = self.refcell_inner_types.clone();
@@ -9548,6 +9576,7 @@ impl<'a> Lowerer<'a> {
                     source: super::AncestorSource::ImmediateParentLocal(local_idx),
                     ty,
                     is_refcell,
+                    is_immutable: saved_immutable_bindings.contains(sym),
                 },
             );
         }
@@ -9560,6 +9589,7 @@ impl<'a> Lowerer<'a> {
                             source: super::AncestorSource::Ancestor,
                             ty: var.ty,
                             is_refcell: var.is_refcell,
+                            is_immutable: var.is_immutable,
                         },
                     );
                 }
@@ -9582,6 +9612,7 @@ impl<'a> Lowerer<'a> {
         self.local_registers.clear();
         self.callable_local_hints.clear();
         self.refcell_vars.clear();
+        self.immutable_bindings.clear();
         self.refcell_registers.clear();
         self.loop_captured_vars.clear();
         self.refcell_inner_types.clear();
@@ -9843,6 +9874,7 @@ impl<'a> Lowerer<'a> {
         self.callable_symbol_hints = saved_callable_symbol_hints;
         self.bound_method_vars = saved_bound_method_vars;
         self.refcell_vars = saved_refcell_vars;
+        self.immutable_bindings = saved_immutable_bindings;
         self.refcell_registers = saved_refcell_registers;
         self.loop_captured_vars = saved_loop_captured_vars;
         self.refcell_inner_types = saved_refcell_inner_types;
@@ -9934,27 +9966,41 @@ impl<'a> Lowerer<'a> {
                         let capture_idx = if let Some(idx) = parent_capture_idx {
                             idx
                         } else {
-                            let (source, is_refcell) = if let Some(ref ancestors) =
+                            let (source, is_refcell, is_immutable) = if let Some(ref ancestors) =
                                 child_ancestor_variables
                             {
                                 if let Some(ancestor_var) = ancestors.get(&cap.symbol) {
-                                    (ancestor_var.source, ancestor_var.is_refcell)
+                                    (
+                                        ancestor_var.source,
+                                        ancestor_var.is_refcell,
+                                        ancestor_var.is_immutable,
+                                    )
                                 } else if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
                                     (
                                         super::AncestorSource::ImmediateParentLocal(local_idx),
                                         cap.is_refcell,
+                                        self.immutable_bindings.contains(&cap.symbol),
                                     )
                                 } else {
-                                    (super::AncestorSource::Ancestor, cap.is_refcell)
+                                    (
+                                        super::AncestorSource::Ancestor,
+                                        cap.is_refcell,
+                                        cap.is_immutable,
+                                    )
                                 }
                             } else if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
                                 let is_refcell = self.refcell_registers.contains_key(&local_idx);
                                 (
                                     super::AncestorSource::ImmediateParentLocal(local_idx),
                                     is_refcell,
+                                    self.immutable_bindings.contains(&cap.symbol),
                                 )
                             } else {
-                                (super::AncestorSource::Ancestor, cap.is_refcell)
+                                (
+                                    super::AncestorSource::Ancestor,
+                                    cap.is_refcell,
+                                    cap.is_immutable,
+                                )
                             };
 
                             let idx = self.captures.len() as u16;
@@ -9964,6 +10010,7 @@ impl<'a> Lowerer<'a> {
                                 capture_idx: idx,
                                 ty: cap.ty,
                                 is_refcell,
+                                is_immutable,
                             });
                             self.next_capture_slot = self.next_capture_slot.max(idx + 1);
                             idx
@@ -10044,6 +10091,7 @@ impl<'a> Lowerer<'a> {
         let saved_callable_symbol_hints = self.callable_symbol_hints.clone();
         let saved_bound_method_vars = self.bound_method_vars.clone();
         let saved_refcell_vars = self.refcell_vars.clone();
+        let saved_immutable_bindings = self.immutable_bindings.clone();
         let saved_refcell_registers = self.refcell_registers.clone();
         let saved_loop_captured_vars = self.loop_captured_vars.clone();
         let saved_refcell_inner_types = self.refcell_inner_types.clone();
@@ -10089,6 +10137,7 @@ impl<'a> Lowerer<'a> {
                     source: super::AncestorSource::ImmediateParentLocal(local_idx),
                     ty,
                     is_refcell,
+                    is_immutable: saved_immutable_bindings.contains(sym),
                 },
             );
         }
@@ -10104,6 +10153,7 @@ impl<'a> Lowerer<'a> {
                             source: super::AncestorSource::Ancestor,
                             ty: var.ty,
                             is_refcell: var.is_refcell,
+                            is_immutable: var.is_immutable,
                         },
                     );
                 }
@@ -10143,6 +10193,7 @@ impl<'a> Lowerer<'a> {
         self.local_registers.clear();
         self.callable_local_hints.clear();
         self.refcell_vars.clear();
+        self.immutable_bindings.clear();
         self.refcell_registers.clear();
         self.loop_captured_vars.clear();
         self.refcell_inner_types.clear();
@@ -10431,6 +10482,7 @@ impl<'a> Lowerer<'a> {
         self.callable_symbol_hints = saved_callable_symbol_hints;
         self.bound_method_vars = saved_bound_method_vars;
         self.refcell_vars = saved_refcell_vars;
+        self.immutable_bindings = saved_immutable_bindings;
         self.refcell_registers = saved_refcell_registers;
         self.loop_captured_vars = saved_loop_captured_vars;
         self.refcell_inner_types = saved_refcell_inner_types;
@@ -10542,11 +10594,15 @@ impl<'a> Lowerer<'a> {
                             // Add to parent's captures (propagate up)
                             // Look up where the CURRENT (parent) function gets this variable from
                             // using the child's ancestor_variables (which describes the parent's sources)
-                            let (source, is_refcell) = if let Some(ref ancestors) =
+                            let (source, is_refcell, is_immutable) = if let Some(ref ancestors) =
                                 child_ancestor_variables
                             {
                                 if let Some(ancestor_var) = ancestors.get(&cap.symbol) {
-                                    (ancestor_var.source, ancestor_var.is_refcell)
+                                    (
+                                        ancestor_var.source,
+                                        ancestor_var.is_refcell,
+                                        ancestor_var.is_immutable,
+                                    )
                                 } else {
                                     // Variable not in child's ancestors - should not happen
                                     // Fall back to loading from locals if available
@@ -10554,9 +10610,14 @@ impl<'a> Lowerer<'a> {
                                         (
                                             super::AncestorSource::ImmediateParentLocal(local_idx),
                                             cap.is_refcell,
+                                            self.immutable_bindings.contains(&cap.symbol),
                                         )
                                     } else {
-                                        (super::AncestorSource::Ancestor, cap.is_refcell)
+                                        (
+                                            super::AncestorSource::Ancestor,
+                                            cap.is_refcell,
+                                            cap.is_immutable,
+                                        )
                                     }
                                 }
                             } else {
@@ -10568,9 +10629,14 @@ impl<'a> Lowerer<'a> {
                                     (
                                         super::AncestorSource::ImmediateParentLocal(local_idx),
                                         is_refcell,
+                                        self.immutable_bindings.contains(&cap.symbol),
                                     )
                                 } else {
-                                    (super::AncestorSource::Ancestor, cap.is_refcell)
+                                    (
+                                        super::AncestorSource::Ancestor,
+                                        cap.is_refcell,
+                                        cap.is_immutable,
+                                    )
                                 }
                             };
 
@@ -10581,6 +10647,7 @@ impl<'a> Lowerer<'a> {
                                 capture_idx: idx,
                                 ty: cap.ty,
                                 is_refcell,
+                                is_immutable,
                             });
                             // Keep lazy-capture index allocation monotonic.
                             // Without this, subsequent direct captures in the same function
@@ -12131,6 +12198,7 @@ impl<'a> Lowerer<'a> {
         let saved_local_registers = std::mem::take(&mut self.local_registers);
         let saved_next_local = self.next_local;
         let saved_refcell_vars = std::mem::take(&mut self.refcell_vars);
+        let saved_immutable_bindings = std::mem::take(&mut self.immutable_bindings);
         let saved_refcell_registers = std::mem::take(&mut self.refcell_registers);
         let saved_loop_captured_vars = std::mem::take(&mut self.loop_captured_vars);
         let saved_generator_yield_array_local = self.generator_yield_array_local.take();
@@ -12149,6 +12217,7 @@ impl<'a> Lowerer<'a> {
         self.local_registers = saved_local_registers;
         self.next_local = saved_next_local;
         self.refcell_vars = saved_refcell_vars;
+        self.immutable_bindings = saved_immutable_bindings;
         self.refcell_registers = saved_refcell_registers;
         self.loop_captured_vars = saved_loop_captured_vars;
         self.generator_yield_array_local = saved_generator_yield_array_local;

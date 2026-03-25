@@ -635,6 +635,73 @@ fn line_terminator_width(source: &str, pos: usize) -> Option<(usize, bool)> {
     }
 }
 
+fn is_identifier_start_char(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_alphabetic()
+}
+
+fn is_identifier_continue_char(ch: char) -> bool {
+    is_identifier_start_char(ch) || ch.is_ascii_digit()
+}
+
+fn keyword_token_for_identifier(name: &str) -> Option<Token> {
+    Some(match name {
+        "function" => Token::Function,
+        "class" => Token::Class,
+        "type" => Token::Type,
+        "interface" => Token::Interface,
+        "let" => Token::Let,
+        "const" => Token::Const,
+        "var" => Token::Var,
+        "if" => Token::If,
+        "else" => Token::Else,
+        "switch" => Token::Switch,
+        "case" => Token::Case,
+        "default" => Token::Default,
+        "for" => Token::For,
+        "while" => Token::While,
+        "do" => Token::Do,
+        "with" => Token::With,
+        "break" => Token::Break,
+        "continue" => Token::Continue,
+        "return" => Token::Return,
+        "async" => Token::Async,
+        "await" => Token::Await,
+        "try" => Token::Try,
+        "catch" => Token::Catch,
+        "finally" => Token::Finally,
+        "throw" => Token::Throw,
+        "import" => Token::Import,
+        "export" => Token::Export,
+        "from" => Token::From,
+        "new" => Token::New,
+        "this" => Token::This,
+        "super" => Token::Super,
+        "static" => Token::Static,
+        "abstract" => Token::Abstract,
+        "readonly" => Token::Readonly,
+        "keyof" => Token::Keyof,
+        "extends" => Token::Extends,
+        "implements" => Token::Implements,
+        "typeof" => Token::Typeof,
+        "instanceof" => Token::Instanceof,
+        "as" => Token::As,
+        "delete" => Token::Delete,
+        "void" => Token::Void,
+        "debugger" => Token::Debugger,
+        "namespace" => Token::Namespace,
+        "private" => Token::Private,
+        "protected" => Token::Protected,
+        "public" => Token::Public,
+        "yield" => Token::Yield,
+        "in" => Token::In,
+        "of" => Token::Of,
+        "true" => Token::True,
+        "false" => Token::False,
+        "null" => Token::Null,
+        _ => return None,
+    })
+}
+
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a str) -> Self {
         Self {
@@ -945,6 +1012,16 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
+            if let Some((next_pos, next_line, next_column)) =
+                self.scan_identifier_like(pos, line, column, line_break_before)
+            {
+                pos = next_pos;
+                line = next_line;
+                column = next_column;
+                line_break_before = false;
+                continue;
+            }
+
             // Use logos for regular tokens
             let mut logos_lexer = LogosToken::lexer(&self.source[pos..]);
 
@@ -1078,6 +1155,110 @@ impl<'a> Lexer<'a> {
         let span = Span::new(start, self.source.len(), line, column);
         self.errors.push(LexError::UnterminatedString { span });
         Some((self.source.len(), current_line, current_column))
+    }
+
+    fn decode_identifier_escape(&self, pos: usize) -> Option<(char, usize)> {
+        let bytes = self.source.as_bytes();
+        if bytes.get(pos) != Some(&b'\\') || bytes.get(pos + 1) != Some(&b'u') {
+            return None;
+        }
+
+        let mut cursor = pos + 2;
+        if bytes.get(cursor) == Some(&b'{') {
+            cursor += 1;
+            let hex_start = cursor;
+            while let Some(&byte) = bytes.get(cursor) {
+                if byte == b'}' {
+                    break;
+                }
+                if !(byte as char).is_ascii_hexdigit() {
+                    return None;
+                }
+                cursor += 1;
+            }
+            if bytes.get(cursor) != Some(&b'}') || cursor == hex_start {
+                return None;
+            }
+            let hex = &self.source[hex_start..cursor];
+            let code_point = u32::from_str_radix(hex, 16).ok()?;
+            let ch = char::from_u32(code_point)?;
+            Some((ch, cursor + 1))
+        } else {
+            let hex_end = cursor + 4;
+            if hex_end > self.source.len() {
+                return None;
+            }
+            let hex = &self.source[cursor..hex_end];
+            if !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                return None;
+            }
+            let code_point = u32::from_str_radix(hex, 16).ok()?;
+            let ch = char::from_u32(code_point)?;
+            Some((ch, hex_end))
+        }
+    }
+
+    fn scan_identifier_like(
+        &mut self,
+        pos: usize,
+        line: u32,
+        column: u32,
+        line_break_before: bool,
+    ) -> Option<(usize, u32, u32)> {
+        let mut cursor = pos;
+        let mut decoded = String::new();
+        let mut had_escape = false;
+
+        let first = self.source[cursor..].chars().next()?;
+        let (first_char, next_cursor) = if first == '\\' {
+            let (decoded_char, next_cursor) = self.decode_identifier_escape(cursor)?;
+            if !is_identifier_start_char(decoded_char) {
+                return None;
+            }
+            had_escape = true;
+            (decoded_char, next_cursor)
+        } else if is_identifier_start_char(first) {
+            (first, cursor + first.len_utf8())
+        } else {
+            return None;
+        };
+        decoded.push(first_char);
+        cursor = next_cursor;
+
+        while cursor < self.source.len() {
+            let ch = self.source[cursor..].chars().next()?;
+            if ch == '\\' {
+                let Some((decoded_char, next_cursor)) = self.decode_identifier_escape(cursor)
+                else {
+                    break;
+                };
+                if !is_identifier_continue_char(decoded_char) {
+                    break;
+                }
+                had_escape = true;
+                decoded.push(decoded_char);
+                cursor = next_cursor;
+                continue;
+            }
+            if !is_identifier_continue_char(ch) {
+                break;
+            }
+            decoded.push(ch);
+            cursor += ch.len_utf8();
+        }
+
+        if !had_escape {
+            return None;
+        }
+
+        let token = keyword_token_for_identifier(&decoded)
+            .unwrap_or_else(|| Token::Identifier(self.interner.intern(&decoded)));
+        let span = Span::new(pos, cursor, line, column);
+        self.tokens
+            .push(LexedToken::new(token, span, line_break_before));
+
+        let consumed_width = self.source[pos..cursor].chars().count() as u32;
+        Some((cursor, line, column + consumed_width))
     }
 
     fn convert_token(&mut self, logos_token: LogosToken) -> Token {

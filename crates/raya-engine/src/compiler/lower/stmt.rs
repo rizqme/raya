@@ -467,6 +467,7 @@ impl<'a> Lowerer<'a> {
                     let saved_refcell_registers = self.refcell_registers.clone();
                     let saved_refcell_inner_types = self.refcell_inner_types.clone();
                     let saved_refcell_vars = self.refcell_vars.clone();
+                    let saved_immutable_bindings = self.immutable_bindings.clone();
                     let saved_loop_captured_vars = self.loop_captured_vars.clone();
                     let saved_next_local = self.next_local;
                     let saved_function = self.current_function.take();
@@ -486,6 +487,7 @@ impl<'a> Lowerer<'a> {
                     self.refcell_registers = saved_refcell_registers;
                     self.refcell_inner_types = saved_refcell_inner_types;
                     self.refcell_vars = saved_refcell_vars;
+                    self.immutable_bindings = saved_immutable_bindings;
                     self.loop_captured_vars = saved_loop_captured_vars;
                     self.next_local = saved_next_local;
                     self.current_function = saved_function;
@@ -2207,6 +2209,9 @@ impl<'a> Lowerer<'a> {
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
         if self.js_this_binding_compat && decl.kind != crate::parser::ast::VariableKind::Var {
             super::collect_pattern_names(&decl.pattern, &mut self.visible_js_lexical_symbols);
+        }
+        if decl.kind == crate::parser::ast::VariableKind::Const {
+            super::collect_pattern_names(&decl.pattern, &mut self.immutable_bindings);
         }
 
         // Handle destructuring patterns
