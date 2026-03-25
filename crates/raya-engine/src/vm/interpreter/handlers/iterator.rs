@@ -267,8 +267,13 @@ impl<'a> Interpreter<'a> {
                 "Iterator return is not callable".to_string(),
             ));
         }
-        let _ =
+        let returned =
             self.invoke_callable_sync_with_this(return_method, Some(iterator), &[], task, module)?;
+        if !self.is_js_object_value(returned) && !Self::is_callable_value(returned) {
+            return Err(VmError::TypeError(
+                "Iterator return must produce an object".to_string(),
+            ));
+        }
         if Self::iterator_debug_enabled() {
             eprintln!("[iter] close iterator={:#x}", iterator.raw());
         }

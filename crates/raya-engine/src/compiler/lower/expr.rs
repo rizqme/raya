@@ -8035,22 +8035,23 @@ impl<'a> Lowerer<'a> {
                 self.lower_destructuring_assignment_target(&assign.left, final_val);
             }
             Expression::Array(array_pat) => {
-                if array_pat.elements.is_empty() {
+                let iterator_reg = self.emit_iterator_get_helper(value_reg);
+                if array_pat.elements.is_empty() && !array_pat.elements.iter().any(|e| e.is_some()) {
+                    self.emit_iterator_close_helper(iterator_reg);
                     return;
                 }
-
-                let iterator_reg = self.emit_iterator_get_helper(value_reg);
                 let mut last_step_result: Option<Register> = None;
                 for elem_opt in &array_pat.elements {
-                    let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
-                    last_step_result = Some(step_result.clone());
-
                     let Some(elem) = elem_opt else {
+                        let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
+                        last_step_result = Some(step_result);
                         continue;
                     };
 
                     match elem {
                         ast::ArrayElement::Expression(expr) => {
+                            let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
+                            last_step_result = Some(step_result.clone());
                             let value_block = self.alloc_block();
                             let done_block = self.alloc_block();
                             let merge_block = self.alloc_block();
