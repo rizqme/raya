@@ -419,6 +419,8 @@ struct ClassInfo {
     parent_runtime_name: Option<String>,
     /// Source-level symbol for the parent constructor reference.
     parent_constructor_symbol: Option<Symbol>,
+    /// Whether the class has a JS `extends <expr>` clause resolved at runtime.
+    has_runtime_extends: bool,
     /// Type arg substitutions for generic parent (param_name → concrete TypeId)
     extends_type_subs: Option<std::collections::HashMap<String, TypeId>>,
     /// Number of vtable method slots (including inherited)
@@ -822,6 +824,9 @@ pub struct Lowerer<'a> {
     /// Whether the current function body is an arrow-compatible body where `arguments`
     /// should first consult any carried parameter-scope eval bindings.
     body_scope_eval_arguments_mode: bool,
+    /// Whether unresolved body identifiers should first consult a carried direct-eval env
+    /// from parameter initialization before falling back to outer/global bindings.
+    body_scope_eval_mode: bool,
     with_scope_depth: usize,
     /// Parameter bindings visible in the currently lowered function body.
     parameter_symbols: FxHashSet<Symbol>,
@@ -1532,6 +1537,7 @@ impl<'a> Lowerer<'a> {
             parameter_tdz_symbols: FxHashSet::default(),
             parameter_binding_mode: false,
             body_scope_eval_arguments_mode: false,
+            body_scope_eval_mode: false,
             with_scope_depth: 0,
             parameter_symbols: FxHashSet::default(),
             visible_js_lexical_symbols: FxHashSet::default(),
@@ -3192,6 +3198,51 @@ impl<'a> Lowerer<'a> {
         self.lowered_classes.insert(nominal_type_id, ir_class);
     }
 
+    fn class_is_derived(&self, nominal_type_id: NominalTypeId) -> bool {
+        self.class_info_map.get(&nominal_type_id).is_some_and(|info| {
+            info.parent_class.is_some()
+                || info.parent_constructor_symbol.is_some()
+                || info.has_runtime_extends
+        })
+    }
+
+    fn lower_parent_constructor_for_class(
+        &mut self,
+        nominal_type_id: NominalTypeId,
+    ) -> Option<Register> {
+        let (parent_class, parent_constructor_symbol, has_runtime_extends) = self
+            .class_info_map
+            .get(&nominal_type_id)
+            .map(|info| {
+                (
+                    info.parent_class,
+                    info.parent_constructor_symbol,
+                    info.has_runtime_extends,
+                )
+            })?;
+
+        if let Some(parent_id) = parent_class {
+            return Some(self.load_class_value_for_nominal_type(parent_id));
+        }
+
+        if let Some(symbol) = parent_constructor_symbol {
+            return Some(self.lower_runtime_constructor_symbol(symbol));
+        }
+
+        if has_runtime_extends {
+            let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
+            let parent_constructor = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+            self.emit(IrInstr::NativeCall {
+                dest: Some(parent_constructor.clone()),
+                native_id: crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF,
+                args: vec![class_value],
+            });
+            return Some(parent_constructor);
+        }
+
+        None
+    }
+
     /// Register a class declaration (first-pass registration).
     /// Assigns class ID, collects fields/methods/constructor info, builds ClassInfo.
     /// Must be called before `lower_class` for the same class.
@@ -3257,6 +3308,7 @@ impl<'a> Lowerer<'a> {
 
         // Resolve parent class if extends clause is present
         let mut extends_type_args: Option<Vec<TypeId>> = None;
+        let has_runtime_extends = class.extends_expr.is_some();
         let (parent_class, parent_runtime_name, parent_constructor_symbol) =
             if let Some(ref extends) = class.extends {
                 if let ast::Type::Reference(type_ref) = &extends.ty {
@@ -3734,6 +3786,7 @@ impl<'a> Lowerer<'a> {
                 parent_class,
                 parent_runtime_name,
                 parent_constructor_symbol,
+                has_runtime_extends,
                 extends_type_subs,
                 method_slot_count,
                 class_decorators,
@@ -3967,6 +4020,7 @@ impl<'a> Lowerer<'a> {
             .iter()
             .take_while(|param| !param.is_rest && param.default_value.is_none() && !param.optional)
             .count();
+        let use_js_parameter_env = self.js_parameter_environment_required(&func.params);
         let is_strict_js = self.js_strict_context
             || func
                 .body
@@ -4019,6 +4073,7 @@ impl<'a> Lowerer<'a> {
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
+        let saved_body_scope_eval_mode = self.body_scope_eval_mode;
         let saved_hoisted_function_decl_spans =
             std::mem::take(&mut self.hoisted_function_decl_spans);
         self.js_strict_context = is_strict_js;
@@ -4027,12 +4082,18 @@ impl<'a> Lowerer<'a> {
             .as_deref()
             .is_some_and(|target| target == name);
         self.body_scope_eval_arguments_mode = false;
+        self.body_scope_eval_mode = saved_body_scope_eval_mode || use_js_parameter_env;
 
         // Create entry block
         let entry_block = self.alloc_block();
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+        if use_js_parameter_env {
+            let env_object = self.lower_activation_direct_eval_environment_object();
+            let _ = self.emit_ensure_activation_direct_eval_env(env_object);
+        }
 
         if self.in_direct_eval_function {
             self.init_eval_completion_local();
@@ -4118,6 +4179,7 @@ impl<'a> Lowerer<'a> {
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
+        self.body_scope_eval_mode = saved_body_scope_eval_mode;
         self.hoisted_function_decl_spans = saved_hoisted_function_decl_spans;
         lowered
     }
@@ -5336,11 +5398,7 @@ impl<'a> Lowerer<'a> {
                         param_property_fields.push((fi.index, param_reg.clone()));
                     }
                 }
-                let is_derived = self
-                    .class_info_map
-                    .get(&nominal_type_id)
-                    .and_then(|info| info.parent_class)
-                    .is_some();
+                let is_derived = self.class_is_derived(nominal_type_id);
                 if is_derived {
                     self.pending_constructor_prologue = Some(PendingConstructorPrologue {
                         nominal_type_id,
@@ -5439,12 +5497,7 @@ impl<'a> Lowerer<'a> {
                 .and_then(|parent_id| self.class_info_map.get(&parent_id))
                 .map(|info| info.constructor_params.clone())
                 .unwrap_or_default();
-            let has_parent_constructor =
-                self.class_info_map
-                    .get(&nominal_type_id)
-                    .is_some_and(|info| {
-                        info.parent_class.is_some() || info.parent_constructor_symbol.is_some()
-                    });
+            let has_parent_constructor = self.class_is_derived(nominal_type_id);
             let forwarded_param_count = if has_parent_constructor {
                 parent_constructor_params.len().max(8)
             } else {
@@ -5498,17 +5551,7 @@ impl<'a> Lowerer<'a> {
 
             let this_reg = self.this_register.clone().unwrap();
             self.constructor_return_this = Some(this_reg.clone());
-            let parent_info = self
-                .class_info_map
-                .get(&nominal_type_id)
-                .map(|info| (info.parent_class, info.parent_constructor_symbol));
-            let parent_constructor = parent_info.and_then(|(parent_class, parent_symbol)| {
-                parent_class
-                    .map(|parent_id| self.load_class_value_for_nominal_type(parent_id))
-                    .or_else(|| {
-                        parent_symbol.map(|symbol| self.lower_runtime_constructor_symbol(symbol))
-                    })
-            });
+            let parent_constructor = self.lower_parent_constructor_for_class(nominal_type_id);
             if let Some(parent_constructor) = parent_constructor {
                 let new_target = self.load_class_value_for_nominal_type(nominal_type_id);
                 let mut native_args = Vec::with_capacity(forwarded_args.len() + 2);

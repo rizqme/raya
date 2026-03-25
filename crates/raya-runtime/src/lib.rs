@@ -352,6 +352,16 @@ impl Runtime {
         )
     }
 
+    /// Compile a source string into a full program graph while attributing the
+    /// virtual module identity and diagnostics to the provided path.
+    pub fn compile_program_source_at_path(
+        &self,
+        source: &str,
+        virtual_entry: &Path,
+    ) -> Result<CompiledProgram, RuntimeError> {
+        self.compile_program_source_with_virtual_entry(source, virtual_entry)
+    }
+
     /// Compile a source file to a bytecode module.
     pub fn compile_file(&self, path: &Path) -> Result<CompiledModule, RuntimeError> {
         Ok(self.compile_program_file(path)?.entry)

@@ -467,6 +467,14 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn check_arrow_parameter_default(&mut self, expr: &Expression, binding_strict: bool) {
+        if let Some(yield_span) = self.find_yield_expression_span(expr) {
+            self.error(
+                "Yield is not allowed in arrow parameter defaults",
+                yield_span,
+            );
+            return;
+        }
+
         if let Some(yield_ident) = self.find_identifier_reference_named(expr, "yield") {
             if self.current_function().is_some_and(|ctx| ctx.is_generator) {
                 self.error(
@@ -479,6 +487,136 @@ impl<'a> EarlyErrorPass<'a> {
                     yield_ident.span,
                 );
             }
+        }
+    }
+
+    fn find_yield_expression_span(&self, expr: &Expression) -> Option<crate::parser::Span> {
+        match expr {
+            Expression::Array(array) => array.elements.iter().flatten().find_map(|elem| match elem {
+                ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
+                    self.find_yield_expression_span(expr)
+                }
+            }),
+            Expression::Object(obj) => obj.properties.iter().find_map(|prop| match prop {
+                ObjectProperty::Property(prop) => {
+                    if let PropertyKey::Computed(expr) = &prop.key {
+                        self.find_yield_expression_span(expr)
+                            .or_else(|| self.find_yield_expression_span(&prop.value))
+                    } else {
+                        self.find_yield_expression_span(&prop.value)
+                    }
+                }
+                ObjectProperty::Spread(spread) => self.find_yield_expression_span(&spread.argument),
+            }),
+            Expression::TemplateLiteral(tpl) => tpl.parts.iter().find_map(|part| match part {
+                TemplatePart::Expression(expr) => self.find_yield_expression_span(expr),
+                TemplatePart::String(_) => None,
+            }),
+            Expression::Unary(unary) => self.find_yield_expression_span(&unary.operand),
+            Expression::Binary(binary) => self
+                .find_yield_expression_span(&binary.left)
+                .or_else(|| self.find_yield_expression_span(&binary.right)),
+            Expression::Assignment(assign) => self
+                .find_yield_expression_span(&assign.left)
+                .or_else(|| self.find_yield_expression_span(&assign.right)),
+            Expression::Logical(logical) => self
+                .find_yield_expression_span(&logical.left)
+                .or_else(|| self.find_yield_expression_span(&logical.right)),
+            Expression::Conditional(cond) => self
+                .find_yield_expression_span(&cond.test)
+                .or_else(|| self.find_yield_expression_span(&cond.consequent))
+                .or_else(|| self.find_yield_expression_span(&cond.alternate)),
+            Expression::Call(call) => self
+                .find_yield_expression_span(&call.callee)
+                .or_else(|| {
+                    call.arguments
+                        .iter()
+                        .find_map(|arg| self.find_yield_expression_span(arg.expression()))
+                }),
+            Expression::AsyncCall(call) => self
+                .find_yield_expression_span(&call.callee)
+                .or_else(|| {
+                    call.arguments
+                        .iter()
+                        .find_map(|arg| self.find_yield_expression_span(arg.expression()))
+                }),
+            Expression::Member(member) => self.find_yield_expression_span(&member.object),
+            Expression::Index(index) => self
+                .find_yield_expression_span(&index.object)
+                .or_else(|| self.find_yield_expression_span(&index.index)),
+            Expression::New(new_expr) => self
+                .find_yield_expression_span(&new_expr.callee)
+                .or_else(|| {
+                    new_expr
+                        .arguments
+                        .iter()
+                        .find_map(|arg| self.find_yield_expression_span(arg.expression()))
+                }),
+            Expression::Await(await_expr) => self.find_yield_expression_span(&await_expr.argument),
+            Expression::Yield(yield_expr) => Some(yield_expr.span),
+            Expression::Typeof(typeof_expr) => {
+                self.find_yield_expression_span(&typeof_expr.argument)
+            }
+            Expression::Parenthesized(paren) => {
+                self.find_yield_expression_span(&paren.expression)
+            }
+            Expression::JsxElement(elem) => {
+                for attr in &elem.opening.attributes {
+                    match attr {
+                        JsxAttribute::Attribute { value, .. } => {
+                            if let Some(value) = value {
+                                if let Some(found) =
+                                    self.find_yield_expression_span_in_jsx_attr_value(value)
+                                {
+                                    return Some(found);
+                                }
+                            }
+                        }
+                        JsxAttribute::Spread { argument, .. } => {
+                            if let Some(found) = self.find_yield_expression_span(argument) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                elem.children
+                    .iter()
+                    .find_map(|child| self.find_yield_expression_span_in_jsx_child(child))
+            }
+            Expression::JsxFragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|child| self.find_yield_expression_span_in_jsx_child(child)),
+            Expression::InstanceOf(instanceof) => {
+                self.find_yield_expression_span(&instanceof.object)
+            }
+            Expression::In(in_expr) => self
+                .find_yield_expression_span(&in_expr.property)
+                .or_else(|| self.find_yield_expression_span(&in_expr.object)),
+            Expression::TypeCast(cast) => self.find_yield_expression_span(&cast.object),
+            Expression::TaggedTemplate(tagged) => self
+                .find_yield_expression_span(&tagged.tag)
+                .or_else(|| {
+                    tagged.template.parts.iter().find_map(|part| match part {
+                        TemplatePart::Expression(expr) => self.find_yield_expression_span(expr),
+                        TemplatePart::String(_) => None,
+                    })
+                }),
+            Expression::DynamicImport(import) => {
+                self.find_yield_expression_span(&import.source)
+            }
+            Expression::Arrow(_)
+            | Expression::Function(_)
+            | Expression::Identifier(_)
+            | Expression::IntLiteral(_)
+            | Expression::FloatLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::This(_)
+            | Expression::NewTarget(_)
+            | Expression::Super(_)
+            | Expression::RegexLiteral(_) => None,
         }
     }
 
@@ -655,6 +793,24 @@ impl<'a> EarlyErrorPass<'a> {
         }
     }
 
+    fn find_yield_expression_span_in_jsx_attr_value(
+        &self,
+        value: &JsxAttributeValue,
+    ) -> Option<crate::parser::Span> {
+        match value {
+            JsxAttributeValue::StringLiteral(_) => None,
+            JsxAttributeValue::Expression(expr) => self.find_yield_expression_span(expr),
+            JsxAttributeValue::JsxElement(elem) => elem
+                .children
+                .iter()
+                .find_map(|child| self.find_yield_expression_span_in_jsx_child(child)),
+            JsxAttributeValue::JsxFragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|child| self.find_yield_expression_span_in_jsx_child(child)),
+        }
+    }
+
     fn find_identifier_reference_named_in_jsx_child<'b>(
         &self,
         child: &'b JsxChild,
@@ -697,6 +853,46 @@ impl<'a> EarlyErrorPass<'a> {
                 .children
                 .iter()
                 .find_map(|nested| self.find_identifier_reference_named_in_jsx_child(nested, target)),
+        }
+    }
+
+    fn find_yield_expression_span_in_jsx_child(
+        &self,
+        child: &JsxChild,
+    ) -> Option<crate::parser::Span> {
+        match child {
+            JsxChild::Text(_) => None,
+            JsxChild::Expression(expr) => expr
+                .expression
+                .as_ref()
+                .and_then(|expr| self.find_yield_expression_span(expr)),
+            JsxChild::Element(elem) => {
+                for attr in &elem.opening.attributes {
+                    match attr {
+                        JsxAttribute::Attribute { value, .. } => {
+                            if let Some(value) = value {
+                                if let Some(found) =
+                                    self.find_yield_expression_span_in_jsx_attr_value(value)
+                                {
+                                    return Some(found);
+                                }
+                            }
+                        }
+                        JsxAttribute::Spread { argument, .. } => {
+                            if let Some(found) = self.find_yield_expression_span(argument) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                elem.children
+                    .iter()
+                    .find_map(|nested| self.find_yield_expression_span_in_jsx_child(nested))
+            }
+            JsxChild::Fragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|nested| self.find_yield_expression_span_in_jsx_child(nested)),
         }
     }
 

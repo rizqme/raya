@@ -7,7 +7,9 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
 use std::time::Instant;
 
 const HARNESS_CORE_PRELUDE: &str = r#"
@@ -350,6 +352,9 @@ pub struct Args {
     #[arg(long)]
     pub list: bool,
 
+    #[arg(long, value_name = "N")]
+    pub jobs: Option<usize>,
+
     #[arg(long = "exclude-prefix", value_name = "PATH")]
     pub exclude_prefixes: Vec<String>,
 
@@ -472,39 +477,63 @@ pub fn run(args: Args) -> Result<i32> {
 
     let started = Instant::now();
     let mut summary = RunSummary::default();
+    let requested_jobs = args.jobs.unwrap_or_else(default_job_count);
+    let effective_jobs = requested_jobs.max(1).min(cases.len().max(1));
 
-    for (index, case) in cases.iter().enumerate() {
-        if args.verbose || args.fail_fast {
-            eprintln!(
-                "RUN {}/{} {}",
-                index + 1,
-                cases.len(),
-                case.relative_path.display()
-            );
-            let _ = std::io::stderr().flush();
-        }
-
+    if args.fail_fast || effective_jobs == 1 || cases.len() <= 1 {
         let runtime = build_case_runtime();
-        let outcome = run_case(&runtime, &root, case);
-        summary.record(&outcome);
-
-        match &outcome {
-            TestOutcome::Passed if args.verbose => {
-                println!("PASS {}", case.relative_path.display());
-            }
-            TestOutcome::Failed(message) => {
+        for (index, case) in cases.iter().enumerate() {
+            if args.verbose || args.fail_fast {
                 eprintln!(
-                    "{}",
-                    format_failure_report(index + 1, cases.len(), case, message)
+                    "RUN {}/{} {}",
+                    index + 1,
+                    cases.len(),
+                    case.relative_path.display()
                 );
-                if args.fail_fast {
-                    break;
+                let _ = std::io::stderr().flush();
+            }
+
+            let outcome = run_case(&runtime, &root, case);
+            summary.record(&outcome);
+
+            match &outcome {
+                TestOutcome::Passed if args.verbose => {
+                    println!("PASS {}", case.relative_path.display());
                 }
+                TestOutcome::Failed(message) => {
+                    eprintln!(
+                        "{}",
+                        format_failure_report(index + 1, cases.len(), case, message)
+                    );
+                    if args.fail_fast {
+                        break;
+                    }
+                }
+                TestOutcome::Skipped(reason) if args.show_skips => {
+                    println!("SKIP {}: {}", case.relative_path.display(), reason);
+                }
+                _ => {}
             }
-            TestOutcome::Skipped(reason) if args.show_skips => {
-                println!("SKIP {}: {}", case.relative_path.display(), reason);
+        }
+    } else {
+        let outcomes = run_cases_parallel(&root, &cases, effective_jobs);
+        for (index, (case, outcome)) in cases.iter().zip(outcomes.iter()).enumerate() {
+            summary.record(outcome);
+            match outcome {
+                TestOutcome::Passed if args.verbose => {
+                    println!("PASS {}", case.relative_path.display());
+                }
+                TestOutcome::Failed(message) => {
+                    eprintln!(
+                        "{}",
+                        format_failure_report(index + 1, cases.len(), case, message)
+                    );
+                }
+                TestOutcome::Skipped(reason) if args.show_skips => {
+                    println!("SKIP {}: {}", case.relative_path.display(), reason);
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -532,10 +561,44 @@ fn build_case_runtime() -> Runtime {
         threads: 1,
         max_preemptions: Some(5_000),
         preempt_threshold_ms: Some(250),
-        no_jit: false,
+        no_jit: true,
         jit_threshold: 32,
         ..Default::default()
     })
+}
+
+fn default_job_count() -> usize {
+    thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+}
+
+fn run_cases_parallel(root: &Path, cases: &[TestCase], jobs: usize) -> Vec<TestOutcome> {
+    let next_index = AtomicUsize::new(0);
+    let results = Mutex::new(vec![None; cases.len()]);
+
+    thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| {
+                let runtime = build_case_runtime();
+                loop {
+                    let index = next_index.fetch_add(1, Ordering::Relaxed);
+                    if index >= cases.len() {
+                        break;
+                    }
+                    let outcome = run_case(&runtime, root, &cases[index]);
+                    results.lock().unwrap()[index] = Some(outcome);
+                }
+            });
+        }
+    });
+
+    results
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|outcome| outcome.expect("parallel case result should be populated"))
+        .collect()
 }
 
 fn discover_cases(root: &Path, selectors: &[PathBuf]) -> Result<Vec<TestCase>> {
@@ -778,16 +841,10 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
         .and_then(|negative| negative.error_type.as_deref());
 
     let temp_path = case_artifact_path(case);
-    if let Err(error) = fs::write(&temp_path, &transformed) {
-        return TestOutcome::Failed(format!(
-            "failed to materialize transformed case at {}: {}",
-            temp_path.display(),
-            error
-        ));
-    }
 
     let outcome = match negative_phase {
-        Some("parse") | Some("resolution") => match runtime.compile_program_file(&temp_path) {
+        Some("parse") | Some("resolution") => {
+            match runtime.compile_program_source_at_path(&transformed, &temp_path) {
             Ok(_) => TestOutcome::Failed("expected compilation to fail".to_string()),
             Err(error) => {
                 if matches_expected_error(&error.to_string(), expected_error) {
@@ -796,8 +853,9 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
                     TestOutcome::Failed(format!("unexpected compilation error: {}", error))
                 }
             }
-        },
-        Some("runtime") => match execute_case_program(runtime, &temp_path) {
+        }
+        }
+        Some("runtime") => match execute_case_program(runtime, &temp_path, &transformed) {
             Ok(()) => TestOutcome::Failed("expected runtime failure".to_string()),
             Err(error) => {
                 if matches_expected_error(&error, expected_error) {
@@ -807,16 +865,30 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
                 }
             }
         },
-        _ => match execute_case_program(runtime, &temp_path) {
+        _ => match execute_case_program(runtime, &temp_path, &transformed) {
             Ok(()) => TestOutcome::Passed,
             Err(error) => TestOutcome::Failed(error),
         },
     };
 
-    if matches!(outcome, TestOutcome::Passed) {
-        let _ = fs::remove_file(&temp_path);
+    match outcome {
+        TestOutcome::Failed(message) => {
+            if let Err(error) = fs::write(&temp_path, &transformed) {
+                TestOutcome::Failed(format!(
+                    "{}\n(additionally failed to materialize transformed case at {}: {})",
+                    message,
+                    temp_path.display(),
+                    error
+                ))
+            } else {
+                TestOutcome::Failed(message)
+            }
+        }
+        other => {
+            let _ = fs::remove_file(&temp_path);
+            other
+        }
     }
-    outcome
 }
 
 fn case_artifact_path(case: &TestCase) -> PathBuf {
@@ -889,20 +961,17 @@ fn matches_expected_error(actual: &str, expected: Option<&str>) -> bool {
     }
 }
 
-fn execute_case_program(runtime: &Runtime, path: &Path) -> std::result::Result<(), String> {
+fn execute_case_program(
+    runtime: &Runtime,
+    path: &Path,
+    source: &str,
+) -> std::result::Result<(), String> {
     let debug_case = std::env::var("RAYA_DEBUG_ES262_CASE").is_ok();
-    let source = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "failed to read transformed source {}: {}",
-            path.display(),
-            error
-        )
-    })?;
     if debug_case {
         eprintln!("[es262-case] compile:start path={}", path.display());
     }
     let program = runtime
-        .compile_program_source(&source)
+        .compile_program_source_at_path(source, path)
         .map_err(|error| format!("compilation failed: {}", error))?;
     if debug_case {
         eprintln!("[es262-case] compile:done path={}", path.display());

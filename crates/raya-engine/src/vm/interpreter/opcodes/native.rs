@@ -1285,6 +1285,24 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn replace_task_builtin_error(
+        &self,
+        task: &Arc<Task>,
+        class_name: &str,
+        message: impl Into<String>,
+    ) -> VmError {
+        let message = message.into();
+        let exception = self.alloc_builtin_error_value(class_name, &message);
+        task.set_exception(exception);
+        match class_name {
+            "TypeError" => VmError::TypeError(message),
+            "SyntaxError" => VmError::SyntaxError(message),
+            "RangeError" => VmError::RangeError(message),
+            "ReferenceError" => VmError::ReferenceError(message),
+            _ => VmError::RuntimeError(message),
+        }
+    }
+
     pub(in crate::vm::interpreter) fn ensure_task_exception_for_error(
         &self,
         task: &Arc<Task>,
@@ -8673,8 +8691,11 @@ impl<'a> Interpreter<'a> {
         if let Some(caller_snapshot_env) = direct_env {
             let active_env = self.current_activation_eval_env(task);
             let active_with_env = active_env.filter(|env| self.with_env_target(*env).is_some());
+            let active_persistent_env = task.current_activation_direct_eval_env();
             if let Some(active_env) = active_env {
                 if active_with_env.is_none()
+                    && active_persistent_env
+                        .is_none_or(|persistent_env| persistent_env.raw() != active_env.raw())
                     && caller_snapshot_env.raw() != active_env.raw()
                     && self.direct_eval_outer_env(caller_snapshot_env).is_none()
                 {
@@ -8698,7 +8719,9 @@ impl<'a> Interpreter<'a> {
                 if active_with_env.is_some() {
                     self.alloc_direct_eval_runtime_env(runtime_outer_env)?
                 } else if let Some(existing_env) = task.current_activation_direct_eval_env() {
-                    self.set_direct_eval_outer_env(existing_env, caller_snapshot_env)?;
+                    if existing_env.raw() != caller_snapshot_env.raw() {
+                        self.set_direct_eval_outer_env(existing_env, caller_snapshot_env)?;
+                    }
                     existing_env
                 } else {
                     // First-entry sloppy direct eval should operate on the caller snapshot
@@ -14341,6 +14364,31 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id
+                        == crate::compiler::native_id::OBJECT_ENSURE_ACTIVATION_EVAL_ENV =>
+                    {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "ensureActivationEvalEnv expects exactly one env object"
+                                    .to_string(),
+                            ));
+                        }
+                        let env = task
+                            .current_activation_direct_eval_env()
+                            .unwrap_or_else(|| {
+                                task.set_activation_direct_eval_env(
+                                    task.current_func_id(),
+                                    task.current_locals_base(),
+                                    args[0],
+                                );
+                                args[0]
+                            });
+                        if let Err(error) = stack.push(env) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_SET_AMBIENT_GLOBAL => {
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -14434,17 +14482,23 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let Some(home_object) = self.current_js_home_object(task) else {
-                            return OpcodeResult::Error(VmError::ReferenceError(
+                            return OpcodeResult::Error(self.replace_task_builtin_error(
+                                task,
+                                "ReferenceError",
                                 "`super` is not available in this context".to_string(),
                             ));
                         };
                         let Some(base) = self.prototype_of_value(home_object) else {
-                            return OpcodeResult::Error(VmError::TypeError(
+                            return OpcodeResult::Error(self.replace_task_builtin_error(
+                                task,
+                                "TypeError",
                                 "Cannot assign to property on null prototype".to_string(),
                             ));
                         };
                         if base.is_null() || base.is_undefined() {
-                            return OpcodeResult::Error(VmError::TypeError(
+                            return OpcodeResult::Error(self.replace_task_builtin_error(
+                                task,
+                                "TypeError",
                                 "Cannot assign to property on null prototype".to_string(),
                             ));
                         }
@@ -14458,10 +14512,11 @@ impl<'a> Interpreter<'a> {
                         if !written
                             && id == crate::compiler::native_id::OBJECT_SET_SUPER_PROPERTY_STRICT
                         {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot assign to non-writable property '{}'",
-                                key_str
-                            )));
+                            return OpcodeResult::Error(self.replace_task_builtin_error(
+                                task,
+                                "TypeError",
+                                format!("Cannot assign to non-writable property '{}'", key_str),
+                            ));
                         }
                         if let Err(error) = stack.push(args[2]) {
                             return OpcodeResult::Error(error);

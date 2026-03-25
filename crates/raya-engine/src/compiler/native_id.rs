@@ -140,12 +140,6 @@ pub const OBJECT_JS_UNARY_MINUS: u16 = 0x0041;
 pub const OBJECT_COPY_DATA_PROPERTIES: u16 = 0x0042;
 /// Raise a JS ReferenceError for an explicitly invalid binding access.
 pub const OBJECT_THROW_REFERENCE_ERROR: u16 = 0x0043;
-/// Raise a JS TypeError with a custom message.
-pub const OBJECT_THROW_TYPE_ERROR: u16 = 0x0051;
-/// Construct a JS ReferenceError object for an explicitly invalid binding access.
-pub const OBJECT_CREATE_REFERENCE_ERROR: u16 = 0x0052;
-/// Construct a JS TypeError object with a custom message.
-pub const OBJECT_CREATE_TYPE_ERROR: u16 = 0x0053;
 /// Create a live JS generator iterator object backed by a suspended task.
 pub const OBJECT_GENERATOR_NEW: u16 = 0x0044;
 /// Advance a live JS generator iterator.
@@ -182,6 +176,14 @@ pub const OBJECT_ITERATOR_CLOSE_ON_THROW: u16 = 0x0054;
 pub const OBJECT_ITERATOR_CLOSE_COMPLETION: u16 = 0x0055;
 /// Resolve a resumed generator payload, re-throwing internal return-completion signals.
 pub const OBJECT_HANDLE_GENERATOR_RESUME: u16 = 0x0056;
+/// Raise a JS TypeError with a custom message.
+pub const OBJECT_THROW_TYPE_ERROR: u16 = 0x0057;
+/// Construct a JS ReferenceError object for an explicitly invalid binding access.
+pub const OBJECT_CREATE_REFERENCE_ERROR: u16 = 0x0058;
+/// Construct a JS TypeError object with a custom message.
+pub const OBJECT_CREATE_TYPE_ERROR: u16 = 0x0059;
+/// Ensure the current activation has a persistent direct-eval environment.
+pub const OBJECT_ENSURE_ACTIVATION_EVAL_ENV: u16 = 0x005A;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -707,6 +709,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_EVAL_SET_COMPLETION => "Object.evalSetCompletion",
         OBJECT_EVAL_GET_COMPLETION => "Object.evalGetCompletion",
         OBJECT_EVAL_ENV_DECLARE_LEXICAL => "Object.evalEnvDeclareLexical",
+        OBJECT_ENSURE_ACTIVATION_EVAL_ENV => "Object.ensureActivationEvalEnv",
         OBJECT_DELETE_PROPERTY_STRICT => "Object.deletePropertyStrict",
         OBJECT_DEFINE_CLASS_PROPERTY => "Object.defineClassElement",
         OBJECT_GET_OWN_PROPERTY_SYMBOLS => "Object.getOwnPropertySymbols",

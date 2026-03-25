@@ -886,6 +886,19 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    pub(super) fn emit_ensure_activation_direct_eval_env(
+        &mut self,
+        env_object: Register,
+    ) -> Register {
+        let dest = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_ENSURE_ACTIVATION_EVAL_ENV,
+            args: vec![env_object],
+        });
+        dest
+    }
+
     pub(super) fn emit_direct_eval_binding_set(&mut self, name: &str, value: Register) {
         let name_reg = self.emit_direct_eval_name_reg(name);
         self.emit(IrInstr::NativeCall {
@@ -1185,7 +1198,7 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    fn lower_direct_eval_environment_object(&mut self) -> Register {
+    pub(super) fn lower_direct_eval_environment_object(&mut self) -> Register {
         let env_object = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::NativeCall {
             dest: Some(env_object.clone()),
@@ -1238,6 +1251,72 @@ impl<'a> Lowerer<'a> {
                     env_object.clone(),
                     format!("{DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX}{name}"),
                 );
+            }
+        }
+
+        if self.direct_eval_exposes_arguments() {
+            let key_reg = self.emit_direct_eval_name_reg("arguments");
+            let value = self.lower_js_arguments_object();
+            self.emit(IrInstr::NativeCall {
+                dest: None,
+                native_id: crate::compiler::native_id::REFLECT_SET,
+                args: vec![env_object.clone(), key_reg, value],
+            });
+        }
+
+        env_object
+    }
+
+    pub(super) fn lower_activation_direct_eval_environment_object(&mut self) -> Register {
+        let env_object = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(env_object.clone()),
+            native_id: crate::compiler::native_id::OBJECT_NEW,
+            args: vec![],
+        });
+
+        let mut locals: Vec<_> = self.local_map.keys().copied().collect();
+        locals.sort_by_key(|symbol| self.interner.resolve(*symbol).to_string());
+
+        for symbol in locals {
+            let name = self.interner.resolve(symbol).to_string();
+            let is_parameter_binding =
+                self.parameter_symbols.contains(&symbol) && self.local_map.contains_key(&symbol);
+            let is_uninitialized_parameter =
+                is_parameter_binding && self.parameter_tdz_symbols.contains(&symbol);
+            let value = if name == "arguments" {
+                self.lower_js_arguments_object()
+            } else if is_uninitialized_parameter {
+                let undefined = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: IrValue::Constant(IrConstant::Undefined),
+                });
+                undefined
+            } else {
+                let ident = ast::Identifier {
+                    name: symbol,
+                    span: crate::parser::token::Span::default(),
+                };
+                self.lower_identifier(&ident)
+            };
+            let key_reg = self.emit_direct_eval_name_reg(&name);
+            self.emit(IrInstr::NativeCall {
+                dest: None,
+                native_id: crate::compiler::native_id::REFLECT_SET,
+                args: vec![env_object.clone(), key_reg, value],
+            });
+            if self.direct_eval_binding_is_lexical(symbol) {
+                self.emit_direct_eval_hidden_flag_set(
+                    env_object.clone(),
+                    format!("{DIRECT_EVAL_LEXICAL_MARKER_PREFIX}{name}"),
+                );
+                if is_uninitialized_parameter {
+                    self.emit_direct_eval_hidden_flag_set(
+                        env_object.clone(),
+                        format!("{DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX}{name}"),
+                    );
+                }
             }
         }
 
@@ -1914,6 +1993,26 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
+        if self.parameter_scope_eval_mode {
+            if name == "arguments" {
+                return self.lower_parameter_scope_eval_arguments();
+            }
+            return self.emit_direct_eval_binding_get(name, false);
+        }
+
+        if self.body_scope_eval_mode && !self.function_map.contains_key(&ident.name) {
+            let saved_body_scope_eval_mode = self.body_scope_eval_mode;
+            let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
+            return self.lower_eval_shadowable_identifier(name, |this| {
+                this.body_scope_eval_mode = false;
+                this.body_scope_eval_arguments_mode = false;
+                let value = this.lower_identifier(ident);
+                this.body_scope_eval_mode = saved_body_scope_eval_mode;
+                this.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
+                value
+            });
+        }
+
         // Check if we've already captured this variable
         if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name) {
             let capture_ty = self.captures[idx].ty;
@@ -2157,13 +2256,6 @@ impl<'a> Lowerer<'a> {
             && !self.function_map.contains_key(&ident.name)
         {
             return self.lower_parameter_scope_eval_arguments();
-        }
-
-        if self.parameter_scope_eval_mode {
-            if name == "arguments" {
-                return self.lower_parameter_scope_eval_arguments();
-            }
-            return self.emit_direct_eval_binding_get(name, false);
         }
 
         // Ambient builtin globals (seeded by declaration surfaces) are resolved at runtime
@@ -2915,18 +3007,8 @@ impl<'a> Lowerer<'a> {
         // Handle super() constructor call
         if let Expression::Super(_) = &*call.callee {
             if let Some(current_nominal_type_id) = self.current_class {
-                let parent_info = self
-                    .class_info_map
-                    .get(&current_nominal_type_id)
-                    .map(|info| (info.parent_class, info.parent_constructor_symbol));
-                let parent_constructor = parent_info.and_then(|(parent_class, parent_symbol)| {
-                    parent_class
-                        .map(|parent_id| self.load_class_value_for_nominal_type(parent_id))
-                        .or_else(|| {
-                            parent_symbol
-                                .map(|symbol| self.lower_runtime_constructor_symbol(symbol))
-                        })
-                });
+                let parent_constructor =
+                    self.lower_parent_constructor_for_class(current_nominal_type_id);
                 if let Some(parent_constructor) = parent_constructor {
                     let this_reg = self.lower_this();
                     let new_target =
@@ -3047,7 +3129,10 @@ impl<'a> Lowerer<'a> {
                     });
                     empty
                 });
-                let env_object = self.lower_direct_eval_environment_object();
+                let mut env_object = self.lower_direct_eval_environment_object();
+                if self.parameter_scope_eval_mode || self.body_scope_eval_mode {
+                    env_object = self.emit_ensure_activation_direct_eval_env(env_object);
+                }
                 let has_parameter_named_arguments =
                     self.direct_eval_has_parameter_binding("arguments");
                 let eval_context_reg = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
@@ -9941,6 +10026,7 @@ impl<'a> Lowerer<'a> {
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
+        let saved_body_scope_eval_mode = self.body_scope_eval_mode;
 
         let mut new_ancestor_vars = rustc_hash::FxHashMap::default();
         for (sym, &local_idx) in &saved_local_map {
@@ -10157,11 +10243,17 @@ impl<'a> Lowerer<'a> {
             .as_deref()
             .is_some_and(|target| target == function_name);
         self.body_scope_eval_arguments_mode = false;
+        self.body_scope_eval_mode = saved_body_scope_eval_mode || use_js_parameter_env;
 
         let entry_block = self.alloc_block();
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
+
+        if use_js_parameter_env {
+            let env_object = self.lower_activation_direct_eval_environment_object();
+            let _ = self.emit_ensure_activation_direct_eval_env(env_object);
+        }
 
         if use_js_parameter_env {
             self.emit_js_parameter_initialization(&func.params, &raw_param_slots);
@@ -10275,6 +10367,7 @@ impl<'a> Lowerer<'a> {
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
+        self.body_scope_eval_mode = saved_body_scope_eval_mode;
         self.closure_locals = saved_closure_locals;
         self.function_depth = saved_function_depth;
 
@@ -10492,6 +10585,7 @@ impl<'a> Lowerer<'a> {
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
+        let saved_body_scope_eval_mode = self.body_scope_eval_mode;
         // closure_locals maps local-slot indices to async func IDs; it is
         // per-scope, so it must be cleared on entry and restored on exit to
         // prevent stale entries from an outer (or sibling) function bleeding
@@ -10757,12 +10851,18 @@ impl<'a> Lowerer<'a> {
         let saved_js_strict_context = self.js_strict_context;
         self.js_strict_context = is_strict_js;
         self.body_scope_eval_arguments_mode = true;
+        self.body_scope_eval_mode = saved_body_scope_eval_mode || use_js_parameter_env;
 
         // Create entry block
         let entry_block = self.alloc_block();
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
+
+        if use_js_parameter_env {
+            let env_object = self.lower_activation_direct_eval_environment_object();
+            let _ = self.emit_ensure_activation_direct_eval_env(env_object);
+        }
 
         if use_js_parameter_env {
             self.emit_js_parameter_initialization(&arrow.params, &raw_param_slots);
@@ -10883,6 +10983,7 @@ impl<'a> Lowerer<'a> {
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
+        self.body_scope_eval_mode = saved_body_scope_eval_mode;
         self.closure_locals = saved_closure_locals;
         self.function_depth = saved_function_depth;
 
