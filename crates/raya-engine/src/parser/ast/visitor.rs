@@ -482,6 +482,11 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
         Expression::Arrow(arrow) => visitor.visit_arrow_function(arrow),
         Expression::Function(func) => visitor.visit_function_expression(func),
         Expression::Await(await_expr) => visitor.visit_expression(&await_expr.argument),
+        Expression::Yield(yield_expr) => {
+            if let Some(value) = &yield_expr.value {
+                visitor.visit_expression(value);
+            }
+        }
         Expression::Typeof(typeof_expr) => visitor.visit_expression(&typeof_expr.argument),
         Expression::Parenthesized(paren) => visitor.visit_expression(&paren.expression),
         Expression::JsxElement(elem) => visitor.visit_jsx_element(elem),

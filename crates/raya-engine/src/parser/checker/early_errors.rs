@@ -508,6 +508,10 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::Await(await_expr) => {
                 self.find_identifier_reference_named(&await_expr.argument, target)
             }
+            Expression::Yield(yield_expr) => yield_expr
+                .value
+                .as_deref()
+                .and_then(|value| self.find_identifier_reference_named(value, target)),
             Expression::Typeof(typeof_expr) => {
                 self.find_identifier_reference_named(&typeof_expr.argument, target)
             }
@@ -1402,6 +1406,17 @@ impl<'a> EarlyErrorPass<'a> {
         }
     }
 
+    fn check_yield_expression(&mut self, yld: &YieldExpression) {
+        if self.mode != TypeSystemMode::Raya
+            && !self.current_function().is_some_and(|ctx| ctx.is_generator)
+        {
+            self.error("Yield expression outside of generator function", yld.span);
+        }
+        if let Some(value) = &yld.value {
+            self.check_expr(value);
+        }
+    }
+
     fn check_assignment_target(&mut self, expr: &Expression) {
         if !Self::is_valid_assignment_target(expr, false) {
             self.error("Invalid assignment target", *expr.span());
@@ -1601,8 +1616,20 @@ impl<'a> EarlyErrorPass<'a> {
 
     fn check_expr_with_super_policy(&mut self, expr: &Expression, allow_super_operand: bool) {
         match expr {
-            Expression::Identifier(_)
-            | Expression::IntLiteral(_)
+            Expression::Identifier(ident) => {
+                let name = self.interner.resolve(ident.name);
+                if name == "yield"
+                    && self.mode != TypeSystemMode::Raya
+                    && (self.current_strict()
+                        || self.current_function().is_some_and(|ctx| ctx.is_generator))
+                {
+                    self.error(
+                        "Identifier 'yield' is not allowed in this context",
+                        ident.span,
+                    );
+                }
+            }
+            Expression::IntLiteral(_)
             | Expression::FloatLiteral(_)
             | Expression::StringLiteral(_)
             | Expression::BooleanLiteral(_)
@@ -1757,6 +1784,7 @@ impl<'a> EarlyErrorPass<'a> {
                 }
                 self.check_expr(&await_expr.argument);
             }
+            Expression::Yield(yield_expr) => self.check_yield_expression(yield_expr),
             Expression::Typeof(typeof_expr) => self.check_expr(&typeof_expr.argument),
             Expression::Parenthesized(paren) => self.check_expr(&paren.expression),
             Expression::JsxElement(elem) => {

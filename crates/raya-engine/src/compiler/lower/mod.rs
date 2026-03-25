@@ -83,6 +83,16 @@ impl Visitor for GeneratorRequirementCollector {
         walk_statement(self, stmt);
     }
 
+    fn visit_expression(&mut self, expr: &Expression) {
+        if let Expression::Yield(yield_expr) = expr {
+            if yield_expr.is_delegate {
+                self.requires_snapshot = true;
+                return;
+            }
+        }
+        walk_expression(self, expr);
+    }
+
     fn visit_function_decl(&mut self, _decl: &ast::FunctionDecl) {}
     fn visit_function_expression(&mut self, _func: &ast::FunctionExpression) {}
     fn visit_arrow_function(&mut self, _func: &ast::ArrowFunction) {}

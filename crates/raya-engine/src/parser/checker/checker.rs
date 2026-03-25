@@ -3043,6 +3043,12 @@ impl<'a> TypeChecker<'a> {
             Expression::This(span) => self.check_this(*span),
             Expression::NewTarget(_) => self.type_ctx.unknown_type(),
             Expression::Await(await_expr) => self.check_await(await_expr),
+            Expression::Yield(yield_expr) => {
+                if let Some(value) = &yield_expr.value {
+                    let _ = self.check_expr(value);
+                }
+                self.type_ctx.unknown_type()
+            }
             Expression::AsyncCall(async_call) => self.check_async_call(async_call),
             Expression::InstanceOf(instanceof) => self.check_instanceof(instanceof),
             Expression::In(in_expr) => {

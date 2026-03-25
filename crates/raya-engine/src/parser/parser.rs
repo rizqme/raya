@@ -45,6 +45,12 @@ pub struct Parser {
     /// Nesting counter for contexts that must not consume `in` as a binary operator.
     disallow_in: usize,
 
+    /// Active function/generator yield parsing contexts.
+    ///
+    /// Ordinary functions reset `yield` back to identifier semantics in sloppy JS,
+    /// while generator functions enable `yield` expression parsing within their code.
+    yield_context_stack: Vec<bool>,
+
     /// Parsing compatibility mode.
     mode: TypeSystemMode,
 }
@@ -55,6 +61,7 @@ pub struct ParserCheckpoint {
     pos: usize,
     depth: usize,
     disallow_in: usize,
+    yield_context_depth: usize,
 }
 
 impl Parser {
@@ -94,6 +101,7 @@ impl Parser {
             errors: Vec::new(),
             depth: 0,
             disallow_in: 0,
+            yield_context_stack: Vec::new(),
             mode,
         })
     }
@@ -134,6 +142,7 @@ impl Parser {
             errors: Vec::new(),
             depth: 0,
             disallow_in: 0,
+            yield_context_stack: Vec::new(),
             mode,
         }
     }
@@ -297,6 +306,7 @@ impl Parser {
             pos: self.pos,
             depth: self.depth,
             disallow_in: self.disallow_in,
+            yield_context_depth: self.yield_context_stack.len(),
         }
     }
 
@@ -306,6 +316,24 @@ impl Parser {
         self.pos = checkpoint.pos;
         self.depth = checkpoint.depth;
         self.disallow_in = checkpoint.disallow_in;
+        self.yield_context_stack
+            .truncate(checkpoint.yield_context_depth);
+    }
+
+    #[inline]
+    pub(crate) fn yield_expression_allowed(&self) -> bool {
+        self.yield_context_stack.last().copied().unwrap_or(false)
+    }
+
+    pub(crate) fn with_yield_context<T>(
+        &mut self,
+        allow_yield_expression: bool,
+        f: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        self.yield_context_stack.push(allow_yield_expression);
+        let result = f(self);
+        self.yield_context_stack.pop();
+        result
     }
 
     /// Check if the current token matches the given kind.

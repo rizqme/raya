@@ -1134,6 +1134,7 @@ impl<'a> Lowerer<'a> {
             Expression::Typeof(typeof_expr) => self.lower_typeof(typeof_expr),
             Expression::New(new_expr) => self.lower_new(new_expr),
             Expression::Await(await_expr) => self.lower_await(await_expr, expr),
+            Expression::Yield(yield_expr) => self.lower_yield_expression(yield_expr),
             Expression::Logical(logical) => self.lower_logical(logical),
             Expression::TemplateLiteral(template) => self.lower_template_literal(template),
             Expression::This(_) => self.lower_this(),
@@ -1154,6 +1155,53 @@ impl<'a> Lowerer<'a> {
             Expression::JsxElement(jsx) => self.lower_jsx_element(jsx),
             Expression::JsxFragment(jsx) => self.lower_jsx_fragment(jsx),
         }
+    }
+
+    fn lower_yield_expression(&mut self, yield_expr: &ast::YieldExpression) -> Register {
+        if self.generator_yield_array_local.is_some() {
+            let Some(yield_array) = self.load_generator_yield_array() else {
+                return self.lower_undefined_literal();
+            };
+
+            if yield_expr.is_delegate {
+                if let Some(value) = &yield_expr.value {
+                    let iterable = self.lower_expr(value);
+                    self.emit_iterator_append_to_array_helper(yield_array, iterable);
+                }
+            } else {
+                let yielded = if let Some(value) = &yield_expr.value {
+                    self.lower_expr(value)
+                } else {
+                    self.lower_undefined_literal()
+                };
+                self.emit(IrInstr::ArrayPush {
+                    array: yield_array,
+                    element: yielded,
+                });
+            }
+
+            // Snapshot-mode generators cannot resume with a sent value, so the
+            // expression result collapses to `undefined` along the same eager path.
+            return self.lower_undefined_literal();
+        }
+
+        let yielded = if let Some(value) = &yield_expr.value {
+            self.lower_expr(value)
+        } else {
+            self.lower_undefined_literal()
+        };
+        self.emit(IrInstr::GeneratorYield { value: yielded });
+
+        let temp_local = self.next_local;
+        self.next_local += 1;
+        self.emit(IrInstr::PopToLocal { index: temp_local });
+
+        let resumed = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: temp_local,
+            dest: resumed.clone(),
+        });
+        resumed
     }
 
     pub(super) fn lower_int_literal(&mut self, lit: &ast::IntLiteral) -> Register {

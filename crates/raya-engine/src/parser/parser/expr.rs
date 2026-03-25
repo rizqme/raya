@@ -190,6 +190,9 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
     match parser.current() {
         Token::Class => parse_class_expression(parser),
+        Token::Yield if parser.is_js_mode() && parser.yield_expression_allowed() => {
+            parse_yield_expression(parser)
+        }
         // Unary operators
         Token::Bang | Token::Minus | Token::Plus | Token::Tilde => {
             let op_token = parser.advance();
@@ -587,6 +590,46 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
         // Primary expressions
         _ => parse_primary(parser),
     }
+}
+
+fn parse_yield_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
+    let start_span = parser.current_span();
+    parser.expect(Token::Yield)?;
+
+    let is_delegate = if !parser.has_line_terminator_before_current() && parser.check(&Token::Star)
+    {
+        parser.advance();
+        true
+    } else {
+        false
+    };
+
+    let value = if parser.can_insert_semicolon_before_current()
+        || parser.has_line_terminator_before_current()
+        || matches!(
+            parser.current(),
+            Token::RightBracket
+                | Token::RightParen
+                | Token::RightBrace
+                | Token::Comma
+                | Token::Colon
+        ) {
+        None
+    } else {
+        Some(Box::new(parse_expression(parser)?))
+    };
+
+    let span = if let Some(ref value) = value {
+        parser.combine_spans(&start_span, value.span())
+    } else {
+        start_span
+    };
+
+    Ok(Expression::Yield(YieldExpression {
+        value,
+        is_delegate,
+        span,
+    }))
 }
 
 fn parse_class_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
@@ -1717,26 +1760,30 @@ fn parse_object_method(
     is_async: bool,
     is_generator: bool,
 ) -> Result<ObjectProperty, ParseError> {
-    let type_params = if parser.check(&Token::Less) {
-        parser.advance();
-        Some(super::stmt::parse_type_parameters(parser)?)
-    } else {
-        None
-    };
+    let (type_params, params, return_type, body) =
+        parser.with_yield_context(is_generator, |parser| {
+            let type_params = if parser.check(&Token::Less) {
+                parser.advance();
+                Some(super::stmt::parse_type_parameters(parser)?)
+            } else {
+                None
+            };
 
-    parser.expect(Token::LeftParen)?;
-    let params = super::stmt::parse_function_parameters(parser)?;
-    parser.expect(Token::RightParen)?;
+            parser.expect(Token::LeftParen)?;
+            let params = super::stmt::parse_function_parameters(parser)?;
+            parser.expect(Token::RightParen)?;
 
-    let return_type = if parser.check(&Token::Colon) {
-        parser.advance();
-        Some(super::types::parse_type_annotation(parser)?)
-    } else {
-        None
-    };
+            let return_type = if parser.check(&Token::Colon) {
+                parser.advance();
+                Some(super::types::parse_type_annotation(parser)?)
+            } else {
+                None
+            };
 
-    parser.expect(Token::LeftBrace)?;
-    let body = super::stmt::parse_block_statement(parser)?;
+            parser.expect(Token::LeftBrace)?;
+            let body = super::stmt::parse_block_statement(parser)?;
+            Ok((type_params, params, return_type, body))
+        })?;
     let span = parser.combine_spans(&start_span, &body.span);
     let value = Expression::Function(FunctionExpression {
         name: None,
@@ -1754,6 +1801,7 @@ fn parse_object_method(
         key,
         value,
         kind,
+        shorthand: false,
         span,
     }))
 }
@@ -1850,6 +1898,39 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
             key,
             value,
             kind: PropertyKind::Init,
+            shorthand: true,
+            span,
+        }));
+    }
+
+    if parser.check(&Token::Equal) {
+        let PropertyKey::Identifier(ident) = &key else {
+            return Err(ParseError {
+                kind: ParseErrorKind::InvalidSyntax {
+                    reason: "Assignment property initializers require identifier keys".to_string(),
+                },
+                span: parser.current_span(),
+                message: "Invalid assignment property initializer".to_string(),
+                suggestion: None,
+            });
+        };
+
+        parser.advance();
+        let default_value = parse_assignment_expression(parser)?;
+        let value_span = parser.combine_spans(&ident.span, default_value.span());
+        let value = Expression::Assignment(AssignmentExpression {
+            left: Box::new(Expression::Identifier(ident.clone())),
+            operator: AssignmentOperator::Assign,
+            right: Box::new(default_value),
+            span: value_span,
+        });
+
+        let span = parser.combine_spans(&start_span, value.span());
+        return Ok(ObjectProperty::Property(Property {
+            key,
+            value,
+            kind: PropertyKind::Init,
+            shorthand: true,
             span,
         }));
     }
@@ -1862,6 +1943,7 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
         key,
         value,
         kind: PropertyKind::Init,
+        shorthand: false,
         span,
     }))
 }
@@ -2013,26 +2095,30 @@ fn parse_function_expression(
         None
     };
 
-    let type_params = if parser.check(&Token::Less) {
-        parser.advance();
-        Some(super::stmt::parse_type_parameters(parser)?)
-    } else {
-        None
-    };
+    let (type_params, params, return_type, body) =
+        parser.with_yield_context(is_generator, |parser| {
+            let type_params = if parser.check(&Token::Less) {
+                parser.advance();
+                Some(super::stmt::parse_type_parameters(parser)?)
+            } else {
+                None
+            };
 
-    parser.expect(Token::LeftParen)?;
-    let params = super::stmt::parse_function_parameters(parser)?;
-    parser.expect(Token::RightParen)?;
+            parser.expect(Token::LeftParen)?;
+            let params = super::stmt::parse_function_parameters(parser)?;
+            parser.expect(Token::RightParen)?;
 
-    let return_type = if parser.check(&Token::Colon) {
-        parser.advance();
-        Some(super::types::parse_type_annotation(parser)?)
-    } else {
-        None
-    };
+            let return_type = if parser.check(&Token::Colon) {
+                parser.advance();
+                Some(super::types::parse_type_annotation(parser)?)
+            } else {
+                None
+            };
 
-    parser.expect(Token::LeftBrace)?;
-    let body = super::stmt::parse_block_statement(parser)?;
+            parser.expect(Token::LeftBrace)?;
+            let body = super::stmt::parse_block_statement(parser)?;
+            Ok((type_params, params, return_type, body))
+        })?;
     let span = parser.combine_spans(&start_span, &body.span);
 
     Ok(Expression::Function(FunctionExpression {

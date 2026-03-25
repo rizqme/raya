@@ -290,30 +290,30 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
     // Parse function name
     let name = parser.expect_identifier_like()?;
 
-    // Optional type parameters
-    let type_params = if parser.check(&Token::Less) {
-        parser.advance();
-        Some(parse_type_parameters(parser)?)
-    } else {
-        None
-    };
+    let (type_params, params, return_type, body) =
+        parser.with_yield_context(is_generator, |parser| {
+            let type_params = if parser.check(&Token::Less) {
+                parser.advance();
+                Some(parse_type_parameters(parser)?)
+            } else {
+                None
+            };
 
-    // Parse parameters
-    parser.expect(Token::LeftParen)?;
-    let params = parse_function_parameters(parser)?;
-    parser.expect(Token::RightParen)?;
+            parser.expect(Token::LeftParen)?;
+            let params = parse_function_parameters(parser)?;
+            parser.expect(Token::RightParen)?;
 
-    // Optional return type
-    let return_type = if parser.check(&Token::Colon) {
-        parser.advance();
-        Some(super::types::parse_type_annotation(parser)?)
-    } else {
-        None
-    };
+            let return_type = if parser.check(&Token::Colon) {
+                parser.advance();
+                Some(super::types::parse_type_annotation(parser)?)
+            } else {
+                None
+            };
 
-    // Parse body
-    parser.expect(Token::LeftBrace)?;
-    let body = parse_block_statement(parser)?;
+            parser.expect(Token::LeftBrace)?;
+            let body = parse_block_statement(parser)?;
+            Ok((type_params, params, return_type, body))
+        })?;
 
     let span = parser.combine_spans(&start_span, &body.span);
 
@@ -1678,34 +1678,38 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     // Check if this is a method (has type params or parens) or a field
     if parser.check(&Token::Less) || parser.check(&Token::LeftParen) {
         // Method
-        let type_params = if parser.check(&Token::Less) {
-            parser.advance();
-            Some(parse_type_parameters(parser)?)
-        } else {
-            None
-        };
+        let (type_params, params, return_type, body) =
+            parser.with_yield_context(is_generator, |parser| {
+                let type_params = if parser.check(&Token::Less) {
+                    parser.advance();
+                    Some(parse_type_parameters(parser)?)
+                } else {
+                    None
+                };
 
-        parser.expect(Token::LeftParen)?;
-        let params = parse_function_parameters(parser)?;
-        parser.expect(Token::RightParen)?;
+                parser.expect(Token::LeftParen)?;
+                let params = parse_function_parameters(parser)?;
+                parser.expect(Token::RightParen)?;
 
-        let return_type = if parser.check(&Token::Colon) {
-            parser.advance();
-            Some(super::types::parse_type_annotation(parser)?)
-        } else {
-            None
-        };
+                let return_type = if parser.check(&Token::Colon) {
+                    parser.advance();
+                    Some(super::types::parse_type_annotation(parser)?)
+                } else {
+                    None
+                };
 
-        // Abstract methods have no body
-        let body = if is_abstract {
-            if parser.check(&Token::Semicolon) {
-                parser.advance();
-            }
-            None
-        } else {
-            parser.expect(Token::LeftBrace)?;
-            Some(parse_block_statement(parser)?)
-        };
+                let body = if is_abstract {
+                    if parser.check(&Token::Semicolon) {
+                        parser.advance();
+                    }
+                    None
+                } else {
+                    parser.expect(Token::LeftBrace)?;
+                    Some(parse_block_statement(parser)?)
+                };
+
+                Ok((type_params, params, return_type, body))
+            })?;
 
         let end_span = if let Some(ref b) = body {
             b.span
@@ -1783,12 +1787,15 @@ fn parse_constructor(
     start_span: Span,
     visibility: Visibility,
 ) -> Result<ClassMember, ParseError> {
-    parser.expect(Token::LeftParen)?;
-    let params = parse_function_parameters(parser)?;
-    parser.expect(Token::RightParen)?;
+    let (params, body) = parser.with_yield_context(false, |parser| {
+        parser.expect(Token::LeftParen)?;
+        let params = parse_function_parameters(parser)?;
+        parser.expect(Token::RightParen)?;
 
-    parser.expect(Token::LeftBrace)?;
-    let body = parse_block_statement(parser)?;
+        parser.expect(Token::LeftBrace)?;
+        let body = parse_block_statement(parser)?;
+        Ok((params, body))
+    })?;
 
     let span = parser.combine_spans(&start_span, &body.span);
 

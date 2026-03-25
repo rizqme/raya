@@ -2543,6 +2543,10 @@ impl<'a> Binder<'a> {
             Expression::Await(await_expr) => {
                 self.expression_uses_linker_dep_binding(&await_expr.argument)
             }
+            Expression::Yield(yield_expr) => yield_expr
+                .value
+                .as_deref()
+                .is_some_and(|value| self.expression_uses_linker_dep_binding(value)),
             Expression::Typeof(typeof_expr) => {
                 self.expression_uses_linker_dep_binding(&typeof_expr.argument)
             }

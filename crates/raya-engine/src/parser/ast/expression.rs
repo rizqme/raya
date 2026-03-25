@@ -79,6 +79,9 @@ pub enum Expression {
     /// Await expression: await promise
     Await(AwaitExpression),
 
+    /// Yield expression: yield value, yield* iterable
+    Yield(YieldExpression),
+
     /// Typeof expression: typeof value
     Typeof(TypeofExpression),
 
@@ -145,6 +148,7 @@ impl Expression {
             Expression::Arrow(e) => &e.span,
             Expression::Function(e) => &e.span,
             Expression::Await(e) => &e.span,
+            Expression::Yield(e) => &e.span,
             Expression::Typeof(e) => &e.span,
             Expression::Parenthesized(e) => &e.span,
             Expression::JsxElement(e) => &e.span,
@@ -235,6 +239,14 @@ pub struct BooleanLiteral {
     pub span: Span,
 }
 
+/// Yield expression: yield value, yield* iterable
+#[derive(Debug, Clone, PartialEq)]
+pub struct YieldExpression {
+    pub value: Option<Box<Expression>>,
+    pub is_delegate: bool,
+    pub span: Span,
+}
+
 // ============================================================================
 // Array and Object Expressions
 // ============================================================================
@@ -273,6 +285,7 @@ pub struct Property {
     pub key: PropertyKey,
     pub value: Expression,
     pub kind: PropertyKind,
+    pub shorthand: bool,
     pub span: Span,
 }
 
