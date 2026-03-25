@@ -665,6 +665,10 @@ pub struct Lowerer<'a> {
     /// These are visible to top-level helper functions and direct eval, but are
     /// not published onto the script global object.
     js_script_lexical_globals: FxHashMap<Symbol, u16>,
+    /// Initialization flags for top-level JS lexical/class bindings.
+    /// The value slot may legitimately hold `null`, so runtime TDZ checks for
+    /// nested functions must use a dedicated side slot instead of the value slot.
+    js_script_lexical_init_globals: FxHashMap<Symbol, u16>,
     /// Subset of top-level JS lexical bindings declared with `const`.
     js_script_const_globals: FxHashSet<Symbol>,
     /// Import-local binding symbols, used for import-specific lowering diagnostics.
@@ -1465,6 +1469,7 @@ impl<'a> Lowerer<'a> {
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
             js_script_lexical_globals: FxHashMap::default(),
+            js_script_lexical_init_globals: FxHashMap::default(),
             js_script_const_globals: FxHashSet::default(),
             import_bindings: FxHashSet::default(),
             ambient_builtin_globals: FxHashSet::default(),
@@ -2192,11 +2197,25 @@ impl<'a> Lowerer<'a> {
                                     self.next_global_index += 1;
                                     global_index
                                 });
+                            self.js_script_lexical_init_globals
+                                .entry(ident.name)
+                                .or_insert_with(|| {
+                                    let global_index = self.next_global_index;
+                                    self.next_global_index += 1;
+                                    global_index
+                                });
                         }
                     }
                     Statement::ClassDecl(class) => {
                         self.js_top_level_class_globals.insert(class.name.name);
                         self.js_script_lexical_globals
+                            .entry(class.name.name)
+                            .or_insert_with(|| {
+                                let global_index = self.next_global_index;
+                                self.next_global_index += 1;
+                                global_index
+                            });
+                        self.js_script_lexical_init_globals
                             .entry(class.name.name)
                             .or_insert_with(|| {
                                 let global_index = self.next_global_index;
@@ -6071,6 +6090,17 @@ impl<'a> Lowerer<'a> {
                 .copied()
                 .or_else(|| self.module_var_globals.get(&name).copied())
         }
+    }
+
+    fn mark_js_script_lexical_initialized(&mut self, name: Symbol) {
+        let Some(&global_idx) = self.js_script_lexical_init_globals.get(&name) else {
+            return;
+        };
+        let initialized = self.emit_bool_const(true);
+        self.emit(IrInstr::StoreGlobal {
+            index: global_idx,
+            value: initialized,
+        });
     }
 
     /// Get the current function mutably

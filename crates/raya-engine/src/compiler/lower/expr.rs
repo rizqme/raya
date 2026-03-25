@@ -389,9 +389,16 @@ impl<'a> Lowerer<'a> {
         });
         self.emit(IrInstr::NativeCall {
             dest: Some(dest.clone()),
-            native_id: crate::compiler::native_id::OBJECT_THROW_REFERENCE_ERROR,
+            native_id: crate::compiler::native_id::OBJECT_CREATE_REFERENCE_ERROR,
             args: vec![name_reg],
         });
+        self.set_terminator(Terminator::Throw(dest.clone()));
+        let continuation_block = self.alloc_block();
+        self.current_function_mut().add_block(BasicBlock::with_label(
+            continuation_block,
+            "throw.reference.unreachable",
+        ));
+        self.current_block = continuation_block;
         dest
     }
 
@@ -404,9 +411,16 @@ impl<'a> Lowerer<'a> {
         });
         self.emit(IrInstr::NativeCall {
             dest: Some(dest.clone()),
-            native_id: crate::compiler::native_id::OBJECT_THROW_TYPE_ERROR,
+            native_id: crate::compiler::native_id::OBJECT_CREATE_TYPE_ERROR,
             args: vec![message_reg],
         });
+        self.set_terminator(Terminator::Throw(dest.clone()));
+        let continuation_block = self.alloc_block();
+        self.current_function_mut().add_block(BasicBlock::with_label(
+            continuation_block,
+            "throw.type.unreachable",
+        ));
+        self.current_block = continuation_block;
         dest
     }
 
@@ -415,12 +429,63 @@ impl<'a> Lowerer<'a> {
         ident: &ast::Identifier,
         global_idx: u16,
     ) -> Register {
+        let name = self.interner.resolve(ident.name).to_string();
+        if self.function_depth == 0 && !self.visible_js_lexical_symbols.contains(&ident.name) {
+            return self.emit_parameter_tdz_reference_error(&name);
+        }
+
         let slot_ty = self
             .global_type_map
             .get(&global_idx)
             .copied()
             .unwrap_or(UNRESOLVED);
         let dest = self.alloc_register(self.effective_identifier_value_type(ident, slot_ty));
+
+        if self.function_depth > 0 {
+            if let Some(&init_idx) = self.js_script_lexical_init_globals.get(&ident.name) {
+                let init_state = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::LoadGlobal {
+                    dest: init_state.clone(),
+                    index: init_idx,
+                });
+                let tdz_block = self.alloc_block();
+                let load_block = self.alloc_block();
+                let exit_block = self.alloc_block();
+                self.set_terminator(Terminator::BranchIfNull {
+                    value: init_state,
+                    null_block: tdz_block,
+                    not_null_block: load_block,
+                });
+
+                self.current_function_mut()
+                    .add_block(BasicBlock::with_label(tdz_block, "script.lexical.load.tdz"));
+                self.current_block = tdz_block;
+                let _ = self.emit_parameter_tdz_reference_error(&name);
+                self.set_terminator(Terminator::Jump(exit_block));
+
+                self.current_function_mut()
+                    .add_block(BasicBlock::with_label(load_block, "script.lexical.load.value"));
+                self.current_block = load_block;
+                self.emit(IrInstr::LoadGlobal {
+                    dest: dest.clone(),
+                    index: global_idx,
+                });
+                self.set_terminator(Terminator::Jump(exit_block));
+
+                self.current_function_mut()
+                    .add_block(BasicBlock::with_label(exit_block, "script.lexical.load.exit"));
+                self.current_block = exit_block;
+                self.propagate_variable_projection_to_register(ident.name, &dest);
+                if !self.identifier_requires_late_bound_dispatch(ident.name) {
+                    self.propagate_type_projection_to_register(
+                        self.effective_identifier_value_type(ident, slot_ty),
+                        &dest,
+                    );
+                }
+                return dest;
+            }
+        }
+
         self.emit(IrInstr::LoadGlobal {
             dest: dest.clone(),
             index: global_idx,
@@ -444,6 +509,7 @@ impl<'a> Lowerer<'a> {
             return false;
         };
         let name = self.interner.resolve(symbol).to_string();
+        let init_idx = self.js_script_lexical_init_globals.get(&symbol).copied();
 
         if self.function_depth == 0 && !self.visible_js_lexical_symbols.contains(&symbol) {
             let _ = self.emit_parameter_tdz_reference_error(&name);
@@ -464,11 +530,35 @@ impl<'a> Lowerer<'a> {
         }
 
         let current = self.alloc_register(UNRESOLVED);
-        self.emit(IrInstr::LoadGlobal {
-            dest: current.clone(),
-            index: global_idx,
+        if let Some(init_idx) = init_idx {
+            self.emit(IrInstr::LoadGlobal {
+                dest: current.clone(),
+                index: init_idx,
+            });
+        } else {
+            self.emit(IrInstr::LoadGlobal {
+                dest: current.clone(),
+                index: global_idx,
+            });
+        }
+        let tdz_block = self.alloc_block();
+        let store_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+        self.set_terminator(Terminator::BranchIfNull {
+            value: current,
+            null_block: tdz_block,
+            not_null_block: store_block,
         });
-        let _ = current;
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(tdz_block, "script.lexical.store.tdz"));
+        self.current_block = tdz_block;
+        let _ = self.emit_parameter_tdz_reference_error(&name);
+        self.set_terminator(Terminator::Jump(exit_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(store_block, "script.lexical.store.write"));
+        self.current_block = store_block;
         if self.js_script_const_globals.contains(&symbol) {
             let _ = self.emit_type_error_throw("Assignment to constant variable.");
         } else {
@@ -478,6 +568,11 @@ impl<'a> Lowerer<'a> {
                 value,
             });
         }
+        self.set_terminator(Terminator::Jump(exit_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(exit_block, "script.lexical.store.exit"));
+        self.current_block = exit_block;
         true
     }
 
@@ -590,6 +685,20 @@ impl<'a> Lowerer<'a> {
             native_id: crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_ON_THROW,
             args: vec![iterator],
         });
+    }
+
+    pub(super) fn emit_iterator_close_completion_helper(
+        &mut self,
+        iterator: Register,
+        completion: Register,
+    ) -> Register {
+        let dest = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_COMPLETION,
+            args: vec![iterator, completion],
+        });
+        dest
     }
 
     pub(super) fn emit_iterator_append_to_array_helper(
@@ -1307,10 +1416,16 @@ impl<'a> Lowerer<'a> {
         self.next_local += 1;
         self.emit(IrInstr::PopToLocal { index: temp_local });
 
-        let resumed = self.alloc_register(UNRESOLVED);
+        let resumed_payload = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::LoadLocal {
             index: temp_local,
-            dest: resumed.clone(),
+            dest: resumed_payload.clone(),
+        });
+        let resumed = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(resumed.clone()),
+            native_id: crate::compiler::native_id::OBJECT_HANDLE_GENERATOR_RESUME,
+            args: vec![resumed_payload],
         });
         resumed
     }
@@ -8161,13 +8276,13 @@ impl<'a> Lowerer<'a> {
         let temp_local = self.next_local;
         self.next_local += 1;
         self.emit(IrInstr::PopToLocal { index: temp_local });
-        self.emit_iterator_close_on_throw_helper(iterator);
         let exception = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::LoadLocal {
             index: temp_local,
             dest: exception.clone(),
         });
-        self.set_terminator(Terminator::Throw(exception));
+        let completion = self.emit_iterator_close_completion_helper(iterator, exception);
+        self.set_terminator(Terminator::Throw(completion));
 
         self.current_function_mut()
             .add_block(BasicBlock::with_label(exit_block, "assign.target.throw.exit"));
@@ -8343,8 +8458,13 @@ impl<'a> Lowerer<'a> {
         self.current_function_mut()
             .add_block(BasicBlock::with_label(close_block, "assign.iter.throw.close"));
         self.current_block = close_block;
-        self.emit_iterator_close_on_throw_helper(iterator);
-        self.set_terminator(Terminator::Jump(rethrow_block));
+        let exception = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: temp_local,
+            dest: exception.clone(),
+        });
+        let completion = self.emit_iterator_close_completion_helper(iterator, exception);
+        self.set_terminator(Terminator::Throw(completion));
 
         self.current_function_mut()
             .add_block(BasicBlock::with_label(rethrow_block, "assign.iter.throw.rethrow"));
@@ -8478,7 +8598,11 @@ impl<'a> Lowerer<'a> {
                             );
                         }
                         ast::ArrayElement::Spread(expr) => {
-                            let prepared_target = self.prepare_destructuring_target(expr);
+                            let prepared_target = self
+                                .prepare_destructuring_target_with_iterator_close_on_throw(
+                                    iterator_reg.clone(),
+                                    expr,
+                                );
                             let zero = self.emit_i32_const(0);
                             let rest_arr = self.alloc_register(TypeId::new(ARRAY_TYPE_ID));
                             self.emit(IrInstr::NewArray {

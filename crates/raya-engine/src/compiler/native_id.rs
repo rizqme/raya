@@ -142,6 +142,10 @@ pub const OBJECT_COPY_DATA_PROPERTIES: u16 = 0x0042;
 pub const OBJECT_THROW_REFERENCE_ERROR: u16 = 0x0043;
 /// Raise a JS TypeError with a custom message.
 pub const OBJECT_THROW_TYPE_ERROR: u16 = 0x0051;
+/// Construct a JS ReferenceError object for an explicitly invalid binding access.
+pub const OBJECT_CREATE_REFERENCE_ERROR: u16 = 0x0052;
+/// Construct a JS TypeError object with a custom message.
+pub const OBJECT_CREATE_TYPE_ERROR: u16 = 0x0053;
 /// Create a live JS generator iterator object backed by a suspended task.
 pub const OBJECT_GENERATOR_NEW: u16 = 0x0044;
 /// Advance a live JS generator iterator.
@@ -174,6 +178,10 @@ pub const OBJECT_SET_SUPER_PROPERTY: u16 = 0x0051;
 pub const OBJECT_SET_SUPER_PROPERTY_STRICT: u16 = 0x0052;
 /// Invoke iterator `return()` when preserving an existing throw completion.
 pub const OBJECT_ITERATOR_CLOSE_ON_THROW: u16 = 0x0054;
+/// Close an iterator for an abrupt completion, preserving return completions and overriding throws only when required.
+pub const OBJECT_ITERATOR_CLOSE_COMPLETION: u16 = 0x0055;
+/// Resolve a resumed generator payload, re-throwing internal return-completion signals.
+pub const OBJECT_HANDLE_GENERATOR_RESUME: u16 = 0x0056;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -685,6 +693,8 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_ITERATOR_VALUE => "Object.iteratorValue",
         OBJECT_ITERATOR_CLOSE => "Object.iteratorClose",
         OBJECT_ITERATOR_CLOSE_ON_THROW => "Object.iteratorCloseOnThrow",
+        OBJECT_ITERATOR_CLOSE_COMPLETION => "Object.iteratorCloseCompletion",
+        OBJECT_HANDLE_GENERATOR_RESUME => "Object.handleGeneratorResume",
         OBJECT_ITERATOR_APPEND_TO_ARRAY => "Object.iteratorAppendToArray",
         OBJECT_EVAL_ENV_GET => "Object.evalEnvGet",
         OBJECT_EVAL_ENV_TRY_GET => "Object.evalEnvTryGet",
@@ -722,6 +732,8 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET => "Object.storeIdentifierAssignmentTarget",
         OBJECT_THROW_REFERENCE_ERROR => "Object.throwReferenceError",
         OBJECT_THROW_TYPE_ERROR => "Object.throwTypeError",
+        OBJECT_CREATE_REFERENCE_ERROR => "Object.createReferenceError",
+        OBJECT_CREATE_TYPE_ERROR => "Object.createTypeError",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",

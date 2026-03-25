@@ -70,26 +70,20 @@ impl<'a> Interpreter<'a> {
             return Ok(candidate);
         }
 
-        if candidate.raw() == iterable.raw() {
-            return Err(VmError::TypeError(
-                "Iterator is missing callable next()".to_string(),
-            ));
+        if candidate.raw() != iterable.raw() {
+            if let Some(nested_iterator) = self.try_get_iterator_from_value(candidate, task, module)?
+            {
+                let nested_next = self.iterator_next_method(nested_iterator, task, module)?;
+                if Self::is_callable_value(nested_next) {
+                    return Ok(nested_iterator);
+                }
+            }
         }
 
-        match self.try_get_iterator_from_value(candidate, task, module)? {
-            Some(nested_iterator) => {
-                let nested_next = self.iterator_next_method(nested_iterator, task, module)?;
-                if !Self::is_callable_value(nested_next) {
-                    return Err(VmError::TypeError(
-                        "Iterator is missing callable next()".to_string(),
-                    ));
-                }
-                Ok(nested_iterator)
-            }
-            None => Err(VmError::TypeError(
-                "Iterator is missing callable next()".to_string(),
-            )),
-        }
+        // Preserve the iterator object itself even when `next` is missing.
+        // Later `IteratorStep` / `IteratorClose` operations surface the precise
+        // protocol error at the point the method is actually needed.
+        Ok(candidate)
     }
 
     pub(in crate::vm::interpreter) fn iterator_release_ephemeral_root(&self, value: Value) {

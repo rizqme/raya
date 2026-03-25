@@ -555,6 +555,9 @@ fn value_as_string(arg: Value) -> Result<String, VmError> {
 }
 
 impl<'a> Interpreter<'a> {
+    const GENERATOR_RETURN_SIGNAL_KEY: &'static str = "__raya_generator_return_signal__";
+    const GENERATOR_RETURN_VALUE_KEY: &'static str = "__raya_generator_return_value__";
+
     fn alloc_bound_native_value(&self, receiver: Value, native_id: u16) -> Value {
         let method = Object::new_bound_native(receiver, native_id);
         let method_ptr = self.gc.lock().allocate(method);
@@ -666,6 +669,7 @@ impl<'a> Interpreter<'a> {
             task_id,
             started: false,
             closed: false,
+            pending_return_completion: None,
             completion: Value::undefined(),
             completion_emitted: false,
         }));
@@ -734,6 +738,67 @@ impl<'a> Interpreter<'a> {
         }
 
         iterator_value
+    }
+
+    fn generator_return_signal(&self, completion: Value) -> Value {
+        let mut signal = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
+        {
+            let dyn_props = signal.ensure_dyn_props();
+            dyn_props.insert(
+                self.intern_prop_key(Self::GENERATOR_RETURN_SIGNAL_KEY),
+                DynProp::data_with_attrs(Value::bool(true), false, false, false),
+            );
+            dyn_props.insert(
+                self.intern_prop_key(Self::GENERATOR_RETURN_VALUE_KEY),
+                DynProp::data_with_attrs(completion, false, false, false),
+            );
+        }
+        let signal_ptr = self.gc.lock().allocate(signal);
+        unsafe { Value::from_ptr(NonNull::new(signal_ptr.as_ptr()).expect("signal ptr")) }
+    }
+
+    fn generator_return_signal_value(&self, value: Value) -> Option<Value> {
+        let obj_ptr = checked_object_ptr(value)?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let dyn_props = obj.dyn_props()?;
+        let marker = dyn_props.get(self.intern_prop_key(Self::GENERATOR_RETURN_SIGNAL_KEY))?;
+        if !marker.value.is_bool() || !marker.value.as_bool().unwrap_or(false) {
+            return None;
+        }
+        dyn_props
+            .get(self.intern_prop_key(Self::GENERATOR_RETURN_VALUE_KEY))
+            .map(|prop| prop.value)
+    }
+
+    fn take_generator_return_completion(&self, task: &Arc<Task>) -> Option<Value> {
+        let completion = task
+            .current_exception()
+            .and_then(|exception| self.generator_return_signal_value(exception))?;
+        task.clear_exception();
+        Some(completion)
+    }
+
+    fn iterator_close_completion_value(
+        &mut self,
+        iterator: Value,
+        completion: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Value {
+        let is_generator_return = self.generator_return_signal_value(completion).is_some();
+        match self.iterator_close(iterator, task, module) {
+            Ok(()) => completion,
+            Err(error) if is_generator_return => {
+                self.ensure_task_exception_for_error(task, &error);
+                let exception = task.current_exception().unwrap_or(Value::undefined());
+                task.clear_exception();
+                exception
+            }
+            Err(_) => {
+                task.clear_exception();
+                completion
+            }
+        }
     }
 
     fn inherit_generator_task_context(&self, callee_task: &Arc<Task>, caller_task: &Arc<Task>) {
@@ -13593,6 +13658,29 @@ impl<'a> Interpreter<'a> {
                         ));
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_CREATE_REFERENCE_ERROR => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.createReferenceError expects exactly one string argument"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.createReferenceError expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let exception = self.alloc_builtin_error_value(
+                            "ReferenceError",
+                            &format!("{} is not defined", name.data),
+                        );
+                        if let Err(error) = stack.push(exception) {
+                            return OpcodeResult::Error(error);
+                        }
+                        return OpcodeResult::Continue;
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_THROW_TYPE_ERROR => {
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -13611,6 +13699,27 @@ impl<'a> Interpreter<'a> {
                             "TypeError",
                             message.data.clone(),
                         ));
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_CREATE_TYPE_ERROR => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.createTypeError expects exactly one string argument"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(message_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.createTypeError expects a string message".to_string(),
+                            ));
+                        };
+                        let message = unsafe { &*message_ptr.as_ptr() };
+                        let exception =
+                            self.alloc_builtin_error_value("TypeError", &message.data);
+                        if let Err(error) = stack.push(exception) {
+                            return OpcodeResult::Error(error);
+                        }
+                        return OpcodeResult::Continue;
                     }
 
                     id if id == crate::compiler::native_id::TRY_GET_GLOBAL => {
@@ -16986,6 +17095,19 @@ impl<'a> Interpreter<'a> {
                             .push(Value::undefined())
                             .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
                     }
+                    id if id == crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_COMPLETION => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.iteratorCloseCompletion requires iterator and completion"
+                                    .to_string(),
+                            ));
+                        }
+                        let completion =
+                            self.iterator_close_completion_value(args[0], args[1], task, module);
+                        stack
+                            .push(completion)
+                            .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                    }
                     id if id == crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY => {
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::TypeError(
@@ -17098,51 +17220,76 @@ impl<'a> Interpreter<'a> {
                     }
                     id if id == crate::compiler::native_id::OBJECT_GENERATOR_NEXT => {
                         let receiver = args.first().copied().unwrap_or(Value::undefined());
-                        let resume_value = args.get(1).copied().unwrap_or(Value::undefined());
                         let Some(obj_ptr) = checked_object_ptr(receiver) else {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Generator next receiver must be an object".to_string(),
                             ));
                         };
-                        let obj = unsafe { &mut *obj_ptr.as_ptr() };
-                        let Some(generator) = obj.generator_state.as_deref_mut() else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Generator next receiver is invalid".to_string(),
-                            ));
-                        };
-                        if generator.closed {
-                            let value = if generator.completion_emitted {
-                                Value::undefined()
-                            } else {
-                                generator.completion_emitted = true;
-                                generator.completion
+                        let (task_id, resume_value, was_started) = {
+                            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                            let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "Generator next receiver is invalid".to_string(),
+                                ));
                             };
-                            let result = self.generator_result_object(value, true);
-                            if let Err(error) = stack.push(result) {
-                                return OpcodeResult::Error(error);
+                            if generator.closed {
+                                let value = if generator.completion_emitted {
+                                    Value::undefined()
+                                } else {
+                                    generator.completion_emitted = true;
+                                    generator.completion
+                                };
+                                let result = self.generator_result_object(value, true);
+                                if let Err(error) = stack.push(result) {
+                                    return OpcodeResult::Error(error);
+                                }
+                                return OpcodeResult::Continue;
                             }
-                            return OpcodeResult::Continue;
-                        }
 
-                        let Some(generator_task) =
-                            self.tasks.read().get(&generator.task_id).cloned()
-                        else {
-                            return OpcodeResult::Error(VmError::RuntimeError(
+                            let resume_value = if let Some(completion) =
+                                generator.pending_return_completion.take()
+                            {
+                                self.generator_return_signal(completion)
+                            } else {
+                                args.get(1).copied().unwrap_or(Value::undefined())
+                            };
+                            let task_id = generator.task_id;
+                            let was_started = generator.started;
+                            if !generator.started {
+                                generator.started = true;
+                            }
+                            (task_id, resume_value, was_started)
+                        };
+
+                        let Some(generator_task) = self.tasks.read().get(&task_id).cloned() else {
+                            return OpcodeResult::Error(VmError::TypeError(
                                 "Generator task is no longer available".to_string(),
                             ));
                         };
-
-                        if generator.started {
-                            generator_task.set_resume_value(resume_value);
-                        } else {
-                            generator.started = true;
+                        {
+                            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                            let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "Generator next receiver is invalid".to_string(),
+                                ));
+                            };
+                            if was_started {
+                                generator_task.set_resume_value(resume_value);
+                            }
                         }
 
                         let run_result = self.run(&generator_task);
                         let result = match run_result {
                             ExecutionResult::Completed(value) => {
+                                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                                let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                    return OpcodeResult::Error(VmError::TypeError(
+                                        "Generator next receiver is invalid".to_string(),
+                                    ));
+                                };
                                 generator_task.complete(value);
                                 generator.closed = true;
+                                generator.pending_return_completion = None;
                                 generator.completion = value;
                                 generator.completion_emitted = true;
                                 self.generator_result_object(value, true)
@@ -17150,6 +17297,12 @@ impl<'a> Interpreter<'a> {
                             ExecutionResult::Suspended(
                                 crate::vm::scheduler::SuspendReason::JsGeneratorYield { value },
                             ) => {
+                                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                                let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                    return OpcodeResult::Error(VmError::TypeError(
+                                        "Generator next receiver is invalid".to_string(),
+                                    ));
+                                };
                                 generator_task.suspend(
                                     crate::vm::scheduler::SuspendReason::JsGeneratorYield { value },
                                 );
@@ -17162,16 +17315,42 @@ impl<'a> Interpreter<'a> {
                                 ));
                             }
                             ExecutionResult::Failed(error) => {
-                                generator.closed = true;
-                                generator.completion = Value::undefined();
-                                generator.completion_emitted = true;
-                                generator_task.fail();
-                                if !task.has_exception() {
-                                    if let Some(exception) = generator_task.current_exception() {
-                                        task.set_exception(exception);
+                                if let Some(completion) =
+                                    self.take_generator_return_completion(&generator_task)
+                                {
+                                    let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                                    let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                        return OpcodeResult::Error(VmError::TypeError(
+                                            "Generator next receiver is invalid".to_string(),
+                                        ));
+                                    };
+                                    generator_task.complete(completion);
+                                    generator.closed = true;
+                                    generator.pending_return_completion = None;
+                                    generator.completion = completion;
+                                    generator.completion_emitted = true;
+                                    self.generator_result_object(completion, true)
+                                } else {
+                                    let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                                    let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                        return OpcodeResult::Error(VmError::TypeError(
+                                            "Generator next receiver is invalid".to_string(),
+                                        ));
+                                    };
+                                    generator.closed = true;
+                                    generator.pending_return_completion = None;
+                                    generator.completion = Value::undefined();
+                                    generator.completion_emitted = true;
+                                    generator_task.fail();
+                                    if !task.has_exception() {
+                                        if let Some(exception) =
+                                            generator_task.current_exception()
+                                        {
+                                            task.set_exception(exception);
+                                        }
                                     }
+                                    return OpcodeResult::Error(error);
                                 }
-                                return OpcodeResult::Error(error);
                             }
                         };
                         if let Err(error) = stack.push(result) {
@@ -17181,23 +17360,137 @@ impl<'a> Interpreter<'a> {
                     }
                     id if id == crate::compiler::native_id::OBJECT_GENERATOR_RETURN => {
                         let receiver = args.first().copied().unwrap_or(Value::undefined());
-                        let completion_override = args.get(1).copied();
+                        let completion_override =
+                            args.get(1).copied().unwrap_or(Value::undefined());
                         let Some(obj_ptr) = checked_object_ptr(receiver) else {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Generator return receiver must be an object".to_string(),
                             ));
                         };
-                        let obj = unsafe { &mut *obj_ptr.as_ptr() };
-                        let Some(generator) = obj.generator_state.as_deref_mut() else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Generator return receiver is invalid".to_string(),
+                        let (task_id, already_closed_or_unstarted) = {
+                            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                            let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "Generator return receiver is invalid".to_string(),
+                                ));
+                            };
+                            if generator.closed || !generator.started {
+                                generator.closed = true;
+                                generator.pending_return_completion = None;
+                                generator.completion = completion_override;
+                                generator.completion_emitted = true;
+                                (generator.task_id, true)
+                            } else {
+                                generator.pending_return_completion = None;
+                                (generator.task_id, false)
+                            }
+                        };
+                        if already_closed_or_unstarted {
+                            let result = self.generator_result_object(completion_override, true);
+                            if let Err(error) = stack.push(result) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+
+                        let Some(generator_task) = self.tasks.read().get(&task_id).cloned() else {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Generator task is no longer available".to_string(),
                             ));
                         };
-                        generator.closed = true;
-                        generator.completion = completion_override.unwrap_or(Value::undefined());
-                        generator.completion_emitted = true;
-                        let result = self.generator_result_object(generator.completion, true);
+                        generator_task
+                            .set_resume_value(self.generator_return_signal(completion_override));
+
+                        let run_result = self.run(&generator_task);
+                        let result = match run_result {
+                            ExecutionResult::Completed(value) => {
+                                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                                let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                    return OpcodeResult::Error(VmError::TypeError(
+                                        "Generator return receiver is invalid".to_string(),
+                                    ));
+                                };
+                                generator_task.complete(value);
+                                generator.closed = true;
+                                generator.pending_return_completion = None;
+                                generator.completion = value;
+                                generator.completion_emitted = true;
+                                self.generator_result_object(value, true)
+                            }
+                            ExecutionResult::Suspended(
+                                crate::vm::scheduler::SuspendReason::JsGeneratorYield { value },
+                            ) => {
+                                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                                let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                    return OpcodeResult::Error(VmError::TypeError(
+                                        "Generator return receiver is invalid".to_string(),
+                                    ));
+                                };
+                                generator_task.suspend(
+                                    crate::vm::scheduler::SuspendReason::JsGeneratorYield { value },
+                                );
+                                generator.pending_return_completion = Some(completion_override);
+                                self.generator_result_object(value, false)
+                            }
+                            ExecutionResult::Suspended(reason) => {
+                                generator_task.suspend(reason);
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "Generator suspended with a non-generator reason".to_string(),
+                                ));
+                            }
+                            ExecutionResult::Failed(error) => {
+                                if let Some(completion) =
+                                    self.take_generator_return_completion(&generator_task)
+                                {
+                                    let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                                    let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                        return OpcodeResult::Error(VmError::TypeError(
+                                            "Generator return receiver is invalid".to_string(),
+                                        ));
+                                    };
+                                    generator_task.complete(completion);
+                                    generator.closed = true;
+                                    generator.pending_return_completion = None;
+                                    generator.completion = completion;
+                                    generator.completion_emitted = true;
+                                    self.generator_result_object(completion, true)
+                                } else {
+                                    let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                                    let Some(generator) = obj.generator_state.as_deref_mut() else {
+                                        return OpcodeResult::Error(VmError::TypeError(
+                                            "Generator return receiver is invalid".to_string(),
+                                        ));
+                                    };
+                                    generator.closed = true;
+                                    generator.pending_return_completion = None;
+                                    generator.completion = Value::undefined();
+                                    generator.completion_emitted = true;
+                                    generator_task.fail();
+                                    if !task.has_exception() {
+                                        if let Some(exception) =
+                                            generator_task.current_exception()
+                                        {
+                                            task.set_exception(exception);
+                                        }
+                                    }
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                        };
                         if let Err(error) = stack.push(result) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_HANDLE_GENERATOR_RESUME => {
+                        let resumed = args.first().copied().unwrap_or(Value::undefined());
+                        if self.generator_return_signal_value(resumed).is_some() {
+                            task.set_exception(resumed);
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Generator return completion".to_string(),
+                            ));
+                        }
+                        if let Err(error) = stack.push(resumed) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue

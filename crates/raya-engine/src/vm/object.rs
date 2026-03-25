@@ -482,6 +482,7 @@ pub struct GeneratorStateData {
     pub task_id: TaskId,
     pub started: bool,
     pub closed: bool,
+    pub pending_return_completion: Option<Value>,
     pub completion: Value,
     pub completion_emitted: bool,
 }
@@ -492,6 +493,7 @@ impl std::fmt::Debug for GeneratorStateData {
             .field("task_id", &self.task_id)
             .field("started", &self.started)
             .field("closed", &self.closed)
+            .field("pending_return_completion", &self.pending_return_completion)
             .field("completion", &self.completion)
             .field("completion_emitted", &self.completion_emitted)
             .finish()

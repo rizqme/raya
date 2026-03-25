@@ -532,6 +532,7 @@ impl<'a> Lowerer<'a> {
                             index: global_idx,
                             value: class_value.clone(),
                         });
+                        self.mark_js_script_lexical_initialized(class.name.name);
                     }
                 }
                 if self.in_direct_eval_function {
@@ -2395,6 +2396,9 @@ impl<'a> Lowerer<'a> {
                                 index: global_idx,
                                 value,
                             });
+                            if self.js_script_lexical_globals.contains_key(&name) {
+                                self.mark_js_script_lexical_initialized(name);
+                            }
                         }
                     } else {
                         let value = self.emit_constant_value(&const_val);
@@ -2438,6 +2442,7 @@ impl<'a> Lowerer<'a> {
                     index: global_idx,
                     value: value.clone(),
                 });
+                self.mark_js_script_lexical_initialized(name);
             } else {
                 let undefined = self.alloc_register(UNRESOLVED);
                 self.emit(IrInstr::Assign {
@@ -2449,6 +2454,7 @@ impl<'a> Lowerer<'a> {
                     index: global_idx,
                     value: undefined,
                 });
+                self.mark_js_script_lexical_initialized(name);
             }
             return;
         }
@@ -3381,6 +3387,22 @@ impl<'a> Lowerer<'a> {
             undefined
         };
         self.emit(IrInstr::GeneratorYield { value: yielded });
+
+        let temp_local = self.next_local;
+        self.next_local += 1;
+        self.emit(IrInstr::PopToLocal { index: temp_local });
+
+        let resumed_payload = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: temp_local,
+            dest: resumed_payload.clone(),
+        });
+        let resumed = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(resumed),
+            native_id: crate::compiler::native_id::OBJECT_HANDLE_GENERATOR_RESUME,
+            args: vec![resumed_payload],
+        });
     }
 
     fn close_active_loop_iterators(&mut self) {
