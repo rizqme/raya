@@ -6532,7 +6532,38 @@ impl<'a> Interpreter<'a> {
             let existing_own_shape = self.resolve_own_property_shape(receiver, key);
             let obj = unsafe { &mut *obj_ptr.as_ptr() };
             if let Some(index) = self.get_field_index_for_value(receiver, key) {
-                obj.set_field(index, value).map_err(VmError::RuntimeError)?;
+                let current = obj.get_field(index).unwrap_or(Value::undefined());
+                let uses_runtime_placeholder = current.is_null()
+                    && existing_own_shape.is_some_and(|shape| {
+                        matches!(
+                            shape.source,
+                            JsOwnPropertySource::BuiltinNativeMethod
+                                | JsOwnPropertySource::CallableVirtual
+                                | JsOwnPropertySource::ConstructorStaticMethod
+                                | JsOwnPropertySource::NominalMethod
+                        )
+                    });
+                if uses_runtime_placeholder {
+                    let prop_key = self.intern_prop_key(key);
+                    let dyn_props = obj.ensure_dyn_props();
+                    if let Some(existing) = dyn_props.get_mut(prop_key) {
+                        existing.value = value;
+                    } else if let Some(shape) = existing_own_shape {
+                        dyn_props.insert(
+                            prop_key,
+                            DynProp::data_with_attrs(
+                                value,
+                                shape.writable,
+                                shape.enumerable,
+                                shape.configurable,
+                            ),
+                        );
+                    } else {
+                        dyn_props.insert(prop_key, DynProp::data(value));
+                    }
+                } else {
+                    obj.set_field(index, value).map_err(VmError::RuntimeError)?;
+                }
             } else {
                 if !self.is_js_value_extensible(receiver) {
                     return Ok(false);
@@ -8923,8 +8954,7 @@ impl<'a> Interpreter<'a> {
         obj.dyn_props().and_then(|dp| dp.get(key).map(|p| p.value))
     }
 
-    fn get_own_js_property_value_by_name(&self, target: Value, key: &str) -> Option<Value> {
-        let target = self.public_property_target(target);
+    fn get_own_js_property_value_by_name_on_target(&self, target: Value, key: &str) -> Option<Value> {
         if let Some(kind) = self.exotic_adapter_kind(target) {
             match kind {
                 JsExoticAdapterKind::Arguments => {
@@ -8983,6 +9013,16 @@ impl<'a> Interpreter<'a> {
             Some(OrdinaryOwnProperty::Accessor { .. }) => None,
             None => self.metadata_data_property_value(target, key),
         }
+    }
+
+    fn get_own_js_property_value_by_name(&self, target: Value, key: &str) -> Option<Value> {
+        self.get_own_js_property_value_by_name_on_target(target, key)
+            .or_else(|| {
+                let public_target = self.public_property_target(target);
+                (public_target.raw() != target.raw())
+                    .then(|| self.get_own_js_property_value_by_name_on_target(public_target, key))
+                    .flatten()
+            })
     }
 
     fn is_typed_array_like_value(&self, target: Value) -> bool {
@@ -10414,8 +10454,11 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn resolve_own_property_shape(&self, target: Value, key: &str) -> Option<JsOwnPropertyShape> {
-        let target = self.public_property_target(target);
+    fn resolve_own_property_shape_on_target(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<JsOwnPropertyShape> {
         if let Some(kind) = self.exotic_adapter_kind(target) {
             if let Some(shape) = self.exotic_own_property_shape(kind, target, key) {
                 return Some(shape);
@@ -10561,14 +10604,23 @@ impl<'a> Interpreter<'a> {
         None
     }
 
-    fn resolve_own_property_record_with_context(
+    fn resolve_own_property_shape(&self, target: Value, key: &str) -> Option<JsOwnPropertyShape> {
+        self.resolve_own_property_shape_on_target(target, key)
+            .or_else(|| {
+                let public_target = self.public_property_target(target);
+                (public_target.raw() != target.raw())
+                    .then(|| self.resolve_own_property_shape_on_target(public_target, key))
+                    .flatten()
+            })
+    }
+
+    fn resolve_own_property_record_on_target_with_context(
         &mut self,
         target: Value,
         key: &str,
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<JsOwnPropertyRecord>, VmError> {
-        let target = self.public_property_target(target);
         if let Some(kind) = self.exotic_adapter_kind(target) {
             if let Some(record) = self.exotic_own_property_record_with_context(
                 kind,
@@ -10593,7 +10645,7 @@ impl<'a> Interpreter<'a> {
             )));
         }
 
-        let Some(shape) = self.resolve_own_property_shape(target, key) else {
+        let Some(shape) = self.resolve_own_property_shape_on_target(target, key) else {
             return Ok(None);
         };
 
@@ -10708,6 +10760,33 @@ impl<'a> Interpreter<'a> {
         };
 
         Ok(Some(record))
+    }
+
+    fn resolve_own_property_record_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<JsOwnPropertyRecord>, VmError> {
+        if let Some(record) = self.resolve_own_property_record_on_target_with_context(
+            target,
+            key,
+            caller_task,
+            caller_module,
+        )? {
+            return Ok(Some(record));
+        }
+        let public_target = self.public_property_target(target);
+        if public_target.raw() != target.raw() {
+            return self.resolve_own_property_record_on_target_with_context(
+                public_target,
+                key,
+                caller_task,
+                caller_module,
+            );
+        }
+        Ok(None)
     }
 
     fn resolve_property_record_on_receiver_with_context(
@@ -11448,16 +11527,34 @@ impl<'a> Interpreter<'a> {
                         configurable: meta.configurable,
                     });
                 }
-                return Some(OrdinaryOwnProperty::Data {
-                    value: obj
-                        .fields
-                        .get(slot_idx)
-                        .copied()
-                        .unwrap_or(Value::undefined()),
-                    writable: meta.writable,
-                    enumerable: meta.enumerable,
-                    configurable: meta.configurable,
-                });
+                let value = obj
+                    .fields
+                    .get(slot_idx)
+                    .copied()
+                    .unwrap_or(Value::undefined());
+                // Builtin/runtime-published members often reserve a fixed slot
+                // with a null placeholder. Treat that as "not an ordinary data
+                // property" so descriptor/property resolution can fall through
+                // to a shadowing dyn prop or, if none exists, the real
+                // publication source.
+                let runtime_placeholder = value.is_null()
+                    && (self
+                        .callable_virtual_property_descriptor(target, key)
+                        .is_some()
+                        || crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(
+                            target, key,
+                        )
+                        .is_some()
+                        || self.has_constructor_static_method(target, key)
+                        || self.has_class_vtable_method(target, key));
+                if !runtime_placeholder {
+                    return Some(OrdinaryOwnProperty::Data {
+                        value,
+                        writable: meta.writable,
+                        enumerable: meta.enumerable,
+                        configurable: meta.configurable,
+                    });
+                }
             }
         }
 
@@ -12190,6 +12287,38 @@ impl<'a> Interpreter<'a> {
         Ok(descriptor)
     }
 
+    fn clone_descriptor_object(&self, descriptor: Value) -> Result<Value, VmError> {
+        let record = self.descriptor_record_from_descriptor(descriptor);
+        let cloned = self.alloc_object_descriptor()?;
+        if record.has_value {
+            self.set_internal_descriptor_field(cloned, "value", record.value)?;
+        }
+        if record.has_writable {
+            self.set_internal_descriptor_field(cloned, "writable", Value::bool(record.writable))?;
+        }
+        if record.has_enumerable {
+            self.set_internal_descriptor_field(
+                cloned,
+                "enumerable",
+                Value::bool(record.enumerable),
+            )?;
+        }
+        if record.has_configurable {
+            self.set_internal_descriptor_field(
+                cloned,
+                "configurable",
+                Value::bool(record.configurable),
+            )?;
+        }
+        if record.has_get {
+            self.set_internal_descriptor_field(cloned, "get", record.get)?;
+        }
+        if record.has_set {
+            self.set_internal_descriptor_field(cloned, "set", record.set)?;
+        }
+        Ok(cloned)
+    }
+
     fn descriptor_record_from_descriptor(&self, descriptor: Value) -> JsPropertyDescriptorRecord {
         let mut record = JsPropertyDescriptorRecord::default();
 
@@ -12900,6 +13029,7 @@ impl<'a> Interpreter<'a> {
         let callable_value = self
             .callable_virtual_property_value(target, key)
             .or_else(|| self.materialize_constructor_static_method(target, key));
+        let builtin_native_value = self.own_builtin_native_method_value(target, key);
         let builtin_global_value = self.builtin_global_property_value(target, key);
         let object_value = checked_object_ptr(target).map(|obj_ptr| {
             let obj = unsafe { &*obj_ptr.as_ptr() };
@@ -12921,6 +13051,7 @@ impl<'a> Interpreter<'a> {
         let Some(value) = exotic_value
             .or(object_value.flatten())
             .or(metadata_value)
+            .or(builtin_native_value)
             .or(builtin_global_value)
             .or(callable_value)
         else {
@@ -16423,7 +16554,10 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let value = match self.get_descriptor_metadata(target, &key) {
-                            Some(descriptor) => descriptor,
+                            Some(descriptor) => match self.clone_descriptor_object(descriptor) {
+                                Ok(cloned) => cloned,
+                                Err(error) => return OpcodeResult::Error(error),
+                            },
                             None => {
                                 match self.synthesize_accessor_property_descriptor(target, &key) {
                                     Ok(Some(descriptor)) => descriptor,
