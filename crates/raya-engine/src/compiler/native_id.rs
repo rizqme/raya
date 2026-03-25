@@ -168,6 +168,10 @@ pub const OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET: u16 = 0x004E;
 pub const OBJECT_SET_PROPERTY: u16 = 0x004F;
 /// Strict-mode JS property assignment using [[Set]] semantics, throwing on failure.
 pub const OBJECT_SET_PROPERTY_STRICT: u16 = 0x0050;
+/// JS `super[key] = value` assignment using [[Set]] semantics on the home object's prototype.
+pub const OBJECT_SET_SUPER_PROPERTY: u16 = 0x0051;
+/// Strict-mode JS `super[key] = value` assignment.
+pub const OBJECT_SET_SUPER_PROPERTY_STRICT: u16 = 0x0052;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -695,6 +699,8 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_GET_OWN_PROPERTY_SYMBOLS => "Object.getOwnPropertySymbols",
         OBJECT_SET_PROPERTY => "Object.setProperty",
         OBJECT_SET_PROPERTY_STRICT => "Object.setPropertyStrict",
+        OBJECT_SET_SUPER_PROPERTY => "Object.setSuperProperty",
+        OBJECT_SET_SUPER_PROPERTY_STRICT => "Object.setSuperPropertyStrict",
         OBJECT_STRING_FROM_CHAR_CODE => "Object.stringFromCharCode",
         OBJECT_GENERATOR_SNAPSHOT_NEW => "Object.generatorSnapshotNew",
         OBJECT_GENERATOR_SNAPSHOT_NEXT => "Object.generatorSnapshotNext",

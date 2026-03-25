@@ -1194,7 +1194,7 @@ impl<'a> EarlyErrorPass<'a> {
                         if let Some(initializer) = &field.initializer {
                             this.push_lexical(
                                 LexicalContext {
-                                    super_property_allowed: has_super_class,
+                                    super_property_allowed: true,
                                     super_call_allowed: false,
                                     strict: true,
                                 },
@@ -1224,7 +1224,7 @@ impl<'a> EarlyErrorPass<'a> {
                                 method.is_async,
                                 method.is_generator,
                                 LexicalContext {
-                                    super_property_allowed: has_super_class,
+                                    super_property_allowed: true,
                                     super_call_allowed: false,
                                     strict: true,
                                 },
@@ -1262,7 +1262,7 @@ impl<'a> EarlyErrorPass<'a> {
                             false,
                             false,
                             LexicalContext {
-                                super_property_allowed: has_super_class,
+                                super_property_allowed: true,
                                 super_call_allowed: has_super_class,
                                 strict: true,
                             },
@@ -1282,7 +1282,7 @@ impl<'a> EarlyErrorPass<'a> {
                     }
                     ClassMember::StaticBlock(block) => this.push_lexical(
                         LexicalContext {
-                            super_property_allowed: has_super_class,
+                            super_property_allowed: true,
                             super_call_allowed: false,
                             strict: true,
                         },

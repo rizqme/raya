@@ -14160,6 +14160,63 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_SET_SUPER_PROPERTY
+                        || id == crate::compiler::native_id::OBJECT_SET_SUPER_PROPERTY_STRICT =>
+                    {
+                        if args.len() != 3 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "setSuperProperty expects receiver, key, and value".to_string(),
+                            ));
+                        }
+                        let (Some(key_str), _) = (match self.property_key_parts_with_context(
+                            args[1],
+                            "Object.setSuperProperty",
+                            task,
+                            module,
+                        ) {
+                            Ok(parts) => parts,
+                            Err(error) => return OpcodeResult::Error(error),
+                        }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot convert property key to string".to_string(),
+                            ));
+                        };
+                        let Some(home_object) = self.current_js_home_object(task) else {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "ReferenceError",
+                                "`super` is not available in this context".to_string(),
+                            ));
+                        };
+                        let Some(base) = self.prototype_of_value(home_object) else {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                "Cannot assign to property on null prototype".to_string(),
+                            ));
+                        };
+                        let receiver = self.proxy_wrapper_proxy_value(args[0]).unwrap_or(args[0]);
+                        let written = match self.set_property_value_via_js_semantics(
+                            base, &key_str, args[2], receiver, task, module,
+                        ) {
+                            Ok(written) => written,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if !written
+                            && id == crate::compiler::native_id::OBJECT_SET_SUPER_PROPERTY_STRICT
+                        {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                format!("Cannot assign to non-writable property '{}'", key_str),
+                            ));
+                        }
+                        if let Err(error) = stack.push(args[2]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id
                         == crate::compiler::native_id::OBJECT_CAPTURE_IDENTIFIER_ASSIGNMENT_TARGET =>
                     {

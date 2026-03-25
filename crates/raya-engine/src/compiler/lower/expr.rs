@@ -57,11 +57,19 @@ enum PreparedDestructuringTarget {
         object: Register,
         property: String,
     },
+    SuperMember {
+        receiver: Register,
+        property: String,
+    },
     Index {
         object: Register,
         key: Register,
         dynamic: bool,
         append: bool,
+    },
+    SuperIndex {
+        receiver: Register,
+        key: Register,
     },
 }
 
@@ -1382,6 +1390,23 @@ impl<'a> Lowerer<'a> {
                 crate::compiler::native_id::OBJECT_SET_PROPERTY
             },
             args: vec![object, key, value],
+        });
+    }
+
+    fn emit_js_super_property_assignment(
+        &mut self,
+        receiver: Register,
+        key: Register,
+        value: Register,
+    ) {
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: if self.js_strict_context {
+                crate::compiler::native_id::OBJECT_SET_SUPER_PROPERTY_STRICT
+            } else {
+                crate::compiler::native_id::OBJECT_SET_SUPER_PROPERTY
+            },
+            args: vec![receiver, key, value],
         });
     }
 
@@ -8057,20 +8082,40 @@ impl<'a> Lowerer<'a> {
                 self.prepare_destructuring_target(&assign.left)
             }
             Expression::Identifier(ident) => Some(PreparedDestructuringTarget::Identifier(ident.name)),
-            Expression::Member(member) => Some(PreparedDestructuringTarget::Member {
-                object: self.lower_expr(&member.object),
-                property: self.interner.resolve(member.property.name).to_string(),
-            }),
-            Expression::Index(index) => Some(PreparedDestructuringTarget::Index {
-                object: self.lower_expr(&index.object),
-                key: self.lower_expr(&index.index),
-                dynamic: self.js_this_binding_compat
-                    || self.index_uses_dynamic_keyed_access_for_expr(
-                        self.get_expr_type(&index.object),
-                        &index.index,
-                    ),
-                append: self.is_append_index_pattern(&index.object, &index.index),
-            }),
+            Expression::Member(member) => {
+                let property = self.interner.resolve(member.property.name).to_string();
+                if matches!(member.object.as_ref(), Expression::Super(_)) {
+                    Some(PreparedDestructuringTarget::SuperMember {
+                        receiver: self.lower_this(),
+                        property,
+                    })
+                } else {
+                    Some(PreparedDestructuringTarget::Member {
+                        object: self.lower_expr(&member.object),
+                        property,
+                    })
+                }
+            }
+            Expression::Index(index) => {
+                let key = self.lower_expr(&index.index);
+                if matches!(index.object.as_ref(), Expression::Super(_)) {
+                    Some(PreparedDestructuringTarget::SuperIndex {
+                        receiver: self.lower_this(),
+                        key,
+                    })
+                } else {
+                    Some(PreparedDestructuringTarget::Index {
+                        object: self.lower_expr(&index.object),
+                        key,
+                        dynamic: self.js_this_binding_compat
+                            || self.index_uses_dynamic_keyed_access_for_expr(
+                                self.get_expr_type(&index.object),
+                                &index.index,
+                            ),
+                        append: self.is_append_index_pattern(&index.object, &index.index),
+                    })
+                }
+            }
             _ => None,
         }
     }
@@ -8086,6 +8131,10 @@ impl<'a> Lowerer<'a> {
             }
             PreparedDestructuringTarget::Member { object, property } => {
                 self.emit_dyn_set_named(object, &property, value);
+            }
+            PreparedDestructuringTarget::SuperMember { receiver, property } => {
+                let key = self.emit_named_key_register(&property);
+                self.emit_js_super_property_assignment(receiver, key, value);
             }
             PreparedDestructuringTarget::Index {
                 object,
@@ -8111,6 +8160,9 @@ impl<'a> Lowerer<'a> {
                         value,
                     });
                 }
+            }
+            PreparedDestructuringTarget::SuperIndex { receiver, key } => {
+                self.emit_js_super_property_assignment(receiver, key, value);
             }
         }
     }
