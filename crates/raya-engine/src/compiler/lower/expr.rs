@@ -5696,6 +5696,11 @@ impl<'a> Lowerer<'a> {
                     func: static_getter.func_id,
                     captures: vec![],
                 });
+                self.emit(IrInstr::NativeCall {
+                    dest: None,
+                    native_id: crate::compiler::native_id::OBJECT_SET_CALLABLE_HOME_OBJECT,
+                    args: vec![closure.clone(), class_value.clone()],
+                });
                 self.emit_js_member_call_helper(dest.clone(), class_value, closure, vec![]);
                 return dest;
             }
@@ -5722,6 +5727,11 @@ impl<'a> Lowerer<'a> {
                 if self.js_this_binding_compat {
                     let bound = self.alloc_register(member_ty);
                     let class_value = self.lower_expr(&member.object);
+                    self.emit(IrInstr::NativeCall {
+                        dest: None,
+                        native_id: crate::compiler::native_id::OBJECT_SET_CALLABLE_HOME_OBJECT,
+                        args: vec![closure.clone(), class_value.clone()],
+                    });
                     self.emit(IrInstr::NativeCall {
                         dest: Some(bound.clone()),
                         native_id: crate::compiler::native_id::FUNCTION_BIND_HELPER,

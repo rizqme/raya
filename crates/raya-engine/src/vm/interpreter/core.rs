@@ -1143,6 +1143,7 @@ impl<'a> Interpreter<'a> {
             }
             OpcodeResult::Return(value) => Ok(value),
             OpcodeResult::Error(error) => {
+                self.ensure_task_exception_for_error(&scratch_task, &error);
                 if !caller_task.has_exception() {
                     if let Some(exception) = scratch_task.current_exception() {
                         caller_task.set_exception(exception);
@@ -1212,6 +1213,7 @@ impl<'a> Interpreter<'a> {
                     }
                     ExecutionResult::Failed(error) => {
                         callee_task.fail();
+                        self.ensure_task_exception_for_error(&callee_task, &error);
                         if !caller_task.has_exception() {
                             if let Some(exception) = callee_task.current_exception() {
                                 caller_task.set_exception(exception);

@@ -721,6 +721,7 @@ impl<'a> Interpreter<'a> {
                                     )));
                                 }
                             };
+                            let owner_nominal_type_id = class.id;
                             let func_id = match class.vtable.get_method(slot) {
                                 Some(fid) => fid,
                                 None => {
@@ -733,7 +734,12 @@ impl<'a> Interpreter<'a> {
                             let method_module = class.module.clone();
                             drop(classes);
 
-                            let bm = Object::new_bound_method(target, func_id, method_module);
+                            let mut bm = Object::new_bound_method(target, func_id, method_module);
+                            self.attach_bound_method_home_object(
+                                &mut bm,
+                                target,
+                                owner_nominal_type_id,
+                            );
                             let gc_ptr = self.gc.lock().allocate(bm);
                             unsafe {
                                 Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())

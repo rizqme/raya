@@ -22,6 +22,23 @@ use std::sync::Arc;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
+    pub(in crate::vm::interpreter) fn attach_bound_method_home_object(
+        &self,
+        callable: &mut Object,
+        receiver: Value,
+        owner_nominal_type_id: usize,
+    ) {
+        let home_object = if self.constructor_nominal_type_id(receiver).is_some() {
+            self.constructor_value_for_nominal_type(owner_nominal_type_id)
+        } else {
+            self.constructor_value_for_nominal_type(owner_nominal_type_id)
+                .and_then(|constructor| self.constructor_prototype_value(constructor))
+        };
+        if let Some(home_object) = home_object {
+            let _ = callable.set_callable_home_object(home_object);
+        }
+    }
+
     fn load_shape_field_on_non_object(
         &mut self,
         receiver: Value,
@@ -118,6 +135,7 @@ impl<'a> Interpreter<'a> {
             ))
         })?;
         let mut owner_id = Some(nominal_type_id);
+        let mut method_owner_id = nominal_type_id;
         let mut method_module = class.module.clone();
         while let Some(class_id) = owner_id {
             let Some(owner_class) = classes.get_class(class_id) else {
@@ -128,6 +146,7 @@ impl<'a> Interpreter<'a> {
                 .as_ref()
                 .is_some_and(|module| module.functions.get(func_id).is_some())
             {
+                method_owner_id = class_id;
                 method_module = owner_class.module.clone();
                 break;
             }
@@ -135,7 +154,8 @@ impl<'a> Interpreter<'a> {
         }
         drop(classes);
 
-        let callable = Object::new_bound_method(receiver, func_id, method_module);
+        let mut callable = Object::new_bound_method(receiver, func_id, method_module);
+        self.attach_bound_method_home_object(&mut callable, receiver, method_owner_id);
         let gc_ptr = self.gc.lock().allocate(callable);
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
     }
@@ -1340,10 +1360,28 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                let method_module = class.module.clone();
+                let mut method_owner_id = nominal_type_id;
+                let mut owner_id = Some(nominal_type_id);
+                let mut method_module = class.module.clone();
+                while let Some(class_id) = owner_id {
+                    let Some(owner_class) = classes.get_class(class_id) else {
+                        break;
+                    };
+                    if owner_class
+                        .module
+                        .as_ref()
+                        .is_some_and(|module| module.functions.get(func_id).is_some())
+                    {
+                        method_owner_id = class_id;
+                        method_module = owner_class.module.clone();
+                        break;
+                    }
+                    owner_id = owner_class.parent_id;
+                }
                 drop(classes);
 
-                let bm = Object::new_bound_method(obj_val, func_id, method_module);
+                let mut bm = Object::new_bound_method(obj_val, func_id, method_module);
+                self.attach_bound_method_home_object(&mut bm, obj_val, method_owner_id);
                 let gc_ptr = self.gc.lock().allocate(bm);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };

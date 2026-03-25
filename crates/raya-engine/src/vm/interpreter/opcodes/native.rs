@@ -1218,6 +1218,31 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    pub(in crate::vm::interpreter) fn ensure_task_exception_for_error(
+        &self,
+        task: &Arc<Task>,
+        error: &VmError,
+    ) {
+        if task.has_exception() {
+            return;
+        }
+        let exception = match error {
+            VmError::TypeError(message) => self.alloc_builtin_error_value("TypeError", message),
+            VmError::SyntaxError(message) => self.alloc_builtin_error_value("SyntaxError", message),
+            VmError::RangeError(message) => self.alloc_builtin_error_value("RangeError", message),
+            VmError::ReferenceError(message) => {
+                self.alloc_builtin_error_value("ReferenceError", message)
+            }
+            VmError::RuntimeError(message) => self.alloc_builtin_error_value("Error", message),
+            _ => {
+                let gc_ptr = self.gc.lock().allocate(RayaString::new(error.to_string()));
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+            }
+        };
+        self.ephemeral_gc_roots.write().push(exception);
+        task.set_exception(exception);
+    }
+
     fn builtin_error_layout_fields(class_name: &str) -> Option<&'static [&'static str]> {
         const ERROR_FIELDS: &[&str] = &[
             "message", "name", "stack", "cause", "code", "errno", "syscall", "path",
@@ -2255,7 +2280,10 @@ impl<'a> Interpreter<'a> {
             .map(|entry| entry.nominal_type_id)
     }
 
-    fn constructor_value_for_nominal_type(&self, nominal_type_id: usize) -> Option<Value> {
+    pub(in crate::vm::interpreter) fn constructor_value_for_nominal_type(
+        &self,
+        nominal_type_id: usize,
+    ) -> Option<Value> {
         let class_name = {
             let classes = self.classes.read();
             classes.get_class(nominal_type_id)?.name.clone()
@@ -2450,18 +2478,20 @@ impl<'a> Interpreter<'a> {
 
             if let Some(func_id) = func_id {
                 let module = module?;
-                let closure = Object::new_closure_with_module(func_id, Vec::new(), module.clone());
+                let property_target = if nominal_type_id == origin_nominal_type_id {
+                    constructor
+                } else {
+                    self.constructor_value_for_nominal_type(nominal_type_id)?
+                };
+                let mut closure =
+                    Object::new_closure_with_module(func_id, Vec::new(), module.clone());
+                let _ = closure.set_callable_home_object(property_target);
                 let closure_ptr = self.gc.lock().allocate(closure);
                 let closure_value = unsafe {
                     Value::from_ptr(
                         std::ptr::NonNull::new(closure_ptr.as_ptr())
                             .expect("constructor static method ptr"),
                     )
-                };
-                let property_target = if nominal_type_id == origin_nominal_type_id {
-                    constructor
-                } else {
-                    self.constructor_value_for_nominal_type(nominal_type_id)?
                 };
                 let _ = self.define_data_property_on_target(
                     property_target,
@@ -14182,19 +14212,20 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let Some(home_object) = self.current_js_home_object(task) else {
-                            return OpcodeResult::Error(self.raise_task_builtin_error(
-                                task,
-                                "ReferenceError",
+                            return OpcodeResult::Error(VmError::ReferenceError(
                                 "`super` is not available in this context".to_string(),
                             ));
                         };
                         let Some(base) = self.prototype_of_value(home_object) else {
-                            return OpcodeResult::Error(self.raise_task_builtin_error(
-                                task,
-                                "TypeError",
+                            return OpcodeResult::Error(VmError::TypeError(
                                 "Cannot assign to property on null prototype".to_string(),
                             ));
                         };
+                        if base.is_null() || base.is_undefined() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot assign to property on null prototype".to_string(),
+                            ));
+                        }
                         let receiver = self.proxy_wrapper_proxy_value(args[0]).unwrap_or(args[0]);
                         let written = match self.set_property_value_via_js_semantics(
                             base, &key_str, args[2], receiver, task, module,
@@ -14205,11 +14236,10 @@ impl<'a> Interpreter<'a> {
                         if !written
                             && id == crate::compiler::native_id::OBJECT_SET_SUPER_PROPERTY_STRICT
                         {
-                            return OpcodeResult::Error(self.raise_task_builtin_error(
-                                task,
-                                "TypeError",
-                                format!("Cannot assign to non-writable property '{}'", key_str),
-                            ));
+                            return OpcodeResult::Error(VmError::TypeError(format!(
+                                "Cannot assign to non-writable property '{}'",
+                                key_str
+                            )));
                         }
                         if let Err(error) = stack.push(args[2]) {
                             return OpcodeResult::Error(error);
