@@ -278,6 +278,9 @@ pub fn walk_class_decl<V: Visitor>(visitor: &mut V, decl: &ClassDecl) {
     if let Some(extends) = &decl.extends {
         visitor.visit_type_annotation(extends);
     }
+    if let Some(extends_expr) = &decl.extends_expr {
+        visitor.visit_expression(extends_expr);
+    }
     for impl_type in &decl.implements {
         visitor.visit_type_annotation(impl_type);
     }

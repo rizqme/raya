@@ -656,11 +656,15 @@ fn parse_class_expression(parser: &mut Parser) -> Result<Expression, ParseError>
         None
     };
 
-    let extends = if parser.check(&Token::Extends) {
+    let (extends, extends_expr) = if parser.check(&Token::Extends) {
         parser.advance();
-        Some(super::types::parse_type_annotation(parser)?)
+        if parser.is_js_mode() {
+            (None, Some(parse_expression(parser)?))
+        } else {
+            (Some(super::types::parse_type_annotation(parser)?), None)
+        }
     } else {
-        None
+        (None, None)
     };
 
     let mut implements = Vec::new();
@@ -696,6 +700,7 @@ fn parse_class_expression(parser: &mut Parser) -> Result<Expression, ParseError>
         name: class_name.clone(),
         type_params,
         extends,
+        extends_expr,
         implements,
         members,
         span: class_span,

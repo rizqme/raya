@@ -1444,11 +1444,15 @@ fn parse_class_declaration_with_annotations(
     };
 
     // Optional extends clause
-    let extends = if parser.check(&Token::Extends) {
+    let (extends, extends_expr) = if parser.check(&Token::Extends) {
         parser.advance();
-        Some(super::types::parse_type_annotation(parser)?)
+        if parser.is_js_mode() {
+            (None, Some(super::expr::parse_expression(parser)?))
+        } else {
+            (Some(super::types::parse_type_annotation(parser)?), None)
+        }
     } else {
-        None
+        (None, None)
     };
 
     // Optional implements clause
@@ -1482,6 +1486,7 @@ fn parse_class_declaration_with_annotations(
         name,
         type_params,
         extends,
+        extends_expr,
         implements,
         members,
         span,

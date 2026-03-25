@@ -3438,6 +3438,8 @@ impl<'a> Binder<'a> {
         // Resolve the extends clause if present
         let extends_ty = if let Some(ref extends_ann) = class.extends {
             Some(self.resolve_type_annotation(extends_ann)?)
+        } else if class.extends_expr.is_some() {
+            None
         } else {
             self.implicit_object_base_type(&class_name)
         };

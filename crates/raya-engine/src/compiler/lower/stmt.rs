@@ -124,6 +124,30 @@ impl<'a> Lowerer<'a> {
             )
         });
         let mut prototype_value = None;
+        if self.js_this_binding_compat {
+            if let Some(extends_expr) = &class.extends_expr {
+                let parent_constructor = self.lower_expr(extends_expr);
+                self.emit(IrInstr::NativeCall {
+                    dest: None,
+                    native_id: crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF,
+                    args: vec![class_value.clone(), parent_constructor.clone()],
+                });
+
+                let class_prototype =
+                    self.ensure_class_prototype_target(&class_value, &mut prototype_value);
+                let parent_prototype = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                self.emit_dyn_get_named(
+                    parent_prototype.clone(),
+                    parent_constructor,
+                    "prototype",
+                );
+                self.emit(IrInstr::NativeCall {
+                    dest: None,
+                    native_id: crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF,
+                    args: vec![class_prototype, parent_prototype],
+                });
+            }
+        }
         for (member_idx, member) in class.members.iter().enumerate() {
             match member {
                 ast::ClassMember::Method(method)

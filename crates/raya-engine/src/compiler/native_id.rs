@@ -172,6 +172,8 @@ pub const OBJECT_SET_PROPERTY_STRICT: u16 = 0x0050;
 pub const OBJECT_SET_SUPER_PROPERTY: u16 = 0x0051;
 /// Strict-mode JS `super[key] = value` assignment.
 pub const OBJECT_SET_SUPER_PROPERTY_STRICT: u16 = 0x0052;
+/// Invoke iterator `return()` when preserving an existing throw completion.
+pub const OBJECT_ITERATOR_CLOSE_ON_THROW: u16 = 0x0054;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -682,6 +684,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_ITERATOR_STEP => "Object.iteratorStep",
         OBJECT_ITERATOR_VALUE => "Object.iteratorValue",
         OBJECT_ITERATOR_CLOSE => "Object.iteratorClose",
+        OBJECT_ITERATOR_CLOSE_ON_THROW => "Object.iteratorCloseOnThrow",
         OBJECT_ITERATOR_APPEND_TO_ARRAY => "Object.iteratorAppendToArray",
         OBJECT_EVAL_ENV_GET => "Object.evalEnvGet",
         OBJECT_EVAL_ENV_TRY_GET => "Object.evalEnvTryGet",

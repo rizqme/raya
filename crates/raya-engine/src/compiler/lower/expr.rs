@@ -51,6 +51,7 @@ enum CheckerValidatedMemberCallKind {
     CallableProperty,
 }
 
+#[derive(Clone)]
 enum PreparedDestructuringTarget {
     Identifier(Symbol),
     Member {
@@ -203,6 +204,14 @@ impl<'a> Lowerer<'a> {
             || self.member_write_uses_dynamic_property_path(object_expr, object_reg_ty)
             || self.type_requires_js_runtime_member_semantics(expr_ty)
             || self.type_requires_js_runtime_member_semantics(object_reg_ty)
+    }
+
+    fn dynamic_property_result_type(&self, inferred: TypeId) -> TypeId {
+        if self.js_this_binding_compat || inferred.as_u32() == UNRESOLVED_TYPE_ID {
+            UNRESOLVED
+        } else {
+            inferred
+        }
     }
 
     fn object_expr_is_class_constructor_ref(&self, expr: &Expression) -> bool {
@@ -434,6 +443,12 @@ impl<'a> Lowerer<'a> {
         let Some(&global_idx) = self.js_script_lexical_globals.get(&symbol) else {
             return false;
         };
+        let name = self.interner.resolve(symbol).to_string();
+
+        if self.function_depth == 0 && !self.visible_js_lexical_symbols.contains(&symbol) {
+            let _ = self.emit_parameter_tdz_reference_error(&name);
+            return true;
+        }
 
         if self.function_depth == 0 && self.visible_js_lexical_symbols.contains(&symbol) {
             if self.js_script_const_globals.contains(&symbol) {
@@ -565,6 +580,14 @@ impl<'a> Lowerer<'a> {
         self.emit(IrInstr::NativeCall {
             dest: None,
             native_id: crate::compiler::native_id::OBJECT_ITERATOR_CLOSE,
+            args: vec![iterator],
+        });
+    }
+
+    pub(super) fn emit_iterator_close_on_throw_helper(&mut self, iterator: Register) {
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_ON_THROW,
             args: vec![iterator],
         });
     }
@@ -5933,30 +5956,16 @@ impl<'a> Lowerer<'a> {
                 || (self.js_this_binding_compat && receiver_has_structural_named_view));
 
         if receiver_prefers_runtime_named_lookup {
-            let member_ty = {
-                let member_expr = Expression::Member(member.clone());
-                let inferred = self.get_expr_type(&member_expr);
-                if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                    UNRESOLVED
-                } else {
-                    inferred
-                }
-            };
+            let member_expr = Expression::Member(member.clone());
+            let member_ty = self.dynamic_property_result_type(self.get_expr_type(&member_expr));
             let dest = self.alloc_register(member_ty);
             self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
         }
 
         if use_js_runtime_member_semantics {
-            let member_ty = {
-                let member_expr = Expression::Member(member.clone());
-                let inferred = self.get_expr_type(&member_expr);
-                if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                    UNRESOLVED
-                } else {
-                    inferred
-                }
-            };
+            let member_expr = Expression::Member(member.clone());
+            let member_ty = self.dynamic_property_result_type(self.get_expr_type(&member_expr));
             let dest = self.alloc_register(member_ty);
             self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
@@ -6396,15 +6405,8 @@ impl<'a> Lowerer<'a> {
         if self.js_this_binding_compat
             && self.member_read_uses_dynamic_property_path(&member.object, object.ty)
         {
-            let member_ty = {
-                let member_expr = Expression::Member(member.clone());
-                let inferred = self.get_expr_type(&member_expr);
-                if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                    UNRESOLVED
-                } else {
-                    inferred
-                }
-            };
+            let member_expr = Expression::Member(member.clone());
+            let member_ty = self.dynamic_property_result_type(self.get_expr_type(&member_expr));
             let dest = self.alloc_register(member_ty);
             self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
@@ -6433,7 +6435,13 @@ impl<'a> Lowerer<'a> {
     fn lower_index(&mut self, index: &ast::IndexExpression, full_expr: &Expression) -> Register {
         let object = self.lower_expr(&index.object);
         let elem_ty = self.get_expr_type(full_expr);
-        let dest = self.alloc_register(elem_ty);
+        let uses_dynamic_keyed_access = self
+            .index_uses_dynamic_keyed_access_for_expr(self.get_expr_type(&index.object), &index.index);
+        let dest = self.alloc_register(if uses_dynamic_keyed_access {
+            self.dynamic_property_result_type(elem_ty)
+        } else {
+            elem_ty
+        });
 
         if index.optional {
             let null_block = self.alloc_block();
@@ -6463,10 +6471,7 @@ impl<'a> Lowerer<'a> {
             self.current_block = load_block;
             let idx = self.lower_expr(&index.index);
             let load_result = self.alloc_register(dest.ty);
-            if self.index_uses_dynamic_keyed_access_for_expr(
-                self.get_expr_type(&index.object),
-                &index.index,
-            ) {
+            if uses_dynamic_keyed_access {
                 self.emit(IrInstr::DynGetKeyed {
                     dest: load_result.clone(),
                     object,
@@ -6496,10 +6501,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let idx = self.lower_expr(&index.index);
-        if self.index_uses_dynamic_keyed_access_for_expr(
-            self.get_expr_type(&index.object),
-            &index.index,
-        ) {
+        if uses_dynamic_keyed_access {
             self.emit(IrInstr::DynGetKeyed {
                 dest: dest.clone(),
                 object,
@@ -8018,6 +8020,10 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        if self.emit_store_js_script_lexical_global(symbol, value.clone()) {
+            return;
+        }
+
         if let Some(global_idx) = self.shared_script_binding_slot(symbol) {
             self.emit(IrInstr::StoreGlobal {
                 index: global_idx,
@@ -8107,6 +8113,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expression::Index(index) => {
+                let object = self.lower_expr(&index.object);
                 let key = self.lower_expr(&index.index);
                 if matches!(index.object.as_ref(), Expression::Super(_)) {
                     Some(PreparedDestructuringTarget::SuperIndex {
@@ -8115,7 +8122,7 @@ impl<'a> Lowerer<'a> {
                     })
                 } else {
                     Some(PreparedDestructuringTarget::Index {
-                        object: self.lower_expr(&index.object),
+                        object,
                         key,
                         dynamic: self.js_this_binding_compat
                             || self.index_uses_dynamic_keyed_access_for_expr(
@@ -8130,6 +8137,44 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn prepare_destructuring_target_with_iterator_close_on_throw(
+        &mut self,
+        iterator: Register,
+        expr: &Expression,
+    ) -> Option<PreparedDestructuringTarget> {
+        let catch_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.emit(IrInstr::SetupTry {
+            catch_block,
+            finally_block: None,
+        });
+        let prepared = self.prepare_destructuring_target(expr);
+        if !self.current_block_is_terminated() {
+            self.emit(IrInstr::EndTry);
+            self.set_terminator(Terminator::Jump(exit_block));
+        }
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(catch_block, "assign.target.throw.catch"));
+        self.current_block = catch_block;
+        let temp_local = self.next_local;
+        self.next_local += 1;
+        self.emit(IrInstr::PopToLocal { index: temp_local });
+        self.emit_iterator_close_on_throw_helper(iterator);
+        let exception = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: temp_local,
+            dest: exception.clone(),
+        });
+        self.set_terminator(Terminator::Throw(exception));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(exit_block, "assign.target.throw.exit"));
+        self.current_block = exit_block;
+        prepared
+    }
+
     fn store_prepared_destructuring_target(
         &mut self,
         target: PreparedDestructuringTarget,
@@ -8140,7 +8185,11 @@ impl<'a> Lowerer<'a> {
                 self.store_identifier_value(symbol, value);
             }
             PreparedDestructuringTarget::Member { object, property } => {
-                self.emit_dyn_set_named(object, &property, value);
+                if self.js_this_binding_compat {
+                    self.emit_js_named_property_assignment(object, &property, value);
+                } else {
+                    self.emit_dyn_set_named(object, &property, value);
+                }
             }
             PreparedDestructuringTarget::SuperMember { receiver, property } => {
                 let key = self.emit_named_key_register(&property);
@@ -8157,6 +8206,8 @@ impl<'a> Lowerer<'a> {
                         array: object,
                         element: value,
                     });
+                } else if self.js_this_binding_compat {
+                    self.emit_js_property_assignment(object, key, value);
                 } else if dynamic {
                     self.emit(IrInstr::DynSetKeyed {
                         object,
@@ -8254,6 +8305,62 @@ impl<'a> Lowerer<'a> {
         final_val
     }
 
+    fn emit_iterator_throw_guard<F>(
+        &mut self,
+        iterator: Register,
+        step_result: Register,
+        body: F,
+    ) where
+        F: FnOnce(&mut Self),
+    {
+        let catch_block = self.alloc_block();
+        let close_block = self.alloc_block();
+        let rethrow_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.emit(IrInstr::SetupTry {
+            catch_block,
+            finally_block: None,
+        });
+        body(self);
+        if !self.current_block_is_terminated() {
+            self.emit(IrInstr::EndTry);
+            self.set_terminator(Terminator::Jump(exit_block));
+        }
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(catch_block, "assign.iter.throw.catch"));
+        self.current_block = catch_block;
+        let temp_local = self.next_local;
+        self.next_local += 1;
+        self.emit(IrInstr::PopToLocal { index: temp_local });
+        self.set_terminator(Terminator::BranchIfNull {
+            value: step_result,
+            null_block: rethrow_block,
+            not_null_block: close_block,
+        });
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(close_block, "assign.iter.throw.close"));
+        self.current_block = close_block;
+        self.emit_iterator_close_on_throw_helper(iterator);
+        self.set_terminator(Terminator::Jump(rethrow_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(rethrow_block, "assign.iter.throw.rethrow"));
+        self.current_block = rethrow_block;
+        let exception = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: temp_local,
+            dest: exception.clone(),
+        });
+        self.set_terminator(Terminator::Throw(exception));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(exit_block, "assign.iter.throw.exit"));
+        self.current_block = exit_block;
+    }
+
     fn lower_destructuring_assignment_target(&mut self, target: &Expression, value_reg: Register) {
         match target {
             Expression::Parenthesized(paren) => {
@@ -8283,6 +8390,11 @@ impl<'a> Lowerer<'a> {
 
                     match elem {
                         ast::ArrayElement::Expression(expr) => {
+                            let prepared_target = self
+                                .prepare_destructuring_target_with_iterator_close_on_throw(
+                                    iterator_reg.clone(),
+                                    expr,
+                                );
                             let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
                             last_step_result = Some(step_result.clone());
                             let value_block = self.alloc_block();
@@ -8301,7 +8413,8 @@ impl<'a> Lowerer<'a> {
                                 "assign.destr.iter.value",
                             ));
                             self.current_block = value_block;
-                            let elem_reg = self.emit_iterator_value_helper(step_result);
+                            let elem_reg =
+                                self.emit_iterator_value_helper(step_result.clone());
                             self.emit(IrInstr::Assign {
                                 dest: final_val.clone(),
                                 value: IrValue::Register(elem_reg),
@@ -8324,7 +8437,45 @@ impl<'a> Lowerer<'a> {
                                 "assign.destr.iter.merge",
                             ));
                             self.current_block = merge_block;
-                            self.lower_destructuring_assignment_target(expr, final_val);
+                            self.emit_iterator_throw_guard(
+                                iterator_reg.clone(),
+                                step_result.clone(),
+                                |this| {
+                                    if let Expression::Assignment(assign) = expr {
+                                        if assign.operator == AssignmentOperator::Assign {
+                                            let final_val =
+                                                this.emit_destructuring_assignment_default_value(
+                                                    &assign.left,
+                                                    final_val.clone(),
+                                                    &assign.right,
+                                                );
+                                            if let Some(prepared_target) = prepared_target.clone() {
+                                                this.store_prepared_destructuring_target(
+                                                    prepared_target,
+                                                    final_val,
+                                                );
+                                            } else {
+                                                this.lower_destructuring_assignment_target(
+                                                    &assign.left,
+                                                    final_val,
+                                                );
+                                            }
+                                            return;
+                                        }
+                                    }
+                                    if let Some(prepared_target) = prepared_target.clone() {
+                                        this.store_prepared_destructuring_target(
+                                            prepared_target,
+                                            final_val,
+                                        );
+                                    } else {
+                                        this.lower_destructuring_assignment_target(
+                                            expr,
+                                            final_val,
+                                        );
+                                    }
+                                },
+                            );
                         }
                         ast::ArrayElement::Spread(expr) => {
                             let prepared_target = self.prepare_destructuring_target(expr);

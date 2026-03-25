@@ -1179,10 +1179,13 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn check_class_decl(&mut self, class: &ClassDecl) {
-        let has_super_class = class.extends.is_some();
+        let has_super_class = class.extends.is_some() || class.extends_expr.is_some();
         let mut constructor_count = 0usize;
         if let Some(extends) = &class.extends {
             self.check_type_annotation_exprs(extends);
+        }
+        if let Some(extends_expr) = &class.extends_expr {
+            self.check_expr(extends_expr);
         }
         for implement in &class.implements {
             self.check_type_annotation_exprs(implement);

@@ -2975,6 +2975,17 @@ impl<'a> Interpreter<'a> {
     ) -> Result<(), VmError> {
         if let Some(target) = target {
             let strict = self.current_function_is_strict_js(task, module);
+            if !self.with_env_has_binding(target, key, task, module)? {
+                if strict {
+                    return Err(self.raise_task_builtin_error(
+                        task,
+                        "ReferenceError",
+                        format!("{key} is not defined"),
+                    ));
+                }
+                self.set_property_value_via_js_semantics(target, key, value, target, task, module)?;
+                return Ok(());
+            }
             match self.set_property_value_via_js_semantics(
                 target, key, value, target, task, module,
             )? {
@@ -8995,7 +9006,9 @@ impl<'a> Interpreter<'a> {
         if debug_field_lookup {
             eprintln!("[field.lookup] target={:#x} dyn-key={}", obj_val.raw(), key);
         }
-        obj.dyn_props().and_then(|dp| dp.get(key).map(|p| p.value))
+        obj.dyn_props().and_then(|dp| {
+            dp.get(key).map(|p| p.value)
+        })
     }
 
     fn get_own_js_property_value_by_name_on_target(&self, target: Value, key: &str) -> Option<Value> {
@@ -16958,6 +16971,17 @@ impl<'a> Interpreter<'a> {
                         if let Err(error) = self.iterator_close(args[0], task, module) {
                             return OpcodeResult::Error(error);
                         }
+                        stack
+                            .push(Value::undefined())
+                            .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_ON_THROW => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.iteratorCloseOnThrow requires 1 argument".to_string(),
+                            ));
+                        }
+                        let _ = self.iterator_close(args[0], task, module);
                         stack
                             .push(Value::undefined())
                             .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)

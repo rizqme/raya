@@ -266,6 +266,7 @@ pub struct ClassDecl {
     pub name: Identifier,
     pub type_params: Option<Vec<TypeParameter>>,
     pub extends: Option<TypeAnnotation>,
+    pub extends_expr: Option<Expression>,
 
     /// Implements clauses (type aliases only, NOT interfaces - LANG.md §10)
     pub implements: Vec<TypeAnnotation>,
