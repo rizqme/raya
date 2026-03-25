@@ -378,6 +378,21 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    fn emit_type_error_throw(&mut self, message: &str) -> Register {
+        let dest = self.alloc_register(UNRESOLVED);
+        let message_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: message_reg.clone(),
+            value: IrValue::Constant(IrConstant::String(message.to_string())),
+        });
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_THROW_TYPE_ERROR,
+            args: vec![message_reg],
+        });
+        dest
+    }
+
     fn emit_js_member_call_helper(
         &mut self,
         dest: Register,
@@ -1991,7 +2006,9 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            return self.lower_js_arguments_object();
+            if self.function_depth > 0 {
+                return self.lower_js_arguments_object();
+            }
         }
 
         // Check if this is a named function used as a value (function reference)
@@ -7771,6 +7788,27 @@ impl<'a> Lowerer<'a> {
     pub(super) fn store_identifier_value(&mut self, symbol: Symbol, value: Register) {
         let name = self.interner.resolve(symbol).to_string();
 
+        if self.constant_map.contains_key(&symbol) {
+            let _ = self.emit_type_error_throw("Assignment to constant variable.");
+            return;
+        }
+
+        let has_initialized_static_binding = self.local_map.contains_key(&symbol)
+            || self.captures.iter().any(|capture| capture.symbol == symbol)
+            || self
+                .ancestor_variables
+                .as_ref()
+                .is_some_and(|ancestors| ancestors.contains_key(&symbol))
+            || self.shared_script_binding_slot(symbol).is_some()
+            || self
+                .current_method_env_globals
+                .as_ref()
+                .is_some_and(|globals| globals.contains_key(&symbol));
+        if self.direct_eval_binding_is_lexical(symbol) && !has_initialized_static_binding {
+            let _ = self.emit_parameter_tdz_reference_error(&name);
+            return;
+        }
+
         if let Some(&local_idx) = self.local_map.get(&symbol) {
             if self.refcell_registers.contains_key(&local_idx) {
                 let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
@@ -7810,6 +7848,10 @@ impl<'a> Lowerer<'a> {
         if let Some(idx) = self.captures.iter().position(|c| c.symbol == symbol) {
             let is_refcell = self.captures[idx].is_refcell;
             let capture_idx = self.captures[idx].capture_idx;
+            if !is_refcell {
+                let _ = self.emit_type_error_throw("Assignment to constant variable.");
+                return;
+            }
             if is_refcell {
                 let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                 self.emit(IrInstr::LoadCaptured {
@@ -7831,6 +7873,10 @@ impl<'a> Lowerer<'a> {
 
         if let Some(ref ancestors) = self.ancestor_variables.clone() {
             if let Some(ancestor_var) = ancestors.get(&symbol) {
+                if !ancestor_var.is_refcell {
+                    let _ = self.emit_type_error_throw("Assignment to constant variable.");
+                    return;
+                }
                 let capture_idx = self.next_capture_slot;
                 self.next_capture_slot += 1;
                 self.captures.push(super::CaptureInfo {

@@ -140,6 +140,8 @@ pub const OBJECT_JS_UNARY_MINUS: u16 = 0x0041;
 pub const OBJECT_COPY_DATA_PROPERTIES: u16 = 0x0042;
 /// Raise a JS ReferenceError for an explicitly invalid binding access.
 pub const OBJECT_THROW_REFERENCE_ERROR: u16 = 0x0043;
+/// Raise a JS TypeError with a custom message.
+pub const OBJECT_THROW_TYPE_ERROR: u16 = 0x01F0;
 /// Create a live JS generator iterator object backed by a suspended task.
 pub const OBJECT_GENERATOR_NEW: u16 = 0x0044;
 /// Advance a live JS generator iterator.
@@ -710,6 +712,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_CAPTURE_IDENTIFIER_ASSIGNMENT_TARGET => "Object.captureIdentifierAssignmentTarget",
         OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET => "Object.storeIdentifierAssignmentTarget",
         OBJECT_THROW_REFERENCE_ERROR => "Object.throwReferenceError",
+        OBJECT_THROW_TYPE_ERROR => "Object.throwTypeError",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",

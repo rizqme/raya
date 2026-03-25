@@ -2362,13 +2362,17 @@ impl<'a> Binder<'a> {
                     span: ident.span,
                     referenced: false,
                 };
-                self.symbols
-                    .define_in_scope(scope_id, symbol)
-                    .map_err(|err| BindError::DuplicateSymbol {
-                        name: err.name,
-                        original: err.original,
-                        duplicate: err.duplicate,
-                    })?;
+                let define_result = if allow_duplicate_var && self.is_js_mode() {
+                    self.symbols
+                        .define_in_scope_allowing_ancestor_import_shadow(scope_id, symbol)
+                } else {
+                    self.symbols.define_in_scope(scope_id, symbol)
+                };
+                define_result.map_err(|err| BindError::DuplicateSymbol {
+                    name: err.name,
+                    original: err.original,
+                    duplicate: err.duplicate,
+                })?;
             }
             Pattern::Array(array_pat) => {
                 // Extract element type from array type annotation
@@ -2449,13 +2453,17 @@ impl<'a> Binder<'a> {
                         span: rest_ident.span,
                         referenced: false,
                     };
-                    self.symbols
-                        .define_in_scope(scope_id, symbol)
-                        .map_err(|err| BindError::DuplicateSymbol {
-                            name: err.name,
-                            original: err.original,
-                            duplicate: err.duplicate,
-                        })?;
+                    let define_result = if allow_duplicate_var && self.is_js_mode() {
+                        self.symbols
+                            .define_in_scope_allowing_ancestor_import_shadow(scope_id, symbol)
+                    } else {
+                        self.symbols.define_in_scope(scope_id, symbol)
+                    };
+                    define_result.map_err(|err| BindError::DuplicateSymbol {
+                        name: err.name,
+                        original: err.original,
+                        duplicate: err.duplicate,
+                    })?;
                 }
             }
             Pattern::Rest(rest_pat) => {

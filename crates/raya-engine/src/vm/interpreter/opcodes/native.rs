@@ -13536,6 +13536,26 @@ impl<'a> Interpreter<'a> {
                         ));
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_THROW_TYPE_ERROR => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.throwTypeError expects exactly one string argument"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(message_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.throwTypeError expects a string message".to_string(),
+                            ));
+                        };
+                        let message = unsafe { &*message_ptr.as_ptr() };
+                        return OpcodeResult::Error(self.raise_task_builtin_error(
+                            task,
+                            "TypeError",
+                            message.data.clone(),
+                        ));
+                    }
+
                     id if id == crate::compiler::native_id::TRY_GET_GLOBAL => {
                         // Non-throwing global lookup: returns value or undefined.
                         // Checks builtin_global_slots, then globalThis properties.

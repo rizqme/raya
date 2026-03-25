@@ -1570,7 +1570,9 @@ impl<'a> EarlyErrorPass<'a> {
 
     fn is_valid_assignment_target(expr: &Expression, allow_pattern_defaults: bool) -> bool {
         match expr {
-            Expression::Identifier(_) | Expression::Member(_) | Expression::Index(_) => true,
+            Expression::Identifier(_) => true,
+            Expression::Member(member) => !member.optional,
+            Expression::Index(index) => !index.optional,
             Expression::Parenthesized(paren) => {
                 Self::is_valid_assignment_target(&paren.expression, allow_pattern_defaults)
             }

@@ -238,6 +238,51 @@ impl SymbolTable {
         Ok(())
     }
 
+    /// Define a symbol in a scope while intentionally ignoring imported bindings
+    /// from ancestor scopes.
+    ///
+    /// This is used for legacy JS script-style `var` declarations, which are
+    /// allowed to shadow ambient/imported globals in the local/module scope.
+    pub fn define_in_scope_allowing_ancestor_import_shadow(
+        &mut self,
+        scope_id: ScopeId,
+        mut symbol: Symbol,
+    ) -> Result<(), DuplicateSymbolError> {
+        let (scope_kind, existing) = {
+            let scope = &self.scopes[scope_id.0 as usize];
+            (scope.kind, scope.symbols.get(&symbol.name).cloned())
+        };
+
+        if let Some(existing) = existing {
+            if scope_kind == ScopeKind::Module
+                && (existing.flags.is_imported || symbol.flags.is_imported)
+            {
+                return Err(DuplicateSymbolError {
+                    name: symbol.name.clone(),
+                    original: existing.span,
+                    duplicate: symbol.span,
+                });
+            }
+
+            let allow_cross_kind_shadow =
+                matches!(scope_kind, ScopeKind::Global | ScopeKind::Module)
+                    && existing.kind != symbol.kind;
+            if !allow_cross_kind_shadow {
+                return Err(DuplicateSymbolError {
+                    name: symbol.name.clone(),
+                    original: existing.span,
+                    duplicate: symbol.span,
+                });
+            }
+        }
+
+        symbol.scope_id = scope_id;
+        self.scopes[scope_id.0 as usize]
+            .symbols
+            .insert(symbol.name.clone(), symbol);
+        Ok(())
+    }
+
     fn find_imported_symbol_in_ancestor_chain(
         &self,
         mut scope_id: Option<ScopeId>,
