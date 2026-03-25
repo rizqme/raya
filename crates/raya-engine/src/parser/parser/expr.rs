@@ -52,6 +52,7 @@ pub(super) fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
         Token::While => Some("while"),
         Token::For => Some("for"),
         Token::Do => Some("do"),
+        Token::With => Some("with"),
         Token::Break => Some("break"),
         Token::Continue => Some("continue"),
         Token::Switch => Some("switch"),
