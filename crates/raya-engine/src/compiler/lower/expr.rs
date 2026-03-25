@@ -403,28 +403,10 @@ impl<'a> Lowerer<'a> {
             .get(&global_idx)
             .copied()
             .unwrap_or(UNRESOLVED);
-        let loaded = self.alloc_register(slot_ty);
+        let dest = self.alloc_register(self.effective_identifier_value_type(ident, slot_ty));
         self.emit(IrInstr::LoadGlobal {
-            dest: loaded.clone(),
-            index: global_idx,
-        });
-
-        let value_block = self.alloc_block();
-        let error_block = self.alloc_block();
-        let merge_block = self.alloc_block();
-        let dest = self.alloc_register(UNRESOLVED);
-        self.set_terminator(Terminator::BranchIfNull {
-            value: loaded.clone(),
-            null_block: error_block,
-            not_null_block: value_block,
-        });
-
-        self.current_function_mut()
-            .add_block(BasicBlock::with_label(value_block, "lexical.global.value"));
-        self.current_block = value_block;
-        self.emit(IrInstr::Assign {
             dest: dest.clone(),
-            value: IrValue::Register(loaded),
+            index: global_idx,
         });
         self.propagate_variable_projection_to_register(ident.name, &dest);
         if !self.identifier_requires_late_bound_dispatch(ident.name) {
@@ -433,21 +415,6 @@ impl<'a> Lowerer<'a> {
                 &dest,
             );
         }
-        self.set_terminator(Terminator::Jump(merge_block));
-
-        self.current_function_mut()
-            .add_block(BasicBlock::with_label(error_block, "lexical.global.tdz"));
-        self.current_block = error_block;
-        let err = self.emit_parameter_tdz_reference_error(self.interner.resolve(ident.name));
-        self.emit(IrInstr::Assign {
-            dest: dest.clone(),
-            value: IrValue::Register(err),
-        });
-        self.set_terminator(Terminator::Jump(merge_block));
-
-        self.current_function_mut()
-            .add_block(BasicBlock::with_label(merge_block, "lexical.global.merge"));
-        self.current_block = merge_block;
         dest
     }
 
@@ -460,30 +427,25 @@ impl<'a> Lowerer<'a> {
             return false;
         };
 
+        if self.function_depth == 0 && self.visible_js_lexical_symbols.contains(&symbol) {
+            if self.js_script_const_globals.contains(&symbol) {
+                let _ = self.emit_type_error_throw("Assignment to constant variable.");
+            } else {
+                self.global_type_map.insert(global_idx, value.ty);
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_idx,
+                    value,
+                });
+            }
+            return true;
+        }
+
         let current = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::LoadGlobal {
             dest: current.clone(),
             index: global_idx,
         });
-
-        let ready_block = self.alloc_block();
-        let tdz_block = self.alloc_block();
-        let merge_block = self.alloc_block();
-        self.set_terminator(Terminator::BranchIfNull {
-            value: current,
-            null_block: tdz_block,
-            not_null_block: ready_block,
-        });
-
-        self.current_function_mut()
-            .add_block(BasicBlock::with_label(tdz_block, "lexical.store.tdz"));
-        self.current_block = tdz_block;
-        let _ = self.emit_parameter_tdz_reference_error(self.interner.resolve(symbol));
-        self.set_terminator(Terminator::Jump(merge_block));
-
-        self.current_function_mut()
-            .add_block(BasicBlock::with_label(ready_block, "lexical.store.ready"));
-        self.current_block = ready_block;
+        let _ = current;
         if self.js_script_const_globals.contains(&symbol) {
             let _ = self.emit_type_error_throw("Assignment to constant variable.");
         } else {
@@ -493,11 +455,6 @@ impl<'a> Lowerer<'a> {
                 value,
             });
         }
-        self.set_terminator(Terminator::Jump(merge_block));
-
-        self.current_function_mut()
-            .add_block(BasicBlock::with_label(merge_block, "lexical.store.merge"));
-        self.current_block = merge_block;
         true
     }
 

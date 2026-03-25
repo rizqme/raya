@@ -5551,7 +5551,21 @@ impl<'a> Interpreter<'a> {
             if value.is_null() || value.is_undefined() {
                 continue;
             }
-            self.store_builtin_global_value(&export.name, value);
+            if let Some(runtime_slot) = export.runtime_global_slot {
+                let module_slot = layout.global_base + runtime_slot as usize;
+                {
+                    let mut globals = self.globals_by_index.write();
+                    if module_slot >= globals.len() {
+                        globals.resize(module_slot + 1, Value::null());
+                    }
+                    globals[module_slot] = value;
+                }
+                self.builtin_global_slots
+                    .write()
+                    .insert(export.name.clone(), module_slot);
+            } else {
+                self.store_builtin_global_value(&export.name, value);
+            }
         }
     }
 

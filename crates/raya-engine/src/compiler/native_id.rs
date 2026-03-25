@@ -141,7 +141,7 @@ pub const OBJECT_COPY_DATA_PROPERTIES: u16 = 0x0042;
 /// Raise a JS ReferenceError for an explicitly invalid binding access.
 pub const OBJECT_THROW_REFERENCE_ERROR: u16 = 0x0043;
 /// Raise a JS TypeError with a custom message.
-pub const OBJECT_THROW_TYPE_ERROR: u16 = 0x01F0;
+pub const OBJECT_THROW_TYPE_ERROR: u16 = 0x0051;
 /// Create a live JS generator iterator object backed by a suspended task.
 pub const OBJECT_GENERATOR_NEW: u16 = 0x0044;
 /// Advance a live JS generator iterator.
