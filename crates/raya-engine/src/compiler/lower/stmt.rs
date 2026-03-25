@@ -2355,7 +2355,11 @@ impl<'a> Lowerer<'a> {
                     // can hydrate named constants from stable runtime slots.
                     self.constant_map.insert(name, const_val.clone());
                     if self.function_depth == 0 && self.block_depth == 0 {
-                        if let Some(&global_idx) = self.module_var_globals.get(&name) {
+                        if let Some(&global_idx) = self
+                            .js_script_lexical_globals
+                            .get(&name)
+                            .or_else(|| self.module_var_globals.get(&name))
+                        {
                             let value = self.emit_constant_value(&const_val);
                             self.global_type_map.insert(global_idx, value.ty);
                             self.emit(IrInstr::StoreGlobal {

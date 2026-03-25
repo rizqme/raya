@@ -659,6 +659,8 @@ pub struct Lowerer<'a> {
     /// These are visible to top-level helper functions and direct eval, but are
     /// not published onto the script global object.
     js_script_lexical_globals: FxHashMap<Symbol, u16>,
+    /// Subset of top-level JS lexical bindings declared with `const`.
+    js_script_const_globals: FxHashSet<Symbol>,
     /// Import-local binding symbols, used for import-specific lowering diagnostics.
     import_bindings: FxHashSet<Symbol>,
     /// Ambient builtin globals available without explicit source declarations/imports.
@@ -1456,6 +1458,7 @@ impl<'a> Lowerer<'a> {
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
             js_script_lexical_globals: FxHashMap::default(),
+            js_script_const_globals: FxHashSet::default(),
             import_bindings: FxHashSet::default(),
             ambient_builtin_globals: FxHashSet::default(),
             late_bound_object_vars: FxHashSet::default(),
@@ -2172,6 +2175,9 @@ impl<'a> Lowerer<'a> {
                         if decl.kind != crate::parser::ast::VariableKind::Var =>
                     {
                         if let ast::Pattern::Identifier(ident) = &decl.pattern {
+                            if decl.kind == crate::parser::ast::VariableKind::Const {
+                                self.js_script_const_globals.insert(ident.name);
+                            }
                             self.js_script_lexical_globals
                                 .entry(ident.name)
                                 .or_insert_with(|| {

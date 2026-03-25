@@ -393,6 +393,114 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    fn emit_load_js_script_lexical_global(
+        &mut self,
+        ident: &ast::Identifier,
+        global_idx: u16,
+    ) -> Register {
+        let slot_ty = self
+            .global_type_map
+            .get(&global_idx)
+            .copied()
+            .unwrap_or(UNRESOLVED);
+        let loaded = self.alloc_register(slot_ty);
+        self.emit(IrInstr::LoadGlobal {
+            dest: loaded.clone(),
+            index: global_idx,
+        });
+
+        let value_block = self.alloc_block();
+        let error_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+        let dest = self.alloc_register(UNRESOLVED);
+        self.set_terminator(Terminator::BranchIfNull {
+            value: loaded.clone(),
+            null_block: error_block,
+            not_null_block: value_block,
+        });
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(value_block, "lexical.global.value"));
+        self.current_block = value_block;
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(loaded),
+        });
+        self.propagate_variable_projection_to_register(ident.name, &dest);
+        if !self.identifier_requires_late_bound_dispatch(ident.name) {
+            self.propagate_type_projection_to_register(
+                self.effective_identifier_value_type(ident, slot_ty),
+                &dest,
+            );
+        }
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(error_block, "lexical.global.tdz"));
+        self.current_block = error_block;
+        let err = self.emit_parameter_tdz_reference_error(self.interner.resolve(ident.name));
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(err),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(merge_block, "lexical.global.merge"));
+        self.current_block = merge_block;
+        dest
+    }
+
+    fn emit_store_js_script_lexical_global(
+        &mut self,
+        symbol: Symbol,
+        value: Register,
+    ) -> bool {
+        let Some(&global_idx) = self.js_script_lexical_globals.get(&symbol) else {
+            return false;
+        };
+
+        let current = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadGlobal {
+            dest: current.clone(),
+            index: global_idx,
+        });
+
+        let ready_block = self.alloc_block();
+        let tdz_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+        self.set_terminator(Terminator::BranchIfNull {
+            value: current,
+            null_block: tdz_block,
+            not_null_block: ready_block,
+        });
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(tdz_block, "lexical.store.tdz"));
+        self.current_block = tdz_block;
+        let _ = self.emit_parameter_tdz_reference_error(self.interner.resolve(symbol));
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(ready_block, "lexical.store.ready"));
+        self.current_block = ready_block;
+        if self.js_script_const_globals.contains(&symbol) {
+            let _ = self.emit_type_error_throw("Assignment to constant variable.");
+        } else {
+            self.global_type_map.insert(global_idx, value.ty);
+            self.emit(IrInstr::StoreGlobal {
+                index: global_idx,
+                value,
+            });
+        }
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(merge_block, "lexical.store.merge"));
+        self.current_block = merge_block;
+        true
+    }
+
     fn emit_js_member_call_helper(
         &mut self,
         dest: Register,
@@ -1874,6 +1982,10 @@ impl<'a> Lowerer<'a> {
 
         if self.should_resolve_from_direct_eval_env(ident) {
             return self.emit_direct_eval_binding_get(name, false);
+        }
+
+        if let Some(&global_idx) = self.js_script_lexical_globals.get(&ident.name) {
+            return self.emit_load_js_script_lexical_global(ident, global_idx);
         }
 
         // Check module-level variables (stored as globals)
@@ -7793,6 +7905,10 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
+        if self.emit_store_js_script_lexical_global(symbol, value.clone()) {
+            return;
+        }
+
         let has_initialized_static_binding = self.local_map.contains_key(&symbol)
             || self.captures.iter().any(|capture| capture.symbol == symbol)
             || self
@@ -8467,6 +8583,8 @@ impl<'a> Lowerer<'a> {
                                 value: rhs,
                             });
                         }
+                    } else if self.emit_store_js_script_lexical_global(ident.name, rhs.clone()) {
+                        assigned_symbol = true;
                     } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
                         assigned_symbol = true;
                         // Module-level variable — store via global slot
@@ -8551,7 +8669,12 @@ impl<'a> Lowerer<'a> {
                                     value: rhs,
                                 });
                             }
-                        } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name)
+                        } else if self
+                            .emit_store_js_script_lexical_global(ident.name, rhs.clone())
+                        {
+                            assigned_symbol = true;
+                        } else if let Some(global_idx) =
+                            self.shared_script_binding_slot(ident.name)
                         {
                             assigned_symbol = true;
                             self.emit(IrInstr::StoreGlobal {
@@ -9024,6 +9147,10 @@ impl<'a> Lowerer<'a> {
                                 value: value.clone(),
                             });
                         }
+                    } else if self
+                        .emit_store_js_script_lexical_global(ident.name, value.clone())
+                    {
+                        assigned_symbol = true;
                     } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
                         assigned_symbol = true;
                         // Module-level variable inside arrow — store via global slot
@@ -9055,6 +9182,8 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                     }
+                } else if self.emit_store_js_script_lexical_global(ident.name, value.clone()) {
+                    assigned_symbol = true;
                 } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
                     assigned_symbol = true;
                     // Module-level variable — store via global slot
