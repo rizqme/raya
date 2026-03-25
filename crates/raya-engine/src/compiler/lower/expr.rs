@@ -8265,6 +8265,7 @@ impl<'a> Lowerer<'a> {
                             self.lower_destructuring_assignment_target(expr, final_val);
                         }
                         ast::ArrayElement::Spread(expr) => {
+                            let prepared_target = self.prepare_destructuring_target(expr);
                             let zero = self.emit_i32_const(0);
                             let rest_arr = self.alloc_register(TypeId::new(ARRAY_TYPE_ID));
                             self.emit(IrInstr::NewArray {
@@ -8302,7 +8303,14 @@ impl<'a> Lowerer<'a> {
                             self.current_function_mut()
                                 .add_block(BasicBlock::with_label(exit, "assign.rest.exit"));
                             self.current_block = exit;
-                            self.lower_destructuring_assignment_target(expr, rest_arr);
+                            if let Some(prepared_target) = prepared_target {
+                                self.store_prepared_destructuring_target(
+                                    prepared_target,
+                                    rest_arr,
+                                );
+                            } else {
+                                self.lower_destructuring_assignment_target(expr, rest_arr);
+                            }
                             last_step_result = None;
                             break;
                         }
@@ -8435,6 +8443,19 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_assignment(&mut self, assign: &ast::AssignmentExpression) -> Register {
+        fn member_like_assignment_target(expr: &Expression) -> bool {
+            match expr {
+                Expression::Member(_) | Expression::Index(_) => true,
+                Expression::Parenthesized(paren) => member_like_assignment_target(&paren.expression),
+                Expression::Assignment(assign)
+                    if assign.operator == AssignmentOperator::Assign =>
+                {
+                    member_like_assignment_target(&assign.left)
+                }
+                _ => false,
+            }
+        }
+
         let captured_with_identifier_target = if assign.operator == AssignmentOperator::Assign {
             match &*assign.left {
                 Expression::Identifier(ident)
@@ -8470,6 +8491,14 @@ impl<'a> Lowerer<'a> {
             } else {
                 None
             };
+
+        let prepared_simple_assignment_target = if assign.operator == AssignmentOperator::Assign
+            && member_like_assignment_target(&assign.left)
+        {
+            self.prepare_destructuring_target(&assign.left)
+        } else {
+            None
+        };
 
         // Short-circuiting assignment operators:
         // - ??= assign only when LHS is null
@@ -8925,6 +8954,11 @@ impl<'a> Lowerer<'a> {
             && matches!(&*assign.left, Expression::Array(_) | Expression::Object(_))
         {
             self.lower_destructuring_assignment_target(&assign.left, value.clone());
+            return value;
+        }
+
+        if let Some(prepared_target) = prepared_simple_assignment_target {
+            self.store_prepared_destructuring_target(prepared_target, value.clone());
             return value;
         }
 
