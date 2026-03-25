@@ -2622,8 +2622,16 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> Option<AmbientGlobalDescriptor> {
-        let field_value = self.get_own_field_value_by_name(target, key)?;
-        let is_math_object = self.is_ambient_math_constant_target(target, key);
+        let target = self
+            .proxy_wrapper_proxy_value(target)
+            .unwrap_or(target);
+        let public_target = self.public_property_target(target);
+        let field_value = self
+            .get_own_field_value_by_name(target, key)
+            .or_else(|| self.get_own_field_value_by_name(public_target, key))?;
+        let is_math_object = self.is_ambient_math_constant_target(target, key)
+            || (public_target.raw() != target.raw()
+                && self.is_ambient_math_constant_target(public_target, key));
         if is_math_object && matches!(key, "PI" | "E") {
             return Some(AmbientGlobalDescriptor {
                 value: field_value,
@@ -2640,13 +2648,27 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> bool {
-        let target = self.public_property_target(self.proxy_wrapper_proxy_value(target).unwrap_or(target));
+        let target = self
+            .proxy_wrapper_proxy_value(target)
+            .unwrap_or(target);
+        let public_target = self.public_property_target(target);
         let ambient_math = self
             .ambient_global_value_sync("Math")
-            .map(|math| self.public_property_target(self.proxy_wrapper_proxy_value(math).unwrap_or(math)));
+            .map(|math| {
+                let math = self
+                    .proxy_wrapper_proxy_value(math)
+                    .unwrap_or(math);
+                (math, self.public_property_target(math))
+            });
+        let matches_target = |candidate: Value| {
+            self.builtin_global_name_for_value(candidate).as_deref() == Some("Math")
+                || ambient_math.is_some_and(|(math, public_math)| {
+                    math.raw() == candidate.raw() || public_math.raw() == candidate.raw()
+                })
+        };
         matches!(key, "PI" | "E")
-            && (self.builtin_global_name_for_value(target).as_deref() == Some("Math")
-                || ambient_math.is_some_and(|math| math.raw() == target.raw()))
+            && (matches_target(target)
+                || (public_target.raw() != target.raw() && matches_target(public_target)))
     }
 
     pub(in crate::vm::interpreter) fn set_builtin_global_property(
@@ -5741,9 +5763,15 @@ impl<'a> Interpreter<'a> {
                     if self.own_js_property_flags(value, key) == Some((false, false, false)) {
                         continue;
                     }
-                    let Some(constant) = self.get_own_field_value_by_name(value, key) else {
-                        continue;
-                    };
+                    let constant = self
+                        .get_own_field_value_by_name(value, key)
+                        .or_else(|| self.get_own_js_property_value_by_name(value, key))
+                        .or_else(|| match key {
+                            "PI" => Some(Value::f64(std::f64::consts::PI)),
+                            "E" => Some(Value::f64(std::f64::consts::E)),
+                            _ => None,
+                        })
+                        .unwrap_or(Value::undefined());
                     self.define_data_property_on_target(
                         value,
                         key,
@@ -6501,6 +6529,7 @@ impl<'a> Interpreter<'a> {
         }
 
         if let Some(obj_ptr) = checked_object_ptr(receiver) {
+            let existing_own_shape = self.resolve_own_property_shape(receiver, key);
             let obj = unsafe { &mut *obj_ptr.as_ptr() };
             if let Some(index) = self.get_field_index_for_value(receiver, key) {
                 obj.set_field(index, value).map_err(VmError::RuntimeError)?;
@@ -6513,7 +6542,19 @@ impl<'a> Interpreter<'a> {
                 if let Some(existing) = dyn_props.get_mut(prop_key) {
                     existing.value = value;
                 } else {
-                    dyn_props.insert(prop_key, DynProp::data(value));
+                    if let Some(shape) = existing_own_shape {
+                        dyn_props.insert(
+                            prop_key,
+                            DynProp::data_with_attrs(
+                                value,
+                                shape.writable,
+                                shape.enumerable,
+                                shape.configurable,
+                            ),
+                        );
+                    } else {
+                        dyn_props.insert(prop_key, DynProp::data(value));
+                    }
                 }
             }
             self.sync_descriptor_value(receiver, key, value);
@@ -12894,24 +12935,33 @@ impl<'a> Interpreter<'a> {
         let descriptor = self.alloc_object_descriptor()?;
         let legacy_error_descriptor = self.legacy_error_field_descriptor(target, key);
         let callable_virtual_descriptor = self.callable_virtual_property_descriptor(target, key);
-        let writable_flag = callable_virtual_descriptor
+        let resolved_data_shape = self
+            .resolve_own_property_shape(target, key)
+            .filter(|shape| matches!(shape.kind, JsOwnPropertyKind::Data));
+        let writable_flag = resolved_data_shape
+            .map(|shape| shape.writable)
+            .or(callable_virtual_descriptor
             .or(legacy_error_descriptor)
             .map(|(writable, _, _)| writable)
-            .or(own_flags.map(|(writable, _, _)| writable))
+            .or(own_flags.map(|(writable, _, _)| writable)))
             .unwrap_or(object_backed_value.is_some());
-        let configurable_flag = callable_virtual_descriptor
+        let configurable_flag = resolved_data_shape
+            .map(|shape| shape.configurable)
+            .or(callable_virtual_descriptor
             .or(legacy_error_descriptor)
             .map(|(_, configurable, _)| configurable)
-            .or(own_flags.map(|(_, configurable, _)| configurable))
+            .or(own_flags.map(|(_, configurable, _)| configurable)))
             .unwrap_or(true);
         let callable_data_property = callable_virtual_descriptor.is_none()
             && object_backed_value.is_some()
             && self.callable_function_info(value).is_some()
             && self.callable_function_info(target).is_some();
-        let enumerable_flag = callable_virtual_descriptor
+        let enumerable_flag = resolved_data_shape
+            .map(|shape| shape.enumerable)
+            .or(callable_virtual_descriptor
             .or(legacy_error_descriptor)
             .map(|(_, _, enumerable)| enumerable)
-            .or(own_flags.map(|(_, _, enumerable)| enumerable))
+            .or(own_flags.map(|(_, _, enumerable)| enumerable)))
             .unwrap_or_else(|| {
                 if callable_data_property {
                     false
@@ -12919,7 +12969,6 @@ impl<'a> Interpreter<'a> {
                     object_backed_value.is_some()
                 }
             });
-
         self.set_internal_descriptor_field(descriptor, "value", value)?;
         self.set_internal_descriptor_field(descriptor, "writable", Value::bool(writable_flag))?;
         self.set_internal_descriptor_field(
@@ -13899,6 +13948,48 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Error(error);
                         }
                         if let Err(error) = stack.push(args[1]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_SET_PROPERTY
+                        || id == crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT =>
+                    {
+                        if args.len() != 3 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "setProperty expects target, key, and value".to_string(),
+                            ));
+                        }
+                        let (Some(key_str), _) = (match self.property_key_parts_with_context(
+                            args[1],
+                            "Object.setProperty",
+                            task,
+                            module,
+                        ) {
+                            Ok(parts) => parts,
+                            Err(error) => return OpcodeResult::Error(error),
+                        }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot convert property key to string".to_string(),
+                            ));
+                        };
+                        let target = self.proxy_wrapper_proxy_value(args[0]).unwrap_or(args[0]);
+                        let written = match self.set_property_value_via_js_semantics(
+                            target, &key_str, args[2], target, task, module,
+                        ) {
+                            Ok(written) => written,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if !written
+                            && id == crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT
+                        {
+                            return OpcodeResult::Error(VmError::TypeError(format!(
+                                "Cannot assign to non-writable property '{}'",
+                                key_str
+                            )));
+                        }
+                        if let Err(error) = stack.push(args[2]) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue

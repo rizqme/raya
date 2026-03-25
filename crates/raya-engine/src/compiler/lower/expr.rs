@@ -1245,6 +1245,28 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn emit_js_property_assignment(&mut self, object: Register, key: Register, value: Register) {
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: if self.js_strict_context {
+                crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT
+            } else {
+                crate::compiler::native_id::OBJECT_SET_PROPERTY
+            },
+            args: vec![object, key, value],
+        });
+    }
+
+    fn emit_js_named_property_assignment(
+        &mut self,
+        object: Register,
+        property: &str,
+        value: Register,
+    ) {
+        let key = self.emit_named_key_register(property);
+        self.emit_js_property_assignment(object, key, value);
+    }
+
     fn emit_reflect_has_named(&mut self, object: Register, property: &str) -> Register {
         let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
         // TODO Phase 2 completion: emit JsHas when handlers are wired to property kernel
@@ -8539,7 +8561,7 @@ impl<'a> Lowerer<'a> {
                         }
                     };
                     if use_js_runtime_member_semantics {
-                        self.emit_dyn_set_named(object, prop_name, rhs);
+                        self.emit_js_named_property_assignment(object, prop_name, rhs);
                     } else if let Some(nominal_type_id) = nominal_type_id {
                         if let Some(field) = self
                             .get_all_fields(nominal_type_id)
@@ -8561,11 +8583,7 @@ impl<'a> Lowerer<'a> {
                                         prop_name.to_string(),
                                     )),
                                 });
-                                self.emit(IrInstr::NativeCall {
-                                    dest: None,
-                                    native_id: crate::compiler::native_id::REFLECT_SET,
-                                    args: vec![object, prop_reg, rhs],
-                                });
+                                self.emit_js_property_assignment(object, prop_reg, rhs);
                             } else {
                                 let class_name = self
                                     .class_map
@@ -8621,11 +8639,7 @@ impl<'a> Lowerer<'a> {
                             dest: prop_reg.clone(),
                             value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
                         });
-                        self.emit(IrInstr::NativeCall {
-                            dest: None,
-                            native_id: crate::compiler::native_id::REFLECT_SET,
-                            args: vec![object, prop_reg, rhs],
-                        });
+                        self.emit_js_property_assignment(object, prop_reg, rhs);
                     }
                 }
                 Expression::Index(index) => {
@@ -8640,18 +8654,15 @@ impl<'a> Lowerer<'a> {
                         if self.index_uses_dynamic_keyed_access_for_expr(
                             self.get_expr_type(&index.object),
                             &index.index,
-                        ) {
+                        ) && !self.js_this_binding_compat
+                        {
                             self.emit(IrInstr::DynSetKeyed {
                                 object,
                                 key: idx,
                                 value: rhs,
                             });
                         } else {
-                            self.emit(IrInstr::StoreElement {
-                                array: object,
-                                index: idx,
-                                value: rhs,
-                            });
+                            self.emit_js_property_assignment(object, idx, rhs);
                         }
                     }
                 }
@@ -9099,7 +9110,7 @@ impl<'a> Lowerer<'a> {
                 };
 
                 if use_js_runtime_member_semantics {
-                    self.emit_dyn_set_named(object, &prop_name, value.clone());
+                    self.emit_js_named_property_assignment(object, &prop_name, value.clone());
                 } else if let Some(nominal_type_id) = nominal_type_id {
                     if let Some(field) = self
                         .get_all_fields(nominal_type_id)
@@ -9119,11 +9130,7 @@ impl<'a> Lowerer<'a> {
                                 dest: prop_reg.clone(),
                                 value: IrValue::Constant(IrConstant::String(prop_name.clone())),
                             });
-                            self.emit(IrInstr::NativeCall {
-                                dest: None,
-                                native_id: crate::compiler::native_id::REFLECT_SET,
-                                args: vec![object, prop_reg, value.clone()],
-                            });
+                            self.emit_js_property_assignment(object, prop_reg, value.clone());
                         } else {
                             let class_name = self
                                 .class_map
@@ -9179,18 +9186,14 @@ impl<'a> Lowerer<'a> {
                         || obj_ty_id == JSON_OBJECT_TYPE_ID
                         || use_dynamic_property_path
                     {
-                        self.emit_dyn_set_named(object, &prop_name, value.clone());
+                        self.emit_js_named_property_assignment(object, &prop_name, value.clone());
                     } else {
                         let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                         self.emit(IrInstr::Assign {
                             dest: prop_reg.clone(),
                             value: IrValue::Constant(IrConstant::String(prop_name.clone())),
                         });
-                        self.emit(IrInstr::NativeCall {
-                            dest: None,
-                            native_id: crate::compiler::native_id::REFLECT_SET,
-                            args: vec![object, prop_reg, value.clone()],
-                        });
+                        self.emit_js_property_assignment(object, prop_reg, value.clone());
                     }
                 }
             }
@@ -9206,18 +9209,15 @@ impl<'a> Lowerer<'a> {
                     if self.index_uses_dynamic_keyed_access_for_expr(
                         self.get_expr_type(&index.object),
                         &index.index,
-                    ) {
+                    ) && !self.js_this_binding_compat
+                    {
                         self.emit(IrInstr::DynSetKeyed {
                             object,
                             key: idx,
                             value: value.clone(),
                         });
                     } else {
-                        self.emit(IrInstr::StoreElement {
-                            array: object,
-                            index: idx,
-                            value: value.clone(),
-                        });
+                        self.emit_js_property_assignment(object, idx, value.clone());
                     }
                 }
             }
