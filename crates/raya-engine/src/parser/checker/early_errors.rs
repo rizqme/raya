@@ -1430,10 +1430,19 @@ impl<'a> EarlyErrorPass<'a> {
                 self.check_expr(&assign.right);
             }
             Expression::Array(array) => {
-                for (index, elem) in array.elements.iter().flatten().enumerate() {
+                for (index, elem) in array.elements.iter().enumerate() {
+                    let Some(elem) = elem else {
+                        continue;
+                    };
                     match elem {
                         ArrayElement::Expression(expr) => self.check_assignment_pattern_target(expr),
                         ArrayElement::Spread(expr) => {
+                            if matches!(expr, Expression::Assignment(_)) {
+                                self.error(
+                                    "Rest element must not have an initializer",
+                                    *expr.span(),
+                                );
+                            }
                             if index + 1 != array.elements.len() {
                                 self.error(
                                     "Rest element must be the last element in an assignment pattern",
@@ -1496,12 +1505,21 @@ impl<'a> EarlyErrorPass<'a> {
                 self.check_expr(&assign.right);
             }
             Expression::Array(array) => {
-                for (index, elem) in array.elements.iter().flatten().enumerate() {
+                for (index, elem) in array.elements.iter().enumerate() {
+                    let Some(elem) = elem else {
+                        continue;
+                    };
                     match elem {
                         ArrayElement::Expression(expr) => {
                             self.check_assignment_pattern_target(expr)
                         }
                         ArrayElement::Spread(expr) => {
+                            if matches!(expr, Expression::Assignment(_)) {
+                                self.error(
+                                    "Rest element must not have an initializer",
+                                    *expr.span(),
+                                );
+                            }
                             if index + 1 != array.elements.len() {
                                 self.error(
                                     "Rest element must be the last element in an assignment pattern",

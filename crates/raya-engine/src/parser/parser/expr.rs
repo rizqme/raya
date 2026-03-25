@@ -1451,6 +1451,12 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
 
                     if !parser.check(&Token::RightBracket) {
                         parser.expect(Token::Comma)?;
+                        if parser.check(&Token::RightBracket) {
+                            return Err(ParseError::invalid_syntax(
+                                "Spread element must not have a trailing comma",
+                                parser.current_span(),
+                            ));
+                        }
                     }
                 } else {
                     // Regular element
