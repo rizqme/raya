@@ -237,6 +237,25 @@ impl<'a> Lowerer<'a> {
         self.emit_closure_invoke(dest, closure, args, ClosureInvokeMode::Spawn);
     }
 
+    fn emit_member_closure_invoke(
+        &mut self,
+        dest: Register,
+        receiver: Register,
+        closure: Register,
+        args: Vec<Register>,
+        call_ty: TypeId,
+        object_expr: &Expression,
+        callee_expr: &Expression,
+        method_name: &str,
+    ) {
+        if self.late_bound_member_call_is_async(object_expr, callee_expr, method_name) {
+            self.emit_closure_invoke(dest, closure, args, ClosureInvokeMode::Spawn);
+        } else {
+            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+            self.propagate_type_projection_to_register(call_ty, &dest);
+        }
+    }
+
     fn resolve_identifier_closure_source(
         &mut self,
         ident: &ast::Identifier,
@@ -4324,20 +4343,16 @@ impl<'a> Lowerer<'a> {
                     if self.js_this_binding_compat {
                         let receiver = self.load_class_value_for_nominal_type(nominal_type_id);
                         let closure = self.lower_member(member);
-                        if self.late_bound_member_call_is_async(
+                        self.emit_member_closure_invoke(
+                            dest.clone(),
+                            receiver,
+                            closure,
+                            args,
+                            call_ty,
                             &member.object,
                             &call.callee,
                             method_name,
-                        ) {
-                            self.emit(IrInstr::SpawnClosure {
-                                dest: dest.clone(),
-                                closure,
-                                args,
-                            });
-                        } else {
-                            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                            self.propagate_type_projection_to_register(call_ty, &dest);
-                        }
+                        );
                         return dest;
                     }
                 }
@@ -4357,21 +4372,20 @@ impl<'a> Lowerer<'a> {
                     let receiver = self.lower_expr(&member.object);
                     let closure = self.alloc_register(UNRESOLVED);
                     self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
-                    if !prefers_direct_closure_call
-                        && self.late_bound_member_call_is_async(
+                    if prefers_direct_closure_call {
+                        self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+                        self.propagate_type_projection_to_register(call_ty, &dest);
+                    } else {
+                        self.emit_member_closure_invoke(
+                            dest.clone(),
+                            receiver,
+                            closure,
+                            args,
+                            call_ty,
                             &member.object,
                             &call.callee,
                             method_name,
-                        )
-                    {
-                        self.emit(IrInstr::SpawnClosure {
-                            dest: dest.clone(),
-                            closure,
-                            args,
-                        });
-                    } else {
-                        self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                        self.propagate_type_projection_to_register(call_ty, &dest);
+                        );
                     }
                     return dest;
                 }
@@ -4420,18 +4434,18 @@ impl<'a> Lowerer<'a> {
                         return dest;
                     }
                 }
+                let receiver = self.lower_expr(&member.object);
                 let closure = self.lower_member(member);
-                if async_call {
-                    self.emit(IrInstr::SpawnClosure {
-                        dest: dest.clone(),
-                        closure,
-                        args,
-                    });
-                } else {
-                    let receiver = self.lower_expr(&member.object);
-                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                    self.propagate_type_projection_to_register(call_ty, &dest);
-                }
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    receiver,
+                    closure,
+                    args,
+                    call_ty,
+                    &member.object,
+                    &call.callee,
+                    method_name,
+                );
                 return dest;
             }
 
@@ -4593,16 +4607,16 @@ impl<'a> Lowerer<'a> {
                 let closure = self.alloc_register(UNRESOLVED);
                 let receiver = self.lower_expr(&member.object);
                 self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
-                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
-                    self.emit(IrInstr::SpawnClosure {
-                        dest: dest.clone(),
-                        closure,
-                        args,
-                    });
-                } else {
-                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                    self.propagate_type_projection_to_register(call_ty, &dest);
-                }
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    receiver,
+                    closure,
+                    args,
+                    call_ty,
+                    &member.object,
+                    &call.callee,
+                    method_name,
+                );
                 return dest;
             }
 
@@ -4846,24 +4860,17 @@ impl<'a> Lowerer<'a> {
                                 );
                             }
                             let closure = self.lower_member(member);
-                            if self.late_bound_member_call_is_async(
+                            let receiver = self.lower_expr(&member.object);
+                            self.emit_member_closure_invoke(
+                                dest.clone(),
+                                receiver,
+                                closure,
+                                args,
+                                call_ty,
                                 &member.object,
                                 &call.callee,
                                 method_name,
-                            ) {
-                                self.emit(IrInstr::SpawnClosure {
-                                    dest: dest.clone(),
-                                    closure,
-                                    args,
-                                });
-                            } else {
-                                self.emit(IrInstr::CallClosure {
-                                    dest: Some(dest.clone()),
-                                    closure,
-                                    args,
-                                });
-                                self.propagate_type_projection_to_register(call_ty, &dest);
-                            }
+                            );
                             return dest;
                         }
                     }
@@ -5105,17 +5112,16 @@ impl<'a> Lowerer<'a> {
                     object: object.clone(),
                     property: method_name.to_string(),
                 });
-                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
-                    self.emit(IrInstr::SpawnClosure {
-                        dest: dest.clone(),
-                        closure,
-                        args,
-                    });
-                } else {
-                    let receiver = object;
-                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                    self.propagate_type_projection_to_register(call_ty, &dest);
-                }
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    object.clone(),
+                    closure,
+                    args,
+                    call_ty,
+                    &member.object,
+                    &call.callee,
+                    method_name,
+                );
                 return dest;
             }
 
