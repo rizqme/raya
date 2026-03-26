@@ -3074,7 +3074,9 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             // JS Generators
             // =========================================================
-            Opcode::GeneratorYield => self.exec_generator_ops(stack, opcode),
+            Opcode::GeneratorInitSuspend | Opcode::GeneratorYield => {
+                self.exec_generator_ops(stack, opcode)
+            }
 
             // =========================================================
             // Function Calls (needs MutexGuard for frame operations)

@@ -580,6 +580,7 @@ fn format_instr(instr: &IrInstr) -> String {
         }
         IrInstr::Debugger => "debugger".to_string(),
         IrInstr::Yield => "yield".to_string(),
+        IrInstr::GeneratorInitSuspend => "generator_init_suspend".to_string(),
         IrInstr::GeneratorYield { value } => format!("generator_yield {}", value),
         IrInstr::NewMutex { dest } => {
             format!("{} = new_mutex", dest)

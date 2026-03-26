@@ -762,6 +762,7 @@ impl ModuleCompiler {
                 param_count: 0,
                 uses_js_this_slot: false,
                 is_constructible: false,
+                is_async: false,
                 is_generator: false,
                 visible_length: 0,
                 is_strict_js: false,

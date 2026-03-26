@@ -3199,21 +3199,21 @@ impl<'a> Lowerer<'a> {
     }
 
     fn class_is_derived(&self, nominal_type_id: NominalTypeId) -> bool {
-        self.class_info_map.get(&nominal_type_id).is_some_and(|info| {
-            info.parent_class.is_some()
-                || info.parent_constructor_symbol.is_some()
-                || info.has_runtime_extends
-        })
+        self.class_info_map
+            .get(&nominal_type_id)
+            .is_some_and(|info| {
+                info.parent_class.is_some()
+                    || info.parent_constructor_symbol.is_some()
+                    || info.has_runtime_extends
+            })
     }
 
     fn lower_parent_constructor_for_class(
         &mut self,
         nominal_type_id: NominalTypeId,
     ) -> Option<Register> {
-        let (parent_class, parent_constructor_symbol, has_runtime_extends) = self
-            .class_info_map
-            .get(&nominal_type_id)
-            .map(|info| {
+        let (parent_class, parent_constructor_symbol, has_runtime_extends) =
+            self.class_info_map.get(&nominal_type_id).map(|info| {
                 (
                     info.parent_class,
                     info.parent_constructor_symbol,
@@ -4050,6 +4050,7 @@ impl<'a> Lowerer<'a> {
         let mut ir_func = IrFunction::new(name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
         ir_func.is_constructible = !func.is_generator;
+        ir_func.is_async = func.is_async;
         ir_func.is_generator = func.is_generator;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
@@ -4155,6 +4156,9 @@ impl<'a> Lowerer<'a> {
 
         if func.is_generator && self.function_uses_generator_snapshot(&func.body) {
             self.init_generator_yield_array();
+        }
+        if func.is_generator {
+            self.emit(IrInstr::GeneratorInitSuspend);
         }
 
         // Lower function body
@@ -4870,6 +4874,7 @@ impl<'a> Lowerer<'a> {
                     let mut ir_func = IrFunction::new(&full_name, params, return_ty);
                     ir_func.uses_js_this_slot = method_has_js_this_slot;
                     ir_func.is_constructible = false;
+                    ir_func.is_async = method.is_async;
                     ir_func.is_generator = method.is_generator;
                     ir_func.visible_length = visible_length;
                     ir_func.is_strict_js = true;
@@ -4986,6 +4991,9 @@ impl<'a> Lowerer<'a> {
 
                     if method.is_generator && self.function_uses_generator_snapshot(body) {
                         self.init_generator_yield_array();
+                    }
+                    if method.is_generator {
+                        self.emit(IrInstr::GeneratorInitSuspend);
                     }
 
                     // Lower method body
@@ -5142,11 +5150,7 @@ impl<'a> Lowerer<'a> {
                             .type_annotation
                             .as_ref()
                             .map(|t| {
-                                self.resolve_param_type_from_annotation(
-                                    t,
-                                    class_type_params,
-                                    None,
-                                )
+                                self.resolve_param_type_from_annotation(t, class_type_params, None)
                             })
                             .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
                         rest_param_info = Some((&param.pattern, ty));
@@ -5625,7 +5629,11 @@ impl<'a> Lowerer<'a> {
     /// Materialize the rest-arguments array value for the current activation.
     /// Must be called after entry block creation and parameter registration,
     /// before default params (rest params can't have defaults).
-    fn emit_rest_array_value(&mut self, rest_array_ty: TypeId, fixed_param_count: usize) -> Register {
+    fn emit_rest_array_value(
+        &mut self,
+        rest_array_ty: TypeId,
+        fixed_param_count: usize,
+    ) -> Register {
         // Extract element type from array type
         let elem_ty = if let Some(Type::Array(arr_ty)) = self.type_ctx.get(rest_array_ty) {
             arr_ty.element

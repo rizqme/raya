@@ -155,6 +155,7 @@ impl Inliner {
             | IrInstr::NewChannel { .. }
             | IrInstr::Sleep { .. }
             | IrInstr::Yield
+            | IrInstr::GeneratorInitSuspend
             | IrInstr::GeneratorYield { .. }
             | IrInstr::TaskCancel { .. } => true,
             // Any other instruction: not safe to inline (renamer doesn't handle it)
@@ -595,6 +596,7 @@ impl Inliner {
                 duration_ms: self.rename_register(duration_ms, reg_map),
             }),
             IrInstr::Yield => Some(IrInstr::Yield),
+            IrInstr::GeneratorInitSuspend => Some(IrInstr::GeneratorInitSuspend),
             IrInstr::GeneratorYield { value } => Some(IrInstr::GeneratorYield {
                 value: self.rename_register(value, reg_map),
             }),

@@ -136,11 +136,7 @@ impl<'a> Lowerer<'a> {
                 let class_prototype =
                     self.ensure_class_prototype_target(&class_value, &mut prototype_value);
                 let parent_prototype = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
-                self.emit_dyn_get_named(
-                    parent_prototype.clone(),
-                    parent_constructor,
-                    "prototype",
-                );
+                self.emit_dyn_get_named(parent_prototype.clone(), parent_constructor, "prototype");
                 self.emit(IrInstr::NativeCall {
                     dest: None,
                     native_id: crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF,
@@ -1715,13 +1711,10 @@ impl<'a> Lowerer<'a> {
                             self.emit_named_key_register(self.interner.resolve(lit.value))
                         }
                         ast::PropertyKey::IntLiteral(lit) => {
-                            let key_reg =
-                                self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
+                            let key_reg = self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
                             self.emit(IrInstr::Assign {
                                 dest: key_reg.clone(),
-                                value: IrValue::Constant(IrConstant::String(
-                                    lit.value.to_string(),
-                                )),
+                                value: IrValue::Constant(IrConstant::String(lit.value.to_string())),
                             });
                             key_reg
                         }

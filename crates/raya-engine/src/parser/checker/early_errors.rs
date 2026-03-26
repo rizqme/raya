@@ -353,6 +353,74 @@ impl<'a> EarlyErrorPass<'a> {
         }
     }
 
+    fn check_binding_name_in_context(
+        &mut self,
+        ident: &Identifier,
+        strict: bool,
+        function_context: Option<FunctionContext>,
+    ) {
+        if strict {
+            if self.is_restricted_strict_binding_name(ident) {
+                self.error(
+                    format!(
+                        "Binding name '{}' is not allowed in strict mode",
+                        self.interner.resolve(ident.name)
+                    ),
+                    ident.span,
+                );
+                return;
+            }
+        }
+
+        if self.mode == TypeSystemMode::Raya {
+            return;
+        }
+
+        let name = self.interner.resolve(ident.name);
+        if name == "yield" && function_context.is_some_and(|ctx| ctx.is_generator) {
+            self.error(
+                "Binding name 'yield' is not allowed in generator functions",
+                ident.span,
+            );
+            return;
+        }
+
+        if name == "await" && function_context.is_some_and(|ctx| ctx.is_async) {
+            self.error(
+                "Binding name 'await' is not allowed in async functions",
+                ident.span,
+            );
+        }
+    }
+
+    fn check_binding_name(&mut self, ident: &Identifier, strict: bool) {
+        self.check_binding_name_in_context(ident, strict, self.current_function());
+    }
+
+    fn check_contextual_identifier_usage(&mut self, ident: &Identifier) {
+        if self.mode == TypeSystemMode::Raya {
+            return;
+        }
+
+        let name = self.interner.resolve(ident.name);
+        if name == "yield"
+            && (self.current_strict() || self.current_function().is_some_and(|ctx| ctx.is_generator))
+        {
+            self.error(
+                "Identifier 'yield' is not allowed in this context",
+                ident.span,
+            );
+            return;
+        }
+
+        if name == "await" && self.current_function().is_some_and(|ctx| ctx.is_async) {
+            self.error(
+                "Identifier 'await' is not allowed in this context",
+                ident.span,
+            );
+        }
+    }
+
     fn collect_bound_identifiers<'b>(pattern: &'b Pattern, out: &mut Vec<&'b Identifier>) {
         match pattern {
             Pattern::Identifier(id) => out.push(id),
@@ -381,9 +449,7 @@ impl<'a> EarlyErrorPass<'a> {
         Self::collect_bound_identifiers(pattern, &mut bound);
         let mut seen = Vec::new();
         for ident in bound {
-            if strict {
-                self.check_strict_binding_name(ident);
-            }
+            self.check_binding_name(ident, strict);
             if check_duplicates && seen.contains(&ident.name) {
                 self.error(
                     format!(
@@ -436,9 +502,7 @@ impl<'a> EarlyErrorPass<'a> {
             let mut names = Vec::new();
             Self::collect_bound_identifiers(&param.pattern, &mut names);
             for ident in names {
-                if kind == ParameterListKind::Arrow
-                    && self.interner.resolve(ident.name) == "enum"
-                {
+                if kind == ParameterListKind::Arrow && self.interner.resolve(ident.name) == "enum" {
                     self.error(
                         "Binding name 'enum' is reserved in arrow parameters",
                         ident.span,
@@ -492,11 +556,13 @@ impl<'a> EarlyErrorPass<'a> {
 
     fn find_yield_expression_span(&self, expr: &Expression) -> Option<crate::parser::Span> {
         match expr {
-            Expression::Array(array) => array.elements.iter().flatten().find_map(|elem| match elem {
-                ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
-                    self.find_yield_expression_span(expr)
-                }
-            }),
+            Expression::Array(array) => {
+                array.elements.iter().flatten().find_map(|elem| match elem {
+                    ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
+                        self.find_yield_expression_span(expr)
+                    }
+                })
+            }
             Expression::Object(obj) => obj.properties.iter().find_map(|prop| match prop {
                 ObjectProperty::Property(prop) => {
                     if let PropertyKey::Computed(expr) = &prop.key {
@@ -526,40 +592,37 @@ impl<'a> EarlyErrorPass<'a> {
                 .find_yield_expression_span(&cond.test)
                 .or_else(|| self.find_yield_expression_span(&cond.consequent))
                 .or_else(|| self.find_yield_expression_span(&cond.alternate)),
-            Expression::Call(call) => self
-                .find_yield_expression_span(&call.callee)
-                .or_else(|| {
+            Expression::Call(call) => self.find_yield_expression_span(&call.callee).or_else(|| {
+                call.arguments
+                    .iter()
+                    .find_map(|arg| self.find_yield_expression_span(arg.expression()))
+            }),
+            Expression::AsyncCall(call) => {
+                self.find_yield_expression_span(&call.callee).or_else(|| {
                     call.arguments
                         .iter()
                         .find_map(|arg| self.find_yield_expression_span(arg.expression()))
-                }),
-            Expression::AsyncCall(call) => self
-                .find_yield_expression_span(&call.callee)
-                .or_else(|| {
-                    call.arguments
-                        .iter()
-                        .find_map(|arg| self.find_yield_expression_span(arg.expression()))
-                }),
+                })
+            }
             Expression::Member(member) => self.find_yield_expression_span(&member.object),
             Expression::Index(index) => self
                 .find_yield_expression_span(&index.object)
                 .or_else(|| self.find_yield_expression_span(&index.index)),
-            Expression::New(new_expr) => self
-                .find_yield_expression_span(&new_expr.callee)
-                .or_else(|| {
-                    new_expr
-                        .arguments
-                        .iter()
-                        .find_map(|arg| self.find_yield_expression_span(arg.expression()))
-                }),
+            Expression::New(new_expr) => {
+                self.find_yield_expression_span(&new_expr.callee)
+                    .or_else(|| {
+                        new_expr
+                            .arguments
+                            .iter()
+                            .find_map(|arg| self.find_yield_expression_span(arg.expression()))
+                    })
+            }
             Expression::Await(await_expr) => self.find_yield_expression_span(&await_expr.argument),
             Expression::Yield(yield_expr) => Some(yield_expr.span),
             Expression::Typeof(typeof_expr) => {
                 self.find_yield_expression_span(&typeof_expr.argument)
             }
-            Expression::Parenthesized(paren) => {
-                self.find_yield_expression_span(&paren.expression)
-            }
+            Expression::Parenthesized(paren) => self.find_yield_expression_span(&paren.expression),
             Expression::JsxElement(elem) => {
                 for attr in &elem.opening.attributes {
                     match attr {
@@ -594,17 +657,15 @@ impl<'a> EarlyErrorPass<'a> {
                 .find_yield_expression_span(&in_expr.property)
                 .or_else(|| self.find_yield_expression_span(&in_expr.object)),
             Expression::TypeCast(cast) => self.find_yield_expression_span(&cast.object),
-            Expression::TaggedTemplate(tagged) => self
-                .find_yield_expression_span(&tagged.tag)
-                .or_else(|| {
+            Expression::TaggedTemplate(tagged) => {
+                self.find_yield_expression_span(&tagged.tag).or_else(|| {
                     tagged.template.parts.iter().find_map(|part| match part {
                         TemplatePart::Expression(expr) => self.find_yield_expression_span(expr),
                         TemplatePart::String(_) => None,
                     })
-                }),
-            Expression::DynamicImport(import) => {
-                self.find_yield_expression_span(&import.source)
+                })
             }
+            Expression::DynamicImport(import) => self.find_yield_expression_span(&import.source),
             Expression::Arrow(_)
             | Expression::Function(_)
             | Expression::Identifier(_)
@@ -629,11 +690,13 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::Identifier(ident) => {
                 (self.interner.resolve(ident.name) == target).then_some(ident)
             }
-            Expression::Array(array) => array.elements.iter().flatten().find_map(|elem| match elem {
-                ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
-                    self.find_identifier_reference_named(expr, target)
-                }
-            }),
+            Expression::Array(array) => {
+                array.elements.iter().flatten().find_map(|elem| match elem {
+                    ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
+                        self.find_identifier_reference_named(expr, target)
+                    }
+                })
+            }
             Expression::Object(obj) => obj.properties.iter().find_map(|prop| match prop {
                 ObjectProperty::Property(prop) => {
                     if let PropertyKey::Computed(expr) = &prop.key {
@@ -648,10 +711,14 @@ impl<'a> EarlyErrorPass<'a> {
                 }
             }),
             Expression::TemplateLiteral(tpl) => tpl.parts.iter().find_map(|part| match part {
-                TemplatePart::Expression(expr) => self.find_identifier_reference_named(expr, target),
+                TemplatePart::Expression(expr) => {
+                    self.find_identifier_reference_named(expr, target)
+                }
                 TemplatePart::String(_) => None,
             }),
-            Expression::Unary(unary) => self.find_identifier_reference_named(&unary.operand, target),
+            Expression::Unary(unary) => {
+                self.find_identifier_reference_named(&unary.operand, target)
+            }
             Expression::Binary(binary) => self
                 .find_identifier_reference_named(&binary.left, target)
                 .or_else(|| self.find_identifier_reference_named(&binary.right, target)),
@@ -668,16 +735,16 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::Call(call) => self
                 .find_identifier_reference_named(&call.callee, target)
                 .or_else(|| {
-                    call.arguments
-                        .iter()
-                        .find_map(|arg| self.find_identifier_reference_named(arg.expression(), target))
+                    call.arguments.iter().find_map(|arg| {
+                        self.find_identifier_reference_named(arg.expression(), target)
+                    })
                 }),
             Expression::AsyncCall(call) => self
                 .find_identifier_reference_named(&call.callee, target)
                 .or_else(|| {
-                    call.arguments
-                        .iter()
-                        .find_map(|arg| self.find_identifier_reference_named(arg.expression(), target))
+                    call.arguments.iter().find_map(|arg| {
+                        self.find_identifier_reference_named(arg.expression(), target)
+                    })
                 }),
             Expression::Member(member) => {
                 self.find_identifier_reference_named(&member.object, target)
@@ -688,10 +755,9 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::New(new_expr) => self
                 .find_identifier_reference_named(&new_expr.callee, target)
                 .or_else(|| {
-                    new_expr
-                        .arguments
-                        .iter()
-                        .find_map(|arg| self.find_identifier_reference_named(arg.expression(), target))
+                    new_expr.arguments.iter().find_map(|arg| {
+                        self.find_identifier_reference_named(arg.expression(), target)
+                    })
                 }),
             Expression::Await(await_expr) => {
                 self.find_identifier_reference_named(&await_expr.argument, target)
@@ -711,8 +777,8 @@ impl<'a> EarlyErrorPass<'a> {
                     match attr {
                         JsxAttribute::Attribute { value, .. } => {
                             if let Some(value) = value {
-                                if let Some(found) =
-                                    self.find_identifier_reference_named_in_jsx_attr_value(
+                                if let Some(found) = self
+                                    .find_identifier_reference_named_in_jsx_attr_value(
                                         value, target,
                                     )
                                 {
@@ -729,16 +795,17 @@ impl<'a> EarlyErrorPass<'a> {
                         }
                     }
                 }
-                elem.children
-                    .iter()
-                    .find_map(|child| self.find_identifier_reference_named_in_jsx_child(child, target))
+                elem.children.iter().find_map(|child| {
+                    self.find_identifier_reference_named_in_jsx_child(child, target)
+                })
             }
             Expression::JsxFragment(fragment) => fragment
                 .children
                 .iter()
                 .find_map(|child| self.find_identifier_reference_named_in_jsx_child(child, target)),
-            Expression::InstanceOf(instanceof) => self
-                .find_identifier_reference_named(&instanceof.object, target),
+            Expression::InstanceOf(instanceof) => {
+                self.find_identifier_reference_named(&instanceof.object, target)
+            }
             Expression::In(in_expr) => self
                 .find_identifier_reference_named(&in_expr.property, target)
                 .or_else(|| self.find_identifier_reference_named(&in_expr.object, target)),
@@ -827,8 +894,8 @@ impl<'a> EarlyErrorPass<'a> {
                     match attr {
                         JsxAttribute::Attribute { value, .. } => {
                             if let Some(value) = value {
-                                if let Some(found) =
-                                    self.find_identifier_reference_named_in_jsx_attr_value(
+                                if let Some(found) = self
+                                    .find_identifier_reference_named_in_jsx_attr_value(
                                         value, target,
                                     )
                                 {
@@ -845,14 +912,13 @@ impl<'a> EarlyErrorPass<'a> {
                         }
                     }
                 }
-                elem.children
-                    .iter()
-                    .find_map(|nested| self.find_identifier_reference_named_in_jsx_child(nested, target))
+                elem.children.iter().find_map(|nested| {
+                    self.find_identifier_reference_named_in_jsx_child(nested, target)
+                })
             }
-            JsxChild::Fragment(fragment) => fragment
-                .children
-                .iter()
-                .find_map(|nested| self.find_identifier_reference_named_in_jsx_child(nested, target)),
+            JsxChild::Fragment(fragment) => fragment.children.iter().find_map(|nested| {
+                self.find_identifier_reference_named_in_jsx_child(nested, target)
+            }),
         }
     }
 
@@ -1252,6 +1318,7 @@ impl<'a> EarlyErrorPass<'a> {
             Statement::Block(block) => self.check_block(block),
             Statement::Debugger(_) => {}
             Statement::Labeled(labeled) => {
+                self.check_contextual_identifier_usage(&labeled.label);
                 let is_iteration_target = Self::is_iteration_statement(&labeled.body);
                 self.push_label(labeled.label.name, is_iteration_target, |this| {
                     this.check_embedded_statement(&labeled.body);
@@ -1306,9 +1373,14 @@ impl<'a> EarlyErrorPass<'a> {
             Self::directive_prologue_is_strict(&func.body.statements, self.interner);
         let inherited_lexical = self.current_lexical();
         let body_strict = inherited_lexical.strict || body_has_use_strict;
-        if body_strict {
-            self.check_strict_binding_name(&func.name);
-        }
+        self.check_binding_name_in_context(
+            &func.name,
+            body_strict,
+            Some(FunctionContext {
+                is_async: func.is_async,
+                is_generator: func.is_generator,
+            }),
+        );
         self.push_function(
             func.is_async,
             func.is_generator,
@@ -1352,9 +1424,14 @@ impl<'a> EarlyErrorPass<'a> {
         };
         let body_strict = lexical.strict || body_has_use_strict;
         if let Some(name) = &func.name {
-            if body_strict {
-                self.check_strict_binding_name(name);
-            }
+            self.check_binding_name_in_context(
+                name,
+                body_strict,
+                Some(FunctionContext {
+                    is_async: func.is_async,
+                    is_generator: func.is_generator,
+                }),
+            );
         }
         self.push_function(func.is_async, func.is_generator, lexical, |this| {
             if let Some(current) = this.lexical_stack.last_mut() {
@@ -1699,7 +1776,9 @@ impl<'a> EarlyErrorPass<'a> {
                         continue;
                     };
                     match elem {
-                        ArrayElement::Expression(expr) => self.check_assignment_pattern_target(expr),
+                        ArrayElement::Expression(expr) => {
+                            self.check_assignment_pattern_target(expr)
+                        }
                         ArrayElement::Spread(expr) => {
                             if matches!(expr, Expression::Assignment(_)) {
                                 self.error(
@@ -1721,7 +1800,9 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::Object(obj) => {
                 for (index, prop) in obj.properties.iter().enumerate() {
                     match prop {
-                        ObjectProperty::Property(prop) => self.check_assignment_property_target(prop),
+                        ObjectProperty::Property(prop) => {
+                            self.check_assignment_property_target(prop)
+                        }
                         ObjectProperty::Spread(spread) => {
                             if index + 1 != obj.properties.len() {
                                 self.error(
@@ -1819,9 +1900,7 @@ impl<'a> EarlyErrorPass<'a> {
         if self.mode == TypeSystemMode::Js && prop.shorthand {
             let reserved_ident = match &prop.value {
                 Expression::Identifier(ident) => Some(ident),
-                Expression::Assignment(assign)
-                    if assign.operator == AssignmentOperator::Assign =>
-                {
+                Expression::Assignment(assign) if assign.operator == AssignmentOperator::Assign => {
                     match assign.left.as_ref() {
                         Expression::Identifier(ident) => Some(ident),
                         _ => None,
@@ -1896,17 +1975,7 @@ impl<'a> EarlyErrorPass<'a> {
     fn check_expr_with_super_policy(&mut self, expr: &Expression, allow_super_operand: bool) {
         match expr {
             Expression::Identifier(ident) => {
-                let name = self.interner.resolve(ident.name);
-                if name == "yield"
-                    && self.mode != TypeSystemMode::Raya
-                    && (self.current_strict()
-                        || self.current_function().is_some_and(|ctx| ctx.is_generator))
-                {
-                    self.error(
-                        "Identifier 'yield' is not allowed in this context",
-                        ident.span,
-                    );
-                }
+                self.check_contextual_identifier_usage(ident);
             }
             Expression::IntLiteral(_)
             | Expression::FloatLiteral(_)
@@ -2160,6 +2229,8 @@ mod tests {
                 mode: TypeSystemMode::Ts,
                 allow_top_level_return: false,
                 allow_await_outside_async: false,
+                allow_new_target: false,
+                allow_super_property: false,
             },
         )
         .expect_err("expected early error");
@@ -2204,9 +2275,51 @@ mod tests {
                 mode: TypeSystemMode::Js,
                 allow_top_level_return: true,
                 allow_await_outside_async: true,
+                allow_new_target: false,
+                allow_super_property: false,
             },
         )
         .expect("should pass");
+    }
+
+    #[test]
+    fn test_async_function_forbids_await_binding_name() {
+        let (module, interner) = parse_module("async function f() { var await = 1; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("Binding name 'await' is not allowed in async functions")));
+    }
+
+    #[test]
+    fn test_generator_function_forbids_yield_binding_name() {
+        let (module, interner) = parse_module("function* f() { var yield = 1; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("Binding name 'yield' is not allowed in generator functions")));
+    }
+
+    #[test]
+    fn test_async_generator_forbids_await_label_identifier() {
+        let (module, interner) = parse_module("async function* f() { await: ; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
+            .expect_err("expected early error");
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("Identifier 'await' is not allowed")));
+    }
+
+    #[test]
+    fn test_generator_function_forbids_yield_label_identifier() {
+        let (module, interner) = parse_module("function* f() { yield: ; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
+            .expect_err("expected early error");
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("Identifier 'yield' is not allowed")));
     }
 
     #[test]

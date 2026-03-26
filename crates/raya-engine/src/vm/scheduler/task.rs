@@ -79,6 +79,9 @@ pub enum SuspendReason {
 
     /// Suspended at a JS generator `yield`, carrying the yielded value.
     JsGeneratorYield { value: Value },
+
+    /// Suspended after JS generator call-time initialization and before first user step.
+    JsGeneratorInit,
 }
 
 /// Unique identifier for a Task
@@ -1301,6 +1304,7 @@ impl Task {
             SuspendReason::JsGeneratorYield { .. } => {
                 BlockedReason::Other("js_generator_yield".to_string())
             }
+            SuspendReason::JsGeneratorInit => BlockedReason::Other("js_generator_init".to_string()),
         });
 
         Ok(SerializedTask {

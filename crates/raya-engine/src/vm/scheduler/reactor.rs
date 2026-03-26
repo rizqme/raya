@@ -843,8 +843,13 @@ impl Reactor {
                         SuspendReason::IoWait => {
                             // IoRequest was already sent via io_submit_tx by the VM worker
                         }
-                        SuspendReason::JsGeneratorYield { .. } => {
-                            unreachable!("JS generator yields must be handled synchronously")
+                        SuspendReason::JsGeneratorYield { .. } | SuspendReason::JsGeneratorInit => {
+                            // Live JS generators are usually advanced synchronously via
+                            // Generator.prototype.next/return, but the yielded task may still
+                            // re-enter the regular scheduler path after an earlier suspension or
+                            // resume. Keep the task parked at the yield point instead of
+                            // panicking the reactor; the iterator wrapper will resume it on the
+                            // next synchronous .next()/.return() call.
                         }
                     }
                 }

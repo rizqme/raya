@@ -204,7 +204,7 @@ impl<'a> Interpreter<'a> {
                                 frame_args,
                                 None,
                                 task,
-                            );
+                            )?;
                             stack.push(iterator)?;
                             return Ok(Some(OpcodeResult::Continue));
                         }
@@ -306,7 +306,7 @@ impl<'a> Interpreter<'a> {
                                 frame_args,
                                 Some(callable),
                                 task,
-                            );
+                            )?;
                             stack.push(iterator)?;
                             return Ok(Some(OpcodeResult::Continue));
                         }

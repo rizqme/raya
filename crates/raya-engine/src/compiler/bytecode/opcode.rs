@@ -341,6 +341,8 @@ pub enum Opcode {
     StoreRefCell = 0xDE,
 
     // ===== Dynamic-object Operations (0xE0-0xEF) =====
+    /// Suspend a JS generator after call-time initialization but before user code runs.
+    GeneratorInitSuspend = 0xE0,
     /// Get property by runtime string key: pop key, pop object, push value  (no operand)
     GeneratorYield = 0xE4,
     /// Get property by runtime string key: pop key, pop object, push value  (no operand)
@@ -575,6 +577,7 @@ impl Opcode {
             0xDE => Some(Self::StoreRefCell),
 
             // Dynamic-object operations
+            0xE0 => Some(Self::GeneratorInitSuspend),
             0xE4 => Some(Self::GeneratorYield),
             0xE5 => Some(Self::DynGetKeyed),
             0xE6 => Some(Self::DynSetKeyed),
@@ -741,6 +744,7 @@ impl Opcode {
             Self::WaitAll => "WAIT_ALL",
             Self::SpawnClosure => "SPAWN_CLOSURE",
             Self::Sleep => "SLEEP",
+            Self::GeneratorInitSuspend => "GENERATOR_INIT_SUSPEND",
             Self::GeneratorYield => "GENERATOR_YIELD",
             Self::DynGetKeyed => "DYN_GET_KEYED",
             Self::DynSetKeyed => "DYN_SET_KEYED",

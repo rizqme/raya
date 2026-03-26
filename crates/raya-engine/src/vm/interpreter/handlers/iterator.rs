@@ -71,7 +71,8 @@ impl<'a> Interpreter<'a> {
         }
 
         if candidate.raw() != iterable.raw() {
-            if let Some(nested_iterator) = self.try_get_iterator_from_value(candidate, task, module)?
+            if let Some(nested_iterator) =
+                self.try_get_iterator_from_value(candidate, task, module)?
             {
                 let nested_next = self.iterator_next_method(nested_iterator, task, module)?;
                 if Self::is_callable_value(nested_next) {

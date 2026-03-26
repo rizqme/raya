@@ -52,6 +52,7 @@ impl FunctionContext {
         param_count: u8,
         uses_js_this_slot: bool,
         is_constructible: bool,
+        is_async: bool,
         is_generator: bool,
         visible_length: u8,
         is_strict_js: bool,
@@ -63,6 +64,7 @@ impl FunctionContext {
                 let mut builder = FunctionBuilder::new(name, param_count);
                 builder.set_uses_js_this_slot(uses_js_this_slot);
                 builder.set_is_constructible(is_constructible);
+                builder.set_is_async(is_async);
                 builder.set_is_generator(is_generator);
                 builder.set_visible_length(visible_length);
                 builder.set_is_strict_js(is_strict_js);
@@ -439,6 +441,7 @@ impl IrCodeGenerator {
             param_count,
             func.uses_js_this_slot,
             func.is_constructible,
+            func.is_async,
             func.is_generator,
             func.visible_length as u8,
             func.is_strict_js,
@@ -1276,6 +1279,10 @@ impl IrCodeGenerator {
             IrInstr::Yield => {
                 // Emit yield opcode
                 ctx.emit(Opcode::Yield);
+            }
+
+            IrInstr::GeneratorInitSuspend => {
+                ctx.emit(Opcode::GeneratorInitSuspend);
             }
 
             IrInstr::GeneratorYield { value } => {

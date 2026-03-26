@@ -394,10 +394,11 @@ impl<'a> Lowerer<'a> {
         });
         self.set_terminator(Terminator::Throw(dest.clone()));
         let continuation_block = self.alloc_block();
-        self.current_function_mut().add_block(BasicBlock::with_label(
-            continuation_block,
-            "throw.reference.unreachable",
-        ));
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(
+                continuation_block,
+                "throw.reference.unreachable",
+            ));
         self.current_block = continuation_block;
         dest
     }
@@ -416,10 +417,11 @@ impl<'a> Lowerer<'a> {
         });
         self.set_terminator(Terminator::Throw(dest.clone()));
         let continuation_block = self.alloc_block();
-        self.current_function_mut().add_block(BasicBlock::with_label(
-            continuation_block,
-            "throw.type.unreachable",
-        ));
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(
+                continuation_block,
+                "throw.type.unreachable",
+            ));
         self.current_block = continuation_block;
         dest
     }
@@ -464,7 +466,10 @@ impl<'a> Lowerer<'a> {
                 self.set_terminator(Terminator::Jump(exit_block));
 
                 self.current_function_mut()
-                    .add_block(BasicBlock::with_label(load_block, "script.lexical.load.value"));
+                    .add_block(BasicBlock::with_label(
+                        load_block,
+                        "script.lexical.load.value",
+                    ));
                 self.current_block = load_block;
                 self.emit(IrInstr::LoadGlobal {
                     dest: dest.clone(),
@@ -473,7 +478,10 @@ impl<'a> Lowerer<'a> {
                 self.set_terminator(Terminator::Jump(exit_block));
 
                 self.current_function_mut()
-                    .add_block(BasicBlock::with_label(exit_block, "script.lexical.load.exit"));
+                    .add_block(BasicBlock::with_label(
+                        exit_block,
+                        "script.lexical.load.exit",
+                    ));
                 self.current_block = exit_block;
                 self.propagate_variable_projection_to_register(ident.name, &dest);
                 if !self.identifier_requires_late_bound_dispatch(ident.name) {
@@ -500,11 +508,7 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    fn emit_store_js_script_lexical_global(
-        &mut self,
-        symbol: Symbol,
-        value: Register,
-    ) -> bool {
+    fn emit_store_js_script_lexical_global(&mut self, symbol: Symbol, value: Register) -> bool {
         let Some(&global_idx) = self.js_script_lexical_globals.get(&symbol) else {
             return false;
         };
@@ -551,13 +555,19 @@ impl<'a> Lowerer<'a> {
         });
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(tdz_block, "script.lexical.store.tdz"));
+            .add_block(BasicBlock::with_label(
+                tdz_block,
+                "script.lexical.store.tdz",
+            ));
         self.current_block = tdz_block;
         let _ = self.emit_parameter_tdz_reference_error(&name);
         self.set_terminator(Terminator::Jump(exit_block));
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(store_block, "script.lexical.store.write"));
+            .add_block(BasicBlock::with_label(
+                store_block,
+                "script.lexical.store.write",
+            ));
         self.current_block = store_block;
         if self.js_script_const_globals.contains(&symbol) {
             let _ = self.emit_type_error_throw("Assignment to constant variable.");
@@ -571,7 +581,10 @@ impl<'a> Lowerer<'a> {
         self.set_terminator(Terminator::Jump(exit_block));
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(exit_block, "script.lexical.store.exit"));
+            .add_block(BasicBlock::with_label(
+                exit_block,
+                "script.lexical.store.exit",
+            ));
         self.current_block = exit_block;
         true
     }
@@ -1193,7 +1206,10 @@ impl<'a> Lowerer<'a> {
         self.set_terminator(Terminator::Jump(merge_block));
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(merge_block, "eval.shadow.ident.merge"));
+            .add_block(BasicBlock::with_label(
+                merge_block,
+                "eval.shadow.ident.merge",
+            ));
         self.current_block = merge_block;
         dest
     }
@@ -1350,10 +1366,11 @@ impl<'a> Lowerer<'a> {
                     else_block: skip_block,
                 });
 
-                self.current_function_mut().add_block(BasicBlock::with_label(
-                    store_block,
-                    "eval.writeback.outer.store",
-                ));
+                self.current_function_mut()
+                    .add_block(BasicBlock::with_label(
+                        store_block,
+                        "eval.writeback.outer.store",
+                    ));
                 self.current_block = store_block;
                 let key_reg = self.emit_direct_eval_name_reg(&name);
                 let value = self.alloc_register(UNRESOLVED);
@@ -1365,17 +1382,19 @@ impl<'a> Lowerer<'a> {
                 self.store_identifier_value(symbol, value);
                 self.set_terminator(Terminator::Jump(merge_block));
 
-                self.current_function_mut().add_block(BasicBlock::with_label(
-                    skip_block,
-                    "eval.writeback.outer.skip",
-                ));
+                self.current_function_mut()
+                    .add_block(BasicBlock::with_label(
+                        skip_block,
+                        "eval.writeback.outer.skip",
+                    ));
                 self.current_block = skip_block;
                 self.set_terminator(Terminator::Jump(merge_block));
 
-                self.current_function_mut().add_block(BasicBlock::with_label(
-                    merge_block,
-                    "eval.writeback.outer.merge",
-                ));
+                self.current_function_mut()
+                    .add_block(BasicBlock::with_label(
+                        merge_block,
+                        "eval.writeback.outer.merge",
+                    ));
                 self.current_block = merge_block;
                 continue;
             }
@@ -6635,8 +6654,10 @@ impl<'a> Lowerer<'a> {
     fn lower_index(&mut self, index: &ast::IndexExpression, full_expr: &Expression) -> Register {
         let object = self.lower_expr(&index.object);
         let elem_ty = self.get_expr_type(full_expr);
-        let uses_dynamic_keyed_access = self
-            .index_uses_dynamic_keyed_access_for_expr(self.get_expr_type(&index.object), &index.index);
+        let uses_dynamic_keyed_access = self.index_uses_dynamic_keyed_access_for_expr(
+            self.get_expr_type(&index.object),
+            &index.index,
+        );
         let dest = self.alloc_register(if uses_dynamic_keyed_access {
             self.dynamic_property_result_type(elem_ty)
         } else {
@@ -8143,8 +8164,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 if let Some((closure_reg, ref captures)) = self.last_closure_info.take() {
-                    if let Some(&(_, capture_idx)) =
-                        captures.iter().find(|(sym, _)| *sym == symbol)
+                    if let Some(&(_, capture_idx)) = captures.iter().find(|(sym, _)| *sym == symbol)
                     {
                         self.emit(IrInstr::SetClosureCapture {
                             closure: closure_reg,
@@ -8297,7 +8317,9 @@ impl<'a> Lowerer<'a> {
             Expression::Assignment(assign) if assign.operator == AssignmentOperator::Assign => {
                 self.prepare_destructuring_target(&assign.left)
             }
-            Expression::Identifier(ident) => Some(PreparedDestructuringTarget::Identifier(ident.name)),
+            Expression::Identifier(ident) => {
+                Some(PreparedDestructuringTarget::Identifier(ident.name))
+            }
             Expression::Member(member) => {
                 let property = self.interner.resolve(member.property.name).to_string();
                 if matches!(member.object.as_ref(), Expression::Super(_)) {
@@ -8356,7 +8378,10 @@ impl<'a> Lowerer<'a> {
         }
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(catch_block, "assign.target.throw.catch"));
+            .add_block(BasicBlock::with_label(
+                catch_block,
+                "assign.target.throw.catch",
+            ));
         self.current_block = catch_block;
         let temp_local = self.next_local;
         self.next_local += 1;
@@ -8370,7 +8395,10 @@ impl<'a> Lowerer<'a> {
         self.set_terminator(Terminator::Throw(completion));
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(exit_block, "assign.target.throw.exit"));
+            .add_block(BasicBlock::with_label(
+                exit_block,
+                "assign.target.throw.exit",
+            ));
         self.current_block = exit_block;
         prepared
     }
@@ -8409,11 +8437,7 @@ impl<'a> Lowerer<'a> {
                 } else if self.js_this_binding_compat {
                     self.emit_js_property_assignment(object, key, value);
                 } else if dynamic {
-                    self.emit(IrInstr::DynSetKeyed {
-                        object,
-                        key,
-                        value,
-                    });
+                    self.emit(IrInstr::DynSetKeyed { object, key, value });
                 } else {
                     self.emit(IrInstr::StoreElement {
                         array: object,
@@ -8473,7 +8497,10 @@ impl<'a> Lowerer<'a> {
         });
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(present_block, "assign.destr.present"));
+            .add_block(BasicBlock::with_label(
+                present_block,
+                "assign.destr.present",
+            ));
         self.current_block = present_block;
         self.emit(IrInstr::Assign {
             dest: final_val.clone(),
@@ -8482,7 +8509,10 @@ impl<'a> Lowerer<'a> {
         self.set_terminator(Terminator::Jump(merge_block));
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(default_block, "assign.destr.default"));
+            .add_block(BasicBlock::with_label(
+                default_block,
+                "assign.destr.default",
+            ));
         self.current_block = default_block;
         let default_val = self.lower_expr(default_expr);
         self.maybe_assign_anonymous_assignment_target_name(target, default_expr, &default_val);
@@ -8498,12 +8528,8 @@ impl<'a> Lowerer<'a> {
         final_val
     }
 
-    fn emit_iterator_throw_guard<F>(
-        &mut self,
-        iterator: Register,
-        step_result: Register,
-        body: F,
-    ) where
+    fn emit_iterator_throw_guard<F>(&mut self, iterator: Register, step_result: Register, body: F)
+    where
         F: FnOnce(&mut Self),
     {
         let catch_block = self.alloc_block();
@@ -8522,7 +8548,10 @@ impl<'a> Lowerer<'a> {
         }
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(catch_block, "assign.iter.throw.catch"));
+            .add_block(BasicBlock::with_label(
+                catch_block,
+                "assign.iter.throw.catch",
+            ));
         self.current_block = catch_block;
         let temp_local = self.next_local;
         self.next_local += 1;
@@ -8534,7 +8563,10 @@ impl<'a> Lowerer<'a> {
         });
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(close_block, "assign.iter.throw.close"));
+            .add_block(BasicBlock::with_label(
+                close_block,
+                "assign.iter.throw.close",
+            ));
         self.current_block = close_block;
         let exception = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::LoadLocal {
@@ -8545,7 +8577,10 @@ impl<'a> Lowerer<'a> {
         self.set_terminator(Terminator::Throw(completion));
 
         self.current_function_mut()
-            .add_block(BasicBlock::with_label(rethrow_block, "assign.iter.throw.rethrow"));
+            .add_block(BasicBlock::with_label(
+                rethrow_block,
+                "assign.iter.throw.rethrow",
+            ));
         self.current_block = rethrow_block;
         let exception = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::LoadLocal {
@@ -8574,7 +8609,8 @@ impl<'a> Lowerer<'a> {
             }
             Expression::Array(array_pat) => {
                 let iterator_reg = self.emit_iterator_get_helper(value_reg);
-                if array_pat.elements.is_empty() && !array_pat.elements.iter().any(|e| e.is_some()) {
+                if array_pat.elements.is_empty() && !array_pat.elements.iter().any(|e| e.is_some())
+                {
                     self.emit_iterator_close_helper(iterator_reg);
                     return;
                 }
@@ -8606,23 +8642,24 @@ impl<'a> Lowerer<'a> {
                                 not_null_block: value_block,
                             });
 
-                            self.current_function_mut().add_block(BasicBlock::with_label(
-                                value_block,
-                                "assign.destr.iter.value",
-                            ));
+                            self.current_function_mut()
+                                .add_block(BasicBlock::with_label(
+                                    value_block,
+                                    "assign.destr.iter.value",
+                                ));
                             self.current_block = value_block;
-                            let elem_reg =
-                                self.emit_iterator_value_helper(step_result.clone());
+                            let elem_reg = self.emit_iterator_value_helper(step_result.clone());
                             self.emit(IrInstr::Assign {
                                 dest: final_val.clone(),
                                 value: IrValue::Register(elem_reg),
                             });
                             self.set_terminator(Terminator::Jump(merge_block));
 
-                            self.current_function_mut().add_block(BasicBlock::with_label(
-                                done_block,
-                                "assign.destr.iter.done",
-                            ));
+                            self.current_function_mut()
+                                .add_block(BasicBlock::with_label(
+                                    done_block,
+                                    "assign.destr.iter.done",
+                                ));
                             self.current_block = done_block;
                             self.emit(IrInstr::Assign {
                                 dest: final_val.clone(),
@@ -8630,10 +8667,11 @@ impl<'a> Lowerer<'a> {
                             });
                             self.set_terminator(Terminator::Jump(merge_block));
 
-                            self.current_function_mut().add_block(BasicBlock::with_label(
-                                merge_block,
-                                "assign.destr.iter.merge",
-                            ));
+                            self.current_function_mut()
+                                .add_block(BasicBlock::with_label(
+                                    merge_block,
+                                    "assign.destr.iter.merge",
+                                ));
                             self.current_block = merge_block;
                             self.emit_iterator_throw_guard(
                                 iterator_reg.clone(),
@@ -8641,8 +8679,8 @@ impl<'a> Lowerer<'a> {
                                 |this| {
                                     if let Expression::Assignment(assign) = expr {
                                         if assign.operator == AssignmentOperator::Assign {
-                                            let final_val =
-                                                this.emit_destructuring_assignment_default_value(
+                                            let final_val = this
+                                                .emit_destructuring_assignment_default_value(
                                                     &assign.left,
                                                     final_val.clone(),
                                                     &assign.right,
@@ -8667,10 +8705,7 @@ impl<'a> Lowerer<'a> {
                                             final_val,
                                         );
                                     } else {
-                                        this.lower_destructuring_assignment_target(
-                                            expr,
-                                            final_val,
-                                        );
+                                        this.lower_destructuring_assignment_target(expr, final_val);
                                     }
                                 },
                             );
@@ -8719,10 +8754,7 @@ impl<'a> Lowerer<'a> {
                                 .add_block(BasicBlock::with_label(exit, "assign.rest.exit"));
                             self.current_block = exit;
                             if let Some(prepared_target) = prepared_target {
-                                self.store_prepared_destructuring_target(
-                                    prepared_target,
-                                    rest_arr,
-                                );
+                                self.store_prepared_destructuring_target(prepared_target, rest_arr);
                             } else {
                                 self.lower_destructuring_assignment_target(expr, rest_arr);
                             }
@@ -8766,11 +8798,10 @@ impl<'a> Lowerer<'a> {
                                 ast::PropertyKey::StringLiteral(lit) => {
                                     self.emit_named_key_register(self.interner.resolve(lit.value))
                                 }
-                        ast::PropertyKey::IntLiteral(lit) => {
-                            let key_reg =
-                                self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                            self.emit(IrInstr::Assign {
-                                dest: key_reg.clone(),
+                                ast::PropertyKey::IntLiteral(lit) => {
+                                    let key_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                                    self.emit(IrInstr::Assign {
+                                        dest: key_reg.clone(),
                                         value: IrValue::Constant(IrConstant::String(
                                             lit.value.to_string(),
                                         )),
@@ -8792,7 +8823,8 @@ impl<'a> Lowerer<'a> {
                                 TypeId::new(UNRESOLVED_TYPE_ID),
                             );
 
-                            let final_val = if let Expression::Assignment(assign) = &property.value {
+                            let final_val = if let Expression::Assignment(assign) = &property.value
+                            {
                                 if assign.operator == AssignmentOperator::Assign {
                                     self.emit_destructuring_assignment_default_value(
                                         &assign.left,
@@ -8841,10 +8873,7 @@ impl<'a> Lowerer<'a> {
                                     crate::compiler::native_id::OBJECT_COPY_DATA_PROPERTIES_EXCLUDING,
                                 args,
                             });
-                            self.lower_destructuring_assignment_target(
-                                &spread.argument,
-                                rest_obj,
-                            );
+                            self.lower_destructuring_assignment_target(&spread.argument, rest_obj);
                         }
                     }
                 }
@@ -8861,10 +8890,10 @@ impl<'a> Lowerer<'a> {
         fn member_like_assignment_target(expr: &Expression) -> bool {
             match expr {
                 Expression::Member(_) | Expression::Index(_) => true,
-                Expression::Parenthesized(paren) => member_like_assignment_target(&paren.expression),
-                Expression::Assignment(assign)
-                    if assign.operator == AssignmentOperator::Assign =>
-                {
+                Expression::Parenthesized(paren) => {
+                    member_like_assignment_target(&paren.expression)
+                }
+                Expression::Assignment(assign) if assign.operator == AssignmentOperator::Assign => {
                     member_like_assignment_target(&assign.left)
                 }
                 _ => false,
@@ -8876,11 +8905,9 @@ impl<'a> Lowerer<'a> {
                 Expression::Identifier(ident)
                     if self.with_scope_depth > 0 && self.allow_unresolved_runtime_fallback =>
                 {
-                    Some(
-                        self.emit_capture_runtime_identifier_assignment_target(
-                            self.interner.resolve(ident.name),
-                        ),
-                    )
+                    Some(self.emit_capture_runtime_identifier_assignment_target(
+                        self.interner.resolve(ident.name),
+                    ))
                 }
                 _ => None,
             }
@@ -8888,24 +8915,21 @@ impl<'a> Lowerer<'a> {
             None
         };
 
-        let captured_runtime_identifier_target =
-            if assign.operator == AssignmentOperator::Assign {
-                match &*assign.left {
-                    Expression::Identifier(ident)
-                        if self.allow_unresolved_runtime_fallback
-                            && !self.identifier_has_static_assignment_target(ident.name) =>
-                    {
-                        Some(
-                            self.emit_capture_runtime_identifier_assignment_target(
-                                self.interner.resolve(ident.name),
-                            ),
-                        )
-                    }
-                    _ => None,
+        let captured_runtime_identifier_target = if assign.operator == AssignmentOperator::Assign {
+            match &*assign.left {
+                Expression::Identifier(ident)
+                    if self.allow_unresolved_runtime_fallback
+                        && !self.identifier_has_static_assignment_target(ident.name) =>
+                {
+                    Some(self.emit_capture_runtime_identifier_assignment_target(
+                        self.interner.resolve(ident.name),
+                    ))
                 }
-            } else {
-                None
-            };
+                _ => None,
+            }
+        } else {
+            None
+        };
 
         let prepared_simple_assignment_target = if assign.operator == AssignmentOperator::Assign
             && member_like_assignment_target(&assign.left)
@@ -9086,12 +9110,10 @@ impl<'a> Lowerer<'a> {
                                     value: rhs,
                                 });
                             }
-                        } else if self
-                            .emit_store_js_script_lexical_global(ident.name, rhs.clone())
+                        } else if self.emit_store_js_script_lexical_global(ident.name, rhs.clone())
                         {
                             assigned_symbol = true;
-                        } else if let Some(global_idx) =
-                            self.shared_script_binding_slot(ident.name)
+                        } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name)
                         {
                             assigned_symbol = true;
                             self.emit(IrInstr::StoreGlobal {
@@ -9425,10 +9447,8 @@ impl<'a> Lowerer<'a> {
                         not_null_block: hit_block,
                     });
 
-                    self.current_function_mut().add_block(BasicBlock::with_label(
-                        hit_block,
-                        "assign.ident.with.hit",
-                    ));
+                    self.current_function_mut()
+                        .add_block(BasicBlock::with_label(hit_block, "assign.ident.with.hit"));
                     self.current_block = hit_block;
                     self.emit_store_captured_runtime_identifier_assignment_target(
                         target,
@@ -9437,18 +9457,17 @@ impl<'a> Lowerer<'a> {
                     );
                     self.set_terminator(Terminator::Jump(merge_block));
 
-                    self.current_function_mut().add_block(BasicBlock::with_label(
-                        miss_block,
-                        "assign.ident.with.miss",
-                    ));
+                    self.current_function_mut()
+                        .add_block(BasicBlock::with_label(miss_block, "assign.ident.with.miss"));
                     self.current_block = miss_block;
                     self.store_identifier_value(ident.name, value.clone());
                     self.set_terminator(Terminator::Jump(merge_block));
 
-                    self.current_function_mut().add_block(BasicBlock::with_label(
-                        merge_block,
-                        "assign.ident.with.merge",
-                    ));
+                    self.current_function_mut()
+                        .add_block(BasicBlock::with_label(
+                            merge_block,
+                            "assign.ident.with.merge",
+                        ));
                     self.current_block = merge_block;
 
                     if callable_assign_hint {
@@ -9590,9 +9609,7 @@ impl<'a> Lowerer<'a> {
                                 value: value.clone(),
                             });
                         }
-                    } else if self
-                        .emit_store_js_script_lexical_global(ident.name, value.clone())
-                    {
+                    } else if self.emit_store_js_script_lexical_global(ident.name, value.clone()) {
                         assigned_symbol = true;
                     } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
                         assigned_symbol = true;
@@ -10226,6 +10243,7 @@ impl<'a> Lowerer<'a> {
         let mut ir_func = crate::ir::IrFunction::new(&function_name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
         ir_func.is_constructible = !func.is_generator;
+        ir_func.is_async = func.is_async;
         ir_func.is_generator = func.is_generator;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
@@ -10307,6 +10325,9 @@ impl<'a> Lowerer<'a> {
 
         if func.is_generator && self.function_uses_generator_snapshot(&func.body) {
             self.init_generator_yield_array();
+        }
+        if func.is_generator {
+            self.emit(IrInstr::GeneratorInitSuspend);
         }
 
         for stmt in &func.body.statements {
@@ -10842,6 +10863,7 @@ impl<'a> Lowerer<'a> {
         // Create the arrow function
         let mut ir_func = crate::ir::IrFunction::new(&arrow_name, params, return_ty);
         ir_func.is_constructible = false;
+        ir_func.is_async = arrow.is_async;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
         if self.emit_sourcemap {

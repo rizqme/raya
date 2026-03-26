@@ -122,13 +122,16 @@ impl<'a> Interpreter<'a> {
                                     .get(func_id)
                                     .is_some_and(|function| function.is_generator)
                                 {
-                                    let iterator = self.create_generator_task_object(
+                                    let iterator = match self.create_generator_task_object(
                                         func_id,
                                         task.current_module(),
                                         args_tmp.into_iter().rev().collect(),
                                         None,
                                         task,
-                                    );
+                                    ) {
+                                        Ok(iterator) => iterator,
+                                        Err(error) => return OpcodeResult::Error(error),
+                                    };
                                     if let Err(e) = stack.push(iterator) {
                                         return OpcodeResult::Error(e);
                                     }
@@ -253,13 +256,16 @@ impl<'a> Interpreter<'a> {
                         while stack.depth() > args_start {
                             let _ = stack.pop();
                         }
-                        let iterator = self.create_generator_task_object(
+                        let iterator = match self.create_generator_task_object(
                             func_index,
                             task.current_module(),
                             frame_args,
                             None,
                             task,
-                        );
+                        ) {
+                            Ok(iterator) => iterator,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         return stack
                             .push(iterator)
                             .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue);
@@ -339,13 +345,16 @@ impl<'a> Interpreter<'a> {
                     while stack.depth() > args_start {
                         let _ = stack.pop();
                     }
-                    let iterator = self.create_generator_task_object(
+                    let iterator = match self.create_generator_task_object(
                         func_index,
                         task.current_module(),
                         frame_args,
                         None,
                         task,
-                    );
+                    ) {
+                        Ok(iterator) => iterator,
+                        Err(error) => return OpcodeResult::Error(error),
+                    };
                     return stack
                         .push(iterator)
                         .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue);

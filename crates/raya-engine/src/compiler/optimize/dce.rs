@@ -266,6 +266,9 @@ impl DeadCodeEliminator {
             IrInstr::Yield => {
                 // No register uses
             }
+            IrInstr::GeneratorInitSuspend => {
+                // No register uses
+            }
             IrInstr::GeneratorYield { value } => {
                 used.insert(value.id);
             }

@@ -86,6 +86,28 @@ class AsyncGeneratorFunction extends Function {
     }
 }
 
+Object.defineProperty(
+    (GeneratorFunction as any).prototype,
+    "prototype",
+    {
+        value: (Generator as any).prototype,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+    },
+);
+
+Object.defineProperty(
+    (AsyncGeneratorFunction as any).prototype,
+    "prototype",
+    {
+        value: (AsyncGenerator as any).prototype,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+    },
+);
+
 class AsyncIterator<T> {
     constructor() {}
 

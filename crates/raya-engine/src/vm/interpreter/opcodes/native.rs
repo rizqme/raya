@@ -665,7 +665,7 @@ impl<'a> Interpreter<'a> {
         iterator_value
     }
 
-    fn generator_iterator_object(&self, task_id: TaskId) -> Value {
+    fn generator_iterator_object(&self, task_id: TaskId, prototype: Option<Value>) -> Value {
         let mut iterator = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
         iterator.generator_state = Some(Box::new(GeneratorStateData {
             task_id,
@@ -714,10 +714,8 @@ impl<'a> Interpreter<'a> {
                 ),
             );
         }
-        if let Some(generator_ctor) = self.builtin_global_value("Generator") {
-            if let Some(prototype) = self.constructor_prototype_value(generator_ctor) {
-                iterator.prototype = prototype;
-            }
+        if let Some(prototype) = prototype {
+            iterator.prototype = prototype;
         }
         let iterator_ptr = self.gc.lock().allocate(iterator);
         let iterator_value =
@@ -823,6 +821,43 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn default_generator_instance_prototype(&self, is_async: bool) -> Option<Value> {
+        let family_name = if is_async {
+            "AsyncGenerator"
+        } else {
+            "Generator"
+        };
+        self.builtin_global_value(family_name)
+            .and_then(|ctor| self.constructor_prototype_value(ctor))
+    }
+
+    fn generator_instance_prototype_for_function(
+        &mut self,
+        constructor: Option<Value>,
+        func_id: usize,
+        function_module: &Module,
+        caller_task: &Arc<Task>,
+    ) -> Result<Option<Value>, VmError> {
+        if let Some(constructor) = constructor {
+            if let Some(prototype) = self.get_property_value_via_js_semantics_with_context(
+                constructor,
+                "prototype",
+                caller_task,
+                function_module,
+            )? {
+                if self.is_js_object_value(prototype) {
+                    return Ok(Some(prototype));
+                }
+            }
+        }
+
+        let is_async = function_module
+            .functions
+            .get(func_id)
+            .is_some_and(|function| function.is_async);
+        Ok(self.default_generator_instance_prototype(is_async))
+    }
+
     pub(in crate::vm::interpreter) fn create_generator_task_object(
         &mut self,
         func_id: usize,
@@ -830,7 +865,7 @@ impl<'a> Interpreter<'a> {
         args: Vec<Value>,
         closure: Option<Value>,
         caller_task: &Arc<Task>,
-    ) -> Value {
+    ) -> Result<Value, VmError> {
         let generator_task = Arc::new(Task::with_args(
             func_id,
             function_module,
@@ -844,7 +879,41 @@ impl<'a> Interpreter<'a> {
         self.tasks
             .write()
             .insert(generator_task.id(), generator_task.clone());
-        self.generator_iterator_object(generator_task.id())
+        match self.run(&generator_task) {
+            ExecutionResult::Completed(value) => {
+                generator_task.complete(value);
+                return Err(VmError::RuntimeError(
+                    "Generator completed during call-time initialization unexpectedly".to_string(),
+                ));
+            }
+            ExecutionResult::Suspended(crate::vm::scheduler::SuspendReason::JsGeneratorInit) => {
+                generator_task.suspend(crate::vm::scheduler::SuspendReason::JsGeneratorInit);
+            }
+            ExecutionResult::Suspended(reason) => {
+                generator_task.suspend(reason);
+                return Err(VmError::RuntimeError(
+                    "Generator suspended with an unexpected reason during call-time initialization"
+                        .to_string(),
+                ));
+            }
+            ExecutionResult::Failed(error) => {
+                generator_task.fail();
+                self.ensure_task_exception_for_error(&generator_task, &error);
+                if !caller_task.has_exception() {
+                    if let Some(exception) = generator_task.current_exception() {
+                        caller_task.set_exception(exception);
+                    }
+                }
+                return Err(error);
+            }
+        }
+        let iterator_prototype = self.generator_instance_prototype_for_function(
+            closure,
+            func_id,
+            generator_task.current_module().as_ref(),
+            caller_task,
+        )?;
+        Ok(self.generator_iterator_object(generator_task.id(), iterator_prototype))
     }
 }
 
@@ -2737,9 +2806,7 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> Option<AmbientGlobalDescriptor> {
-        let target = self
-            .proxy_wrapper_proxy_value(target)
-            .unwrap_or(target);
+        let target = self.proxy_wrapper_proxy_value(target).unwrap_or(target);
         let public_target = self.public_property_target(target);
         let field_value = self
             .get_own_field_value_by_name(target, key)
@@ -2763,18 +2830,12 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> bool {
-        let target = self
-            .proxy_wrapper_proxy_value(target)
-            .unwrap_or(target);
+        let target = self.proxy_wrapper_proxy_value(target).unwrap_or(target);
         let public_target = self.public_property_target(target);
-        let ambient_math = self
-            .ambient_global_value_sync("Math")
-            .map(|math| {
-                let math = self
-                    .proxy_wrapper_proxy_value(math)
-                    .unwrap_or(math);
-                (math, self.public_property_target(math))
-            });
+        let ambient_math = self.ambient_global_value_sync("Math").map(|math| {
+            let math = self.proxy_wrapper_proxy_value(math).unwrap_or(math);
+            (math, self.public_property_target(math))
+        });
         let matches_target = |candidate: Value| {
             self.builtin_global_name_for_value(candidate).as_deref() == Some("Math")
                 || ambient_math.is_some_and(|(math, public_math)| {
@@ -3071,9 +3132,9 @@ impl<'a> Interpreter<'a> {
                 self.set_property_value_via_js_semantics(target, key, value, target, task, module)?;
                 return Ok(());
             }
-            match self.set_property_value_via_js_semantics(
-                target, key, value, target, task, module,
-            )? {
+            match self
+                .set_property_value_via_js_semantics(target, key, value, target, task, module)?
+            {
                 true => Ok(()),
                 false if strict => Err(self.raise_task_builtin_error(
                     task,
@@ -3273,9 +3334,8 @@ impl<'a> Interpreter<'a> {
         };
         if self.resolve_own_property_shape(env, key).is_some() {
             if self.direct_eval_binding_is_outer_snapshot(env, key) {
-                let _ = self.set_property_value_via_js_semantics(
-                    env, key, value, env, task, module,
-                )?;
+                let _ =
+                    self.set_property_value_via_js_semantics(env, key, value, env, task, module)?;
                 self.clear_direct_eval_binding_outer_snapshot(env, key, task, module)?;
             }
             return Ok(true);
@@ -3332,7 +3392,8 @@ impl<'a> Interpreter<'a> {
             "Symbol.unscopables",
             task,
             module,
-        )? else {
+        )?
+        else {
             return Ok(true);
         };
 
@@ -3954,6 +4015,29 @@ impl<'a> Interpreter<'a> {
         target: Value,
     ) -> Option<(String, usize)> {
         self.intrinsic_callable_function_info(target)
+    }
+
+    fn callable_function_family_name(&self, target: Value) -> Option<&'static str> {
+        let target = self
+            .unwrapped_proxy_like(target)
+            .map(|proxy| proxy.target)
+            .unwrap_or(target);
+        let co_ptr = checked_object_ptr(target)?;
+        let co = unsafe { &*co_ptr.as_ptr() };
+        let callable = co.callable.as_ref()?;
+        match &callable.kind {
+            CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
+                let module = co.callable_module()?;
+                let function = module.functions.get(*func_id)?;
+                Some(match (function.is_async, function.is_generator) {
+                    (true, true) => "AsyncGeneratorFunction",
+                    (true, false) => "AsyncFunction",
+                    (false, true) => "GeneratorFunction",
+                    (false, false) => "Function",
+                })
+            }
+            _ => None,
+        }
     }
 
     fn callable_observable_name_with_context(
@@ -5943,14 +6027,7 @@ impl<'a> Interpreter<'a> {
                             _ => None,
                         })
                         .unwrap_or(Value::undefined());
-                    self.define_data_property_on_target(
-                        value,
-                        key,
-                        constant,
-                        false,
-                        false,
-                        false,
-                    )?;
+                    self.define_data_property_on_target(value, key, constant, false, false, false)?;
                 }
             }
             _ => {}
@@ -6455,8 +6532,13 @@ impl<'a> Interpreter<'a> {
                 return prototype;
             }
             let prototype = self
-                .builtin_global_value("Function")
-                .and_then(|ctor| self.function_constructor_prototype_value(ctor));
+                .callable_function_family_name(value)
+                .and_then(|family| self.builtin_global_value(family))
+                .and_then(|ctor| self.constructor_prototype_value(ctor))
+                .or_else(|| {
+                    self.builtin_global_value("Function")
+                        .and_then(|ctor| self.constructor_prototype_value(ctor))
+                });
             if debug_proto_resolve {
                 eprintln!(
                     "[proto-of] value={:#x} callable -> {:?}",
@@ -6982,15 +7064,23 @@ impl<'a> Interpreter<'a> {
             );
         }
 
-        if let Some(object_ctor) = self.builtin_global_value("Object") {
-            if let Some(object_proto) = self.object_constructor_prototype_value(object_ctor) {
-                self.set_constructed_object_prototype_from_value(prototype_val, object_proto);
-                if debug_dynamic_function {
-                    eprintln!(
-                        "[generic-fn-proto] target={:#x} object-proto:set",
-                        class_value.raw()
-                    );
-                }
+        let prototype_parent = self
+            .callable_function_family_name(class_value)
+            .and_then(|family| match family {
+                "GeneratorFunction" => self.default_generator_instance_prototype(false),
+                "AsyncGeneratorFunction" => self.default_generator_instance_prototype(true),
+                _ => self
+                    .builtin_global_value("Object")
+                    .and_then(|ctor| self.object_constructor_prototype_value(ctor)),
+            });
+        if let Some(prototype_parent) = prototype_parent {
+            self.set_constructed_object_prototype_from_value(prototype_val, prototype_parent);
+            if debug_dynamic_function {
+                eprintln!(
+                    "[generic-fn-proto] target={:#x} proto-parent:set {:#x}",
+                    class_value.raw(),
+                    prototype_parent.raw()
+                );
             }
         }
 
@@ -7834,6 +7924,9 @@ impl<'a> Interpreter<'a> {
             return None;
         }
         if key == "prototype" {
+            if let Some(value) = self.cached_callable_virtual_property_value(target, key) {
+                return Some(value);
+            }
             let proto = self.constructor_prototype_value(target)?;
             // Ensure prototype has nominal_type_id for vtable method lookup
             if let Some(proto_ptr) = checked_object_ptr(proto) {
@@ -9133,12 +9226,14 @@ impl<'a> Interpreter<'a> {
         if debug_field_lookup {
             eprintln!("[field.lookup] target={:#x} dyn-key={}", obj_val.raw(), key);
         }
-        obj.dyn_props().and_then(|dp| {
-            dp.get(key).map(|p| p.value)
-        })
+        obj.dyn_props().and_then(|dp| dp.get(key).map(|p| p.value))
     }
 
-    fn get_own_js_property_value_by_name_on_target(&self, target: Value, key: &str) -> Option<Value> {
+    fn get_own_js_property_value_by_name_on_target(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<Value> {
         if let Some(kind) = self.exotic_adapter_kind(target) {
             match kind {
                 JsExoticAdapterKind::Arguments => {
@@ -13348,16 +13443,16 @@ impl<'a> Interpreter<'a> {
         let writable_flag = resolved_data_shape
             .map(|shape| shape.writable)
             .or(callable_virtual_descriptor
-            .or(legacy_error_descriptor)
-            .map(|(writable, _, _)| writable)
-            .or(own_flags.map(|(writable, _, _)| writable)))
+                .or(legacy_error_descriptor)
+                .map(|(writable, _, _)| writable)
+                .or(own_flags.map(|(writable, _, _)| writable)))
             .unwrap_or(object_backed_value.is_some());
         let configurable_flag = resolved_data_shape
             .map(|shape| shape.configurable)
             .or(callable_virtual_descriptor
-            .or(legacy_error_descriptor)
-            .map(|(_, configurable, _)| configurable)
-            .or(own_flags.map(|(_, configurable, _)| configurable)))
+                .or(legacy_error_descriptor)
+                .map(|(_, configurable, _)| configurable)
+                .or(own_flags.map(|(_, configurable, _)| configurable)))
             .unwrap_or(true);
         let callable_data_property = callable_virtual_descriptor.is_none()
             && object_backed_value.is_some()
@@ -13366,9 +13461,9 @@ impl<'a> Interpreter<'a> {
         let enumerable_flag = resolved_data_shape
             .map(|shape| shape.enumerable)
             .or(callable_virtual_descriptor
-            .or(legacy_error_descriptor)
-            .map(|(_, _, enumerable)| enumerable)
-            .or(own_flags.map(|(_, _, enumerable)| enumerable)))
+                .or(legacy_error_descriptor)
+                .map(|(_, _, enumerable)| enumerable)
+                .or(own_flags.map(|(_, _, enumerable)| enumerable)))
             .unwrap_or_else(|| {
                 if callable_data_property {
                     false
@@ -17404,7 +17499,10 @@ impl<'a> Interpreter<'a> {
                                 "Object.generatorNew requires a task id".to_string(),
                             ));
                         };
-                        let iterator = self.generator_iterator_object(task_id);
+                        let iterator = self.generator_iterator_object(
+                            task_id,
+                            self.default_generator_instance_prototype(false),
+                        );
                         if let Err(error) = stack.push(iterator) {
                             return OpcodeResult::Error(error);
                         }

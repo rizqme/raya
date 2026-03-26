@@ -10,6 +10,7 @@ use crate::vm::VmError;
 impl<'a> Interpreter<'a> {
     pub(crate) fn exec_generator_ops(&mut self, stack: &mut Stack, opcode: Opcode) -> OpcodeResult {
         match opcode {
+            Opcode::GeneratorInitSuspend => OpcodeResult::Suspend(SuspendReason::JsGeneratorInit),
             Opcode::GeneratorYield => match stack.pop() {
                 Ok(value) => OpcodeResult::Suspend(SuspendReason::JsGeneratorYield { value }),
                 Err(error) => OpcodeResult::Error(error),

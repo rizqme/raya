@@ -263,6 +263,64 @@ fn test_node_compat_class_private_generator_extraction_remains_callable() {
 }
 
 #[test]
+fn test_node_compat_live_generator_next_sequence_returns_each_step() {
+    expect_string_runtime_node_compat(
+        r#"
+        function* gen() {
+            yield 1;
+            yield 2;
+            return 3;
+        }
+        let it = gen();
+        let a = it.next();
+        let b = it.next();
+        let c = it.next();
+        return JSON.stringify([a.value, a.done, b.value, b.done, c.value, c.done]);
+    "#,
+        r#"[1,false,2,false,3,true]"#,
+    );
+}
+
+#[test]
+fn test_node_compat_generator_instance_uses_function_prototype() {
+    expect_bool_runtime_node_compat(
+        r#"
+        function* gen() {}
+        let proto = {};
+        gen.prototype = proto;
+        return Object.getPrototypeOf(gen()) === proto;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_generator_instance_falls_back_to_generator_prototype() {
+    expect_bool_runtime_node_compat(
+        r#"
+        function* gen() {}
+        let defaultProto = Object.getPrototypeOf(gen).prototype;
+        gen.prototype = null;
+        return Object.getPrototypeOf(gen()) === defaultProto;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_async_generator_instance_falls_back_to_async_generator_prototype() {
+    expect_bool_runtime_node_compat(
+        r#"
+        async function* gen() {}
+        let defaultProto = Object.getPrototypeOf(gen.prototype);
+        gen.prototype = null;
+        return Object.getPrototypeOf(gen()) === defaultProto;
+    "#,
+        true,
+    );
+}
+
+#[test]
 fn test_node_compat_static_computed_method_is_visible_on_class_constructor() {
     expect_string_runtime_node_compat(
         r#"

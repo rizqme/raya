@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
 use regex::Regex;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::fs;
 use std::io::Write;
@@ -384,6 +384,10 @@ pub struct Negative {
 pub struct TestCase {
     pub absolute_path: PathBuf,
     pub relative_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedCase {
     pub metadata: Frontmatter,
     pub source: String,
 }
@@ -393,6 +397,12 @@ pub enum TestOutcome {
     Passed,
     Failed(String),
     Skipped(String),
+}
+
+#[derive(Debug, Clone)]
+struct CaseRunResult {
+    outcome: TestOutcome,
+    metadata: Frontmatter,
 }
 
 #[derive(Debug, Default)]
@@ -438,8 +448,12 @@ pub fn run(args: Args) -> Result<i32> {
         .collect::<BTreeSet<_>>();
     exclude_segments.extend(args.exclude_segments);
 
-    let mut cases = discover_cases(&root, &args.selectors)?;
-    cases.retain(|case| !is_excluded_case(case, &args.exclude_prefixes, &exclude_segments));
+    let mut cases = discover_cases(
+        &root,
+        &args.selectors,
+        &args.exclude_prefixes,
+        &exclude_segments,
+    )?;
     if let Some(filter) = &args.filter {
         cases.retain(|case| case.relative_path.to_string_lossy().contains(filter));
     }
@@ -493,17 +507,23 @@ pub fn run(args: Args) -> Result<i32> {
                 let _ = std::io::stderr().flush();
             }
 
-            let outcome = run_case(&runtime, &root, case);
-            summary.record(&outcome);
+            let result = run_case(&runtime, &root, case);
+            summary.record(&result.outcome);
 
-            match &outcome {
+            match &result.outcome {
                 TestOutcome::Passed if args.verbose => {
                     println!("PASS {}", case.relative_path.display());
                 }
                 TestOutcome::Failed(message) => {
                     eprintln!(
                         "{}",
-                        format_failure_report(index + 1, cases.len(), case, message)
+                        format_failure_report(
+                            index + 1,
+                            cases.len(),
+                            case,
+                            &result.metadata,
+                            message,
+                        )
                     );
                     if args.fail_fast {
                         break;
@@ -517,16 +537,22 @@ pub fn run(args: Args) -> Result<i32> {
         }
     } else {
         let outcomes = run_cases_parallel(&root, &cases, effective_jobs);
-        for (index, (case, outcome)) in cases.iter().zip(outcomes.iter()).enumerate() {
-            summary.record(outcome);
-            match outcome {
+        for (index, (case, result)) in cases.iter().zip(outcomes.iter()).enumerate() {
+            summary.record(&result.outcome);
+            match &result.outcome {
                 TestOutcome::Passed if args.verbose => {
                     println!("PASS {}", case.relative_path.display());
                 }
                 TestOutcome::Failed(message) => {
                     eprintln!(
                         "{}",
-                        format_failure_report(index + 1, cases.len(), case, message)
+                        format_failure_report(
+                            index + 1,
+                            cases.len(),
+                            case,
+                            &result.metadata,
+                            message,
+                        )
                     );
                 }
                 TestOutcome::Skipped(reason) if args.show_skips => {
@@ -573,7 +599,7 @@ fn default_job_count() -> usize {
         .unwrap_or(1)
 }
 
-fn run_cases_parallel(root: &Path, cases: &[TestCase], jobs: usize) -> Vec<TestOutcome> {
+fn run_cases_parallel(root: &Path, cases: &[TestCase], jobs: usize) -> Vec<CaseRunResult> {
     let next_index = AtomicUsize::new(0);
     let results = Mutex::new(vec![None; cases.len()]);
 
@@ -601,16 +627,37 @@ fn run_cases_parallel(root: &Path, cases: &[TestCase], jobs: usize) -> Vec<TestO
         .collect()
 }
 
-fn discover_cases(root: &Path, selectors: &[PathBuf]) -> Result<Vec<TestCase>> {
+fn discover_cases(
+    root: &Path,
+    selectors: &[PathBuf],
+    exclude_prefixes: &[String],
+    exclude_segments: &BTreeSet<String>,
+) -> Result<Vec<TestCase>> {
     let mut candidates = Vec::new();
     if selectors.is_empty() {
-        collect_js_files(&root.join("test"), &mut candidates)?;
+        collect_js_files(
+            root,
+            &root.join("test"),
+            &mut candidates,
+            exclude_prefixes,
+            exclude_segments,
+        )?;
     } else {
         for selector in selectors {
             let path = resolve_selector_path(root, selector);
             if path.is_dir() {
-                collect_js_files(&path, &mut candidates)?;
+                collect_js_files(
+                    root,
+                    &path,
+                    &mut candidates,
+                    exclude_prefixes,
+                    exclude_segments,
+                )?;
             } else if path.is_file() {
+                let relative_path = path.strip_prefix(root).unwrap_or(&path);
+                if is_excluded_relative_path(relative_path, exclude_prefixes, exclude_segments) {
+                    continue;
+                }
                 candidates.push(path);
             } else {
                 anyhow::bail!(
@@ -622,24 +669,16 @@ fn discover_cases(root: &Path, selectors: &[PathBuf]) -> Result<Vec<TestCase>> {
     }
 
     candidates.sort();
-    let mut cases = Vec::with_capacity(candidates.len());
-    for absolute_path in candidates {
-        let source = fs::read_to_string(&absolute_path)
-            .with_context(|| format!("failed to read {}", absolute_path.display()))?;
-        let (metadata, source) = parse_frontmatter_and_body(&source);
-        let relative_path = absolute_path
-            .strip_prefix(root)
-            .unwrap_or(&absolute_path)
-            .to_path_buf();
-        cases.push(TestCase {
+    Ok(candidates
+        .into_iter()
+        .map(|absolute_path| TestCase {
+            relative_path: absolute_path
+                .strip_prefix(root)
+                .unwrap_or(&absolute_path)
+                .to_path_buf(),
             absolute_path,
-            relative_path,
-            metadata,
-            source,
-        });
-    }
-
-    Ok(cases)
+        })
+        .collect())
 }
 
 fn resolve_selector_path(root: &Path, selector: &Path) -> PathBuf {
@@ -665,14 +704,24 @@ fn resolve_selector_path(root: &Path, selector: &Path) -> PathBuf {
     direct
 }
 
-fn collect_js_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_js_files(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    exclude_prefixes: &[String],
+    exclude_segments: &BTreeSet<String>,
+) -> Result<()> {
     for entry in
         fs::read_dir(dir).with_context(|| format!("failed to read directory {}", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
+        let relative_path = path.strip_prefix(root).unwrap_or(&path);
+        if is_excluded_relative_path(relative_path, exclude_prefixes, exclude_segments) {
+            continue;
+        }
         if path.is_dir() {
-            collect_js_files(&path, out)?;
+            collect_js_files(root, &path, out, exclude_prefixes, exclude_segments)?;
             continue;
         }
         let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
@@ -685,12 +734,12 @@ fn collect_js_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn is_excluded_case(
-    case: &TestCase,
+fn is_excluded_relative_path(
+    relative_path: &Path,
     exclude_prefixes: &[String],
     exclude_segments: &BTreeSet<String>,
 ) -> bool {
-    let relative = case.relative_path.to_string_lossy();
+    let relative = relative_path.to_string_lossy();
     if exclude_prefixes
         .iter()
         .any(|prefix| relative.starts_with(prefix))
@@ -698,12 +747,19 @@ fn is_excluded_case(
         return true;
     }
 
-    case.relative_path.components().any(|component| {
+    relative_path.components().any(|component| {
         let Component::Normal(name) = component else {
             return false;
         };
         exclude_segments.contains(&name.to_string_lossy().to_string())
     })
+}
+
+fn load_case(case: &TestCase) -> Result<LoadedCase> {
+    let source = fs::read_to_string(&case.absolute_path)
+        .with_context(|| format!("failed to read {}", case.absolute_path.display()))?;
+    let (metadata, source) = parse_frontmatter_and_body(&source);
+    Ok(LoadedCase { metadata, source })
 }
 
 fn parse_frontmatter_and_body(source: &str) -> (Frontmatter, String) {
@@ -823,18 +879,33 @@ fn parse_inline_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
-    let transformed = match prepare_case_source(root, case) {
-        Ok(source) => source,
-        Err(reason) => return TestOutcome::Skipped(reason),
+fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
+    let loaded = match load_case(case) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            return CaseRunResult {
+                outcome: TestOutcome::Failed(format!("failed to load case: {error:#}")),
+                metadata: Frontmatter::default(),
+            };
+        }
     };
 
-    let negative_phase = case
+    let transformed = match prepare_case_source(root, &loaded) {
+        Ok(source) => source,
+        Err(reason) => {
+            return CaseRunResult {
+                outcome: TestOutcome::Skipped(reason),
+                metadata: loaded.metadata,
+            };
+        }
+    };
+
+    let negative_phase = loaded
         .metadata
         .negative
         .as_ref()
         .and_then(|negative| negative.phase.as_deref());
-    let expected_error = case
+    let expected_error = loaded
         .metadata
         .negative
         .as_ref()
@@ -845,15 +916,15 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
     let outcome = match negative_phase {
         Some("parse") | Some("resolution") => {
             match runtime.compile_program_source_at_path(&transformed, &temp_path) {
-            Ok(_) => TestOutcome::Failed("expected compilation to fail".to_string()),
-            Err(error) => {
-                if matches_expected_error(&error.to_string(), expected_error) {
-                    TestOutcome::Passed
-                } else {
-                    TestOutcome::Failed(format!("unexpected compilation error: {}", error))
+                Ok(_) => TestOutcome::Failed("expected compilation to fail".to_string()),
+                Err(error) => {
+                    if matches_expected_error(&error.to_string(), expected_error) {
+                        TestOutcome::Passed
+                    } else {
+                        TestOutcome::Failed(format!("unexpected compilation error: {}", error))
+                    }
                 }
             }
-        }
         }
         Some("runtime") => match execute_case_program(runtime, &temp_path, &transformed) {
             Ok(()) => TestOutcome::Failed("expected runtime failure".to_string()),
@@ -871,7 +942,7 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
         },
     };
 
-    match outcome {
+    let outcome = match outcome {
         TestOutcome::Failed(message) => {
             if let Err(error) = fs::write(&temp_path, &transformed) {
                 TestOutcome::Failed(format!(
@@ -888,6 +959,11 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
             let _ = fs::remove_file(&temp_path);
             other
         }
+    };
+
+    CaseRunResult {
+        outcome,
+        metadata: loaded.metadata,
     }
 }
 
@@ -899,7 +975,13 @@ fn case_artifact_path(case: &TestCase) -> PathBuf {
     ))
 }
 
-fn format_failure_report(index: usize, total: usize, case: &TestCase, message: &str) -> String {
+fn format_failure_report(
+    index: usize,
+    total: usize,
+    case: &TestCase,
+    metadata: &Frontmatter,
+    message: &str,
+) -> String {
     let mut report = format!(
         "FAIL {}/{} {}: {}",
         index,
@@ -909,25 +991,19 @@ fn format_failure_report(index: usize, total: usize, case: &TestCase, message: &
     );
     report.push_str(&format!("\n  source: {}", case.absolute_path.display()));
 
-    if let Some(description) = case.metadata.description.as_deref() {
+    if let Some(description) = metadata.description.as_deref() {
         report.push_str(&format!("\n  description: {}", description));
     }
-    if !case.metadata.flags.is_empty() {
-        report.push_str(&format!("\n  flags: {}", case.metadata.flags.join(", ")));
+    if !metadata.flags.is_empty() {
+        report.push_str(&format!("\n  flags: {}", metadata.flags.join(", ")));
     }
-    if !case.metadata.includes.is_empty() {
-        report.push_str(&format!(
-            "\n  includes: {}",
-            case.metadata.includes.join(", ")
-        ));
+    if !metadata.includes.is_empty() {
+        report.push_str(&format!("\n  includes: {}", metadata.includes.join(", ")));
     }
-    if !case.metadata.features.is_empty() {
-        report.push_str(&format!(
-            "\n  features: {}",
-            case.metadata.features.join(", ")
-        ));
+    if !metadata.features.is_empty() {
+        report.push_str(&format!("\n  features: {}", metadata.features.join(", ")));
     }
-    if let Some(negative) = case.metadata.negative.as_ref() {
+    if let Some(negative) = metadata.negative.as_ref() {
         let phase = negative.phase.as_deref().unwrap_or("?");
         let error_type = negative.error_type.as_deref().unwrap_or("?");
         report.push_str(&format!(
@@ -990,7 +1066,7 @@ fn execute_case_program(
     result
 }
 
-fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<String, String> {
+fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<String, String> {
     let is_raw = case.metadata.flags.iter().any(|flag| flag == "raw");
     for flag in &case.metadata.flags {
         match flag.as_str() {
@@ -1022,10 +1098,7 @@ fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<Stri
                 include_sources.push('\n');
             }
             _ => {
-                let include_path = root.join("harness").join(include);
-                let raw = fs::read_to_string(&include_path)
-                    .map_err(|_| format!("failed to load harness include: {}", include))?;
-                include_sources.push_str(&transform_source(&raw)?);
+                include_sources.push_str(&load_harness_include(root, include)?);
                 include_sources.push('\n');
             }
         }
@@ -1066,6 +1139,24 @@ fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<Stri
         final_source.push_str(&transformed);
     }
     Ok(final_source)
+}
+
+fn load_harness_include(root: &Path, include: &str) -> std::result::Result<String, String> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, std::result::Result<String, String>>>> =
+        OnceLock::new();
+
+    let include_path = root.join("harness").join(include);
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if let Some(cached) = cache.lock().unwrap().get(&include_path).cloned() {
+        return cached;
+    }
+
+    let loaded = fs::read_to_string(&include_path)
+        .map_err(|_| format!("failed to load harness include: {}", include))
+        .and_then(|raw| transform_source(&raw));
+    cache.lock().unwrap().insert(include_path, loaded.clone());
+    loaded
 }
 
 fn required_harness_prelude(transformed_source: &str, include_sources: &str) -> String {
@@ -1240,20 +1331,19 @@ negative:
         let case = TestCase {
             absolute_path: PathBuf::from("/tmp/test262/test/language/example.js"),
             relative_path: PathBuf::from("test/language/example.js"),
-            metadata: Frontmatter {
-                description: Some("sample failure".to_string()),
-                includes: vec!["assert.js".to_string()],
-                flags: vec!["onlyStrict".to_string()],
-                features: vec!["tail-call-optimization".to_string()],
-                negative: Some(Negative {
-                    phase: Some("runtime".to_string()),
-                    error_type: Some("TypeError".to_string()),
-                }),
-            },
-            source: String::new(),
+        };
+        let metadata = Frontmatter {
+            description: Some("sample failure".to_string()),
+            includes: vec!["assert.js".to_string()],
+            flags: vec!["onlyStrict".to_string()],
+            features: vec!["tail-call-optimization".to_string()],
+            negative: Some(Negative {
+                phase: Some("runtime".to_string()),
+                error_type: Some("TypeError".to_string()),
+            }),
         };
 
-        let report = format_failure_report(7, 42, &case, "runtime failed: boom");
+        let report = format_failure_report(7, 42, &case, &metadata, "runtime failed: boom");
 
         assert!(report.contains("FAIL 7/42 test/language/example.js: runtime failed: boom"));
         assert!(report.contains("source: /tmp/test262/test/language/example.js"));
@@ -1264,6 +1354,28 @@ negative:
         assert!(report.contains("negative: phase=runtime type=TypeError"));
         assert!(report.contains(
             "rerun: cargo run -p raya-es262-conformance -- --fail-fast test/language/example.js"
+        ));
+    }
+
+    #[test]
+    fn excludes_paths_by_prefix_and_segment() {
+        let exclude_prefixes = vec!["test/built-ins/Array".to_string()];
+        let exclude_segments = ["intl402".to_string()].into_iter().collect::<BTreeSet<_>>();
+
+        assert!(is_excluded_relative_path(
+            Path::new("test/built-ins/Array/from.js"),
+            &exclude_prefixes,
+            &exclude_segments,
+        ));
+        assert!(is_excluded_relative_path(
+            Path::new("test/intl402/Collator/default.js"),
+            &exclude_prefixes,
+            &exclude_segments,
+        ));
+        assert!(!is_excluded_relative_path(
+            Path::new("test/language/expressions/addition.js"),
+            &exclude_prefixes,
+            &exclude_segments,
         ));
     }
 }

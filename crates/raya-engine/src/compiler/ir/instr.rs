@@ -451,6 +451,9 @@ pub enum IrInstr {
     /// Suspend a JS generator and yield the current value to its iterator.
     GeneratorYield { value: Register },
 
+    /// Suspend a JS generator after call-time initialization and before user code runs.
+    GeneratorInitSuspend,
+
     /// Debugger breakpoint — pause if debugger is attached, no-op otherwise
     Debugger,
 
@@ -555,6 +558,7 @@ impl IrInstr {
             | IrInstr::Sleep { .. }
             | IrInstr::Yield
             | IrInstr::GeneratorYield { .. }
+            | IrInstr::GeneratorInitSuspend
             | IrInstr::Debugger
             | IrInstr::MutexLock { .. }
             | IrInstr::MutexUnlock { .. }
@@ -604,6 +608,7 @@ impl IrInstr {
                 | IrInstr::Sleep { .. }
                 | IrInstr::Yield
                 | IrInstr::GeneratorYield { .. }
+                | IrInstr::GeneratorInitSuspend
                 | IrInstr::Debugger
                 | IrInstr::NewMutex { .. }
                 | IrInstr::NewChannel { .. }

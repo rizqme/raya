@@ -496,6 +496,7 @@ impl TypeSubstitution {
                 duration_ms: self.apply_register(duration_ms),
             },
             IrInstr::Yield => IrInstr::Yield,
+            IrInstr::GeneratorInitSuspend => IrInstr::GeneratorInitSuspend,
             IrInstr::GeneratorYield { value } => IrInstr::GeneratorYield {
                 value: self.apply_register(value),
             },
@@ -625,6 +626,7 @@ impl TypeSubstitution {
         new_func.entry_block = func.entry_block;
         new_func.uses_js_this_slot = func.uses_js_this_slot;
         new_func.is_constructible = func.is_constructible;
+        new_func.is_async = func.is_async;
         new_func.is_generator = func.is_generator;
         new_func.visible_length = func.visible_length;
         new_func.is_strict_js = func.is_strict_js;
