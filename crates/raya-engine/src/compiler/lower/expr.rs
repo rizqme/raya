@@ -256,6 +256,360 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn try_lower_static_identifier_member_call(
+        &mut self,
+        dest: Register,
+        member: &ast::MemberExpression,
+        callee_expr: &Expression,
+        method_name_symbol: Symbol,
+        method_name: &str,
+        call_ty: TypeId,
+        args: &[Register],
+    ) -> Option<Register> {
+        let Expression::Identifier(ident) = &*member.object else {
+            return None;
+        };
+
+        let class_name = self.interner.resolve(ident.name);
+        let is_constructor_value_ident = self.class_map.contains_key(&ident.name)
+            || self.import_bindings.contains(&ident.name)
+            || self.ambient_builtin_globals.contains(class_name)
+            || self.constructor_value_type_map.contains_key(&ident.name);
+        if is_constructor_value_ident {
+            self.seed_constructor_projection_binding_from_type(
+                ident.name,
+                Some(self.get_expr_type(&member.object)),
+            );
+        }
+        if args.is_empty()
+            && class_name == "Symbol"
+            && Self::well_known_symbol_key(method_name).is_some()
+        {
+            return Some(self.lower_member(member));
+        }
+        let static_native_id = match (class_name, method_name) {
+            ("Object", "defineProperty") => Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY),
+            ("Object", "getOwnPropertyDescriptor") => {
+                Some(crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR)
+            }
+            ("Object", "defineProperties") => Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES),
+            ("Reflect", "get") => Some(crate::compiler::native_id::REFLECT_GET),
+            ("Reflect", "set") => Some(crate::compiler::native_id::REFLECT_SET),
+            ("Reflect", "has") => Some(crate::compiler::native_id::REFLECT_HAS),
+            _ => None,
+        };
+        if let Some(native_id) = static_native_id {
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                eprintln!(
+                    "[lower] native static call '{}.{}' -> 0x{:04x}",
+                    class_name, method_name, native_id
+                );
+            }
+            self.emit(IrInstr::NativeCall {
+                dest: Some(dest.clone()),
+                native_id,
+                args: args.to_vec(),
+            });
+            if native_id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR {
+                self.register_object_fields.insert(
+                    dest.id,
+                    vec![
+                        ("value".to_string(), 0),
+                        ("writable".to_string(), 1),
+                        ("configurable".to_string(), 2),
+                        ("enumerable".to_string(), 3),
+                        ("get".to_string(), 4),
+                        ("set".to_string(), 5),
+                    ],
+                );
+            }
+            return Some(dest);
+        }
+
+        if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
+            if let Some(&func_id) = self
+                .static_method_map
+                .get(&(nominal_type_id, method_name_symbol))
+            {
+                if !self.js_this_binding_compat {
+                    if self.async_functions.contains(&func_id) {
+                        let task_ty = self
+                            .type_ctx
+                            .generic_task_type()
+                            .unwrap_or(TypeId::new(TASK_TYPE_ID));
+                        let task_dest = self.alloc_register(task_ty);
+                        self.emit(IrInstr::Spawn {
+                            dest: task_dest.clone(),
+                            func: func_id,
+                            args: args.to_vec(),
+                        });
+                        return Some(task_dest);
+                    } else {
+                        self.emit(IrInstr::Call {
+                            dest: Some(dest.clone()),
+                            func: func_id,
+                            args: args.to_vec(),
+                        });
+                        self.propagate_type_projection_to_register(call_ty, &dest);
+                        return Some(dest);
+                    }
+                }
+            }
+
+            if self.js_this_binding_compat {
+                let receiver = self.load_class_value_for_nominal_type(nominal_type_id);
+                let closure = self.lower_member(member);
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    receiver,
+                    closure,
+                    args.to_vec(),
+                    call_ty,
+                    &member.object,
+                    callee_expr,
+                    method_name,
+                );
+                return Some(dest);
+            }
+        }
+
+        let prefers_dynamic_constructor_member_call = !self.class_map.contains_key(&ident.name)
+            && (self.ambient_builtin_globals.contains(class_name)
+                || self.constructor_value_type_map.contains_key(&ident.name));
+        if prefers_dynamic_constructor_member_call {
+            let prefers_direct_closure_call = class_name == "Promise";
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                eprintln!(
+                    "[lower] dynamic constructor member call '{}.{}(...)' via dyn_get",
+                    class_name, method_name
+                );
+            }
+            let receiver = self.lower_expr(&member.object);
+            let closure = self.alloc_register(UNRESOLVED);
+            self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
+            if prefers_direct_closure_call {
+                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
+                self.propagate_type_projection_to_register(call_ty, &dest);
+            } else {
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    receiver,
+                    closure,
+                    args.to_vec(),
+                    call_ty,
+                    &member.object,
+                    callee_expr,
+                    method_name,
+                );
+            }
+            return Some(dest);
+        }
+
+        None
+    }
+
+    fn try_lower_nominal_member_call(
+        &mut self,
+        mut dest: Register,
+        member: &ast::MemberExpression,
+        nominal_type_id: NominalTypeId,
+        method_name_symbol: Symbol,
+        method_name: &str,
+        call_ty: TypeId,
+        args: &[Register],
+    ) -> Option<Register> {
+        let all_fields = self.get_all_fields(nominal_type_id);
+        let is_field = all_fields
+            .iter()
+            .any(|f| self.interner.resolve(f.name) == method_name);
+        let is_method = self
+            .find_method(nominal_type_id, method_name_symbol)
+            .is_some();
+
+        if is_field && !is_method {
+            let object = self.lower_expr(&member.object);
+            let field_info = all_fields
+                .iter()
+                .rev()
+                .find(|f| self.interner.resolve(f.name) == method_name)
+                .unwrap();
+            let field_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+            self.emit(IrInstr::LoadFieldExact {
+                dest: field_reg.clone(),
+                object: object.clone(),
+                field: field_info.index,
+                optional: member.optional,
+            });
+            if self.type_id_is_async_callable(field_info.ty) {
+                self.emit(IrInstr::SpawnClosure {
+                    dest: dest.clone(),
+                    closure: field_reg,
+                    args: args.to_vec(),
+                });
+            } else {
+                let receiver = object.clone();
+                self.emit_js_member_call_helper(dest.clone(), receiver, field_reg, args.to_vec());
+                self.propagate_type_projection_to_register(call_ty, &dest);
+            }
+            return Some(dest);
+        }
+
+        if let Some(func_id) = self.find_method(nominal_type_id, method_name_symbol) {
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                if let Expression::Identifier(obj_ident) = &*member.object {
+                    eprintln!(
+                        "[lower] class member call '{}.{}(...)' nominal_type_id={} func_id={}",
+                        self.interner.resolve(obj_ident.name),
+                        method_name,
+                        nominal_type_id.as_u32(),
+                        func_id.as_u32()
+                    );
+                }
+            }
+            let object = self.lower_expr(&member.object);
+
+            if self.async_functions.contains(&func_id) {
+                let mut method_args = vec![object];
+                method_args.extend(args.iter().cloned());
+                let task_ty = self
+                    .type_ctx
+                    .generic_task_type()
+                    .unwrap_or(TypeId::new(TASK_TYPE_ID));
+                let task_dest = self.alloc_register(task_ty);
+                self.emit(IrInstr::Spawn {
+                    dest: task_dest.clone(),
+                    func: func_id,
+                    args: method_args,
+                });
+                return Some(task_dest);
+            }
+
+            if let Some(slot) = self.find_method_slot(nominal_type_id, method_name_symbol) {
+                self.emit(IrInstr::CallMethodExact {
+                    dest: Some(dest.clone()),
+                    object,
+                    method: slot,
+                    args: args.to_vec(),
+                    optional: member.optional,
+                });
+            } else {
+                let class_name = self
+                    .class_map
+                    .iter()
+                    .find_map(|(&sym, &id)| {
+                        if id == nominal_type_id {
+                            Some(self.interner.resolve(sym).to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| format!("class#{}", nominal_type_id.as_u32()));
+                self.errors
+                    .push(crate::compiler::CompileError::InternalError {
+                        message: format!(
+                            "missing vtable slot for instance method '{}.{}' (func_id={})",
+                            class_name,
+                            method_name,
+                            func_id.as_u32()
+                        ),
+                    });
+                self.poison_register(&dest);
+                return Some(dest);
+            }
+
+            if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
+                if let Some(&ret_ty) = self
+                    .method_return_type_map
+                    .get(&(nominal_type_id, method_name_symbol))
+                {
+                    if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
+                        dest.ty = ret_ty;
+                    }
+                }
+            }
+
+            self.propagate_container_return_type(
+                &mut dest,
+                nominal_type_id,
+                method_name,
+                &member.object,
+            );
+            self.propagate_type_projection_to_register(dest.ty, &dest);
+
+            return Some(dest);
+        } else if let Some(slot) = self.find_method_slot(nominal_type_id, method_name_symbol) {
+            let object = self.lower_expr(&member.object);
+            self.emit(IrInstr::CallMethodExact {
+                dest: Some(dest.clone()),
+                object,
+                method: slot,
+                args: args.to_vec(),
+                optional: member.optional,
+            });
+
+            if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
+                if let Some(&ret_ty) = self
+                    .method_return_type_map
+                    .get(&(nominal_type_id, method_name_symbol))
+                {
+                    if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
+                        dest.ty = ret_ty;
+                    }
+                }
+            }
+            self.propagate_type_projection_to_register(dest.ty, &dest);
+            return Some(dest);
+        }
+
+        None
+    }
+
+    fn try_lower_checker_validated_member_call(
+        &mut self,
+        dest: Register,
+        member: &ast::MemberExpression,
+        checker_member_ty: TypeId,
+        method_name: &str,
+        call_ty: TypeId,
+        args: &[Register],
+    ) -> Option<Register> {
+        match self.checker_validated_member_call_kind(checker_member_ty, method_name) {
+            Some(CheckerValidatedMemberCallKind::Method) => {
+                if let Some((shape_id, slot)) = self.structural_shape_id_from_type(checker_member_ty).zip(
+                    self.structural_slot_index_from_type(checker_member_ty, method_name),
+                ) {
+                    let object = self.lower_expr(&member.object);
+                    self.emit_structural_slot_registration_for_type(object.clone(), checker_member_ty);
+                    self.emit(IrInstr::CallMethodShape {
+                        dest: Some(dest.clone()),
+                        object,
+                        shape_id,
+                        method: slot,
+                        args: args.to_vec(),
+                        optional: member.optional,
+                    });
+                    self.propagate_type_projection_to_register(call_ty, &dest);
+                    return Some(dest);
+                }
+            }
+            Some(CheckerValidatedMemberCallKind::CallableProperty) => {
+                let object = self.lower_expr(&member.object);
+                let closure = self.alloc_register(UNRESOLVED);
+                self.emit_dyn_get_named(closure.clone(), object, method_name);
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args: args.to_vec(),
+                });
+                self.propagate_type_projection_to_register(call_ty, &dest);
+                return Some(dest);
+            }
+            None => {}
+        }
+
+        None
+    }
+
     fn resolve_identifier_closure_source(
         &mut self,
         ident: &ast::Identifier,
@@ -4246,149 +4600,16 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Check if this is a static method call (e.g., Utils.double(21))
-            if let Expression::Identifier(ident) = &*member.object {
-                let class_name = self.interner.resolve(ident.name);
-                let is_constructor_value_ident = self.class_map.contains_key(&ident.name)
-                    || self.import_bindings.contains(&ident.name)
-                    || self.ambient_builtin_globals.contains(class_name)
-                    || self.constructor_value_type_map.contains_key(&ident.name);
-                if is_constructor_value_ident {
-                    self.seed_constructor_projection_binding_from_type(
-                        ident.name,
-                        Some(self.get_expr_type(&member.object)),
-                    );
-                }
-                if args.is_empty()
-                    && class_name == "Symbol"
-                    && Self::well_known_symbol_key(method_name).is_some()
-                {
-                    return self.lower_member(member);
-                }
-                let static_native_id = match (class_name, method_name) {
-                    ("Object", "defineProperty") => {
-                        Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY)
-                    }
-                    ("Object", "getOwnPropertyDescriptor") => {
-                        Some(crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR)
-                    }
-                    ("Object", "defineProperties") => {
-                        Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES)
-                    }
-                    ("Reflect", "get") => Some(crate::compiler::native_id::REFLECT_GET),
-                    ("Reflect", "set") => Some(crate::compiler::native_id::REFLECT_SET),
-                    ("Reflect", "has") => Some(crate::compiler::native_id::REFLECT_HAS),
-                    _ => None,
-                };
-                if let Some(native_id) = static_native_id {
-                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                        eprintln!(
-                            "[lower] native static call '{}.{}' -> 0x{:04x}",
-                            class_name, method_name, native_id
-                        );
-                    }
-                    self.emit(IrInstr::NativeCall {
-                        dest: Some(dest.clone()),
-                        native_id,
-                        args,
-                    });
-                    if native_id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR {
-                        self.register_object_fields.insert(
-                            dest.id,
-                            vec![
-                                ("value".to_string(), 0),
-                                ("writable".to_string(), 1),
-                                ("configurable".to_string(), 2),
-                                ("enumerable".to_string(), 3),
-                                ("get".to_string(), 4),
-                                ("set".to_string(), 5),
-                            ],
-                        );
-                    }
-                    return dest;
-                }
-
-                if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-                    // This is a class identifier, check for static methods
-                    if let Some(&func_id) = self
-                        .static_method_map
-                        .get(&(nominal_type_id, method_name_symbol))
-                    {
-                        if !self.js_this_binding_compat {
-                            // Check if async method - emit Spawn instead of Call
-                            if self.async_functions.contains(&func_id) {
-                                let task_ty = self
-                                    .type_ctx
-                                    .generic_task_type()
-                                    .unwrap_or(TypeId::new(TASK_TYPE_ID));
-                                let task_dest = self.alloc_register(task_ty);
-                                self.emit(IrInstr::Spawn {
-                                    dest: task_dest.clone(),
-                                    func: func_id,
-                                    args,
-                                });
-                                return task_dest;
-                            } else {
-                                self.emit(IrInstr::Call {
-                                    dest: Some(dest.clone()),
-                                    func: func_id,
-                                    args,
-                                });
-                                self.propagate_type_projection_to_register(call_ty, &dest);
-                                return dest;
-                            }
-                        }
-                    }
-
-                    if self.js_this_binding_compat {
-                        let receiver = self.load_class_value_for_nominal_type(nominal_type_id);
-                        let closure = self.lower_member(member);
-                        self.emit_member_closure_invoke(
-                            dest.clone(),
-                            receiver,
-                            closure,
-                            args,
-                            call_ty,
-                            &member.object,
-                            &call.callee,
-                            method_name,
-                        );
-                        return dest;
-                    }
-                }
-
-                let prefers_dynamic_constructor_member_call =
-                    !self.class_map.contains_key(&ident.name)
-                        && (self.ambient_builtin_globals.contains(class_name)
-                            || self.constructor_value_type_map.contains_key(&ident.name));
-                if prefers_dynamic_constructor_member_call {
-                    let prefers_direct_closure_call = class_name == "Promise";
-                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                        eprintln!(
-                            "[lower] dynamic constructor member call '{}.{}(...)' via dyn_get",
-                            class_name, method_name
-                        );
-                    }
-                    let receiver = self.lower_expr(&member.object);
-                    let closure = self.alloc_register(UNRESOLVED);
-                    self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
-                    if prefers_direct_closure_call {
-                        self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                        self.propagate_type_projection_to_register(call_ty, &dest);
-                    } else {
-                        self.emit_member_closure_invoke(
-                            dest.clone(),
-                            receiver,
-                            closure,
-                            args,
-                            call_ty,
-                            &member.object,
-                            &call.callee,
-                            method_name,
-                        );
-                    }
-                    return dest;
-                }
+            if let Some(result) = self.try_lower_static_identifier_member_call(
+                dest.clone(),
+                member,
+                &call.callee,
+                method_name_symbol,
+                method_name,
+                call_ty,
+                &args,
+            ) {
+                return result;
             }
 
             let member_object_is_late_bound_identifier =
@@ -4544,46 +4765,15 @@ impl<'a> Lowerer<'a> {
                     .is_some();
 
             if checker_member_shape_call {
-                match self.checker_validated_member_call_kind(checker_member_ty, method_name) {
-                    Some(CheckerValidatedMemberCallKind::Method) => {
-                        if let Some((shape_id, slot)) =
-                            self.structural_shape_id_from_type(checker_member_ty).zip(
-                                self.structural_slot_index_from_type(
-                                    checker_member_ty,
-                                    method_name,
-                                ),
-                            )
-                        {
-                            let object = self.lower_expr(&member.object);
-                            self.emit_structural_slot_registration_for_type(
-                                object.clone(),
-                                checker_member_ty,
-                            );
-                            self.emit(IrInstr::CallMethodShape {
-                                dest: Some(dest.clone()),
-                                object,
-                                shape_id,
-                                method: slot,
-                                args,
-                                optional: member.optional,
-                            });
-                            self.propagate_type_projection_to_register(call_ty, &dest);
-                            return dest;
-                        }
-                    }
-                    Some(CheckerValidatedMemberCallKind::CallableProperty) => {
-                        let object = self.lower_expr(&member.object);
-                        let closure = self.alloc_register(UNRESOLVED);
-                        self.emit_dyn_get_named(closure.clone(), object, method_name);
-                        self.emit(IrInstr::CallClosure {
-                            dest: Some(dest.clone()),
-                            closure,
-                            args,
-                        });
-                        self.propagate_type_projection_to_register(call_ty, &dest);
-                        return dest;
-                    }
-                    None => {}
+                if let Some(result) = self.try_lower_checker_validated_member_call(
+                    dest.clone(),
+                    member,
+                    checker_member_ty,
+                    method_name,
+                    call_ty,
+                    &args,
+                ) {
+                    return result;
                 }
             }
             let use_js_runtime_member_semantics = self.js_mode_uses_runtime_member_semantics(
@@ -4620,165 +4810,17 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            // Check if this is a user-defined class method (including inherited methods)
             if let Some(nominal_type_id) = nominal_type_id {
-                // Check if this is a function-typed FIELD (not a method)
-                // Fields should be loaded via GetField + CallClosure, not CallMethodExact
-                let all_fields = self.get_all_fields(nominal_type_id);
-                let is_field = all_fields
-                    .iter()
-                    .any(|f| self.interner.resolve(f.name) == method_name);
-                let is_method = self
-                    .find_method(nominal_type_id, method_name_symbol)
-                    .is_some();
-
-                if is_field && !is_method {
-                    // Function-typed field: emit GetField + CallClosure
-                    let object = self.lower_expr(&member.object);
-                    let field_info = all_fields
-                        .iter()
-                        .rev()
-                        .find(|f| self.interner.resolve(f.name) == method_name)
-                        .unwrap();
-                    let field_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                    self.emit(IrInstr::LoadFieldExact {
-                        dest: field_reg.clone(),
-                        object: object.clone(),
-                        field: field_info.index,
-                        optional: member.optional,
-                    });
-                    if self.type_id_is_async_callable(field_info.ty) {
-                        self.emit(IrInstr::SpawnClosure {
-                            dest: dest.clone(),
-                            closure: field_reg,
-                            args,
-                        });
-                    } else {
-                        let receiver = object.clone();
-                        self.emit_js_member_call_helper(dest.clone(), receiver, field_reg, args);
-                        self.propagate_type_projection_to_register(call_ty, &dest);
-                    }
-                    return dest;
-                }
-
-                if let Some(func_id) = self.find_method(nominal_type_id, method_name_symbol) {
-                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                        if let Expression::Identifier(obj_ident) = &*member.object {
-                            eprintln!(
-                                "[lower] class member call '{}.{}(...)' nominal_type_id={} func_id={}",
-                                self.interner.resolve(obj_ident.name),
-                                method_name,
-                                nominal_type_id.as_u32(),
-                                func_id.as_u32()
-                            );
-                        }
-                    }
-                    // Lower the object (receiver) first
-                    let object = self.lower_expr(&member.object);
-
-                    // Check if async method - emit Spawn (stays static, no vtable)
-                    if self.async_functions.contains(&func_id) {
-                        let mut method_args = vec![object];
-                        method_args.extend(args);
-                        let task_ty = self
-                            .type_ctx
-                            .generic_task_type()
-                            .unwrap_or(TypeId::new(TASK_TYPE_ID));
-                        let task_dest = self.alloc_register(task_ty);
-                        self.emit(IrInstr::Spawn {
-                            dest: task_dest.clone(),
-                            func: func_id,
-                            args: method_args,
-                        });
-                        return task_dest;
-                    }
-
-                    // Use virtual dispatch via vtable slot
-                    if let Some(slot) = self.find_method_slot(nominal_type_id, method_name_symbol) {
-                        self.emit(IrInstr::CallMethodExact {
-                            dest: Some(dest.clone()),
-                            object,
-                            method: slot,
-                            args,
-                            optional: member.optional,
-                        });
-                    } else {
-                        let class_name = self
-                            .class_map
-                            .iter()
-                            .find_map(|(&sym, &id)| {
-                                if id == nominal_type_id {
-                                    Some(self.interner.resolve(sym).to_string())
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or_else(|| format!("class#{}", nominal_type_id.as_u32()));
-                        self.errors
-                            .push(crate::compiler::CompileError::InternalError {
-                                message: format!(
-                                    "missing vtable slot for instance method '{}.{}' (func_id={})",
-                                    class_name,
-                                    method_name,
-                                    func_id.as_u32()
-                                ),
-                            });
-                        self.poison_register(&dest);
-                        return dest;
-                    }
-
-                    // Preserve precise method return typing for user-defined class methods.
-                    // This is especially important when checker call typing is unresolved
-                    // (e.g. precompiled stdlib class dispatch), so downstream property/method
-                    // access can still select typed opcodes (ArrayLen/StringLen/etc).
-                    if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
-                        if let Some(&ret_ty) = self
-                            .method_return_type_map
-                            .get(&(nominal_type_id, method_name_symbol))
-                        {
-                            if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
-                                dest.ty = ret_ty;
-                            }
-                        }
-                    }
-
-                    // Propagate generic return type for Map/Set methods
-                    self.propagate_container_return_type(
-                        &mut dest,
-                        nominal_type_id,
-                        method_name,
-                        &member.object,
-                    );
-                    self.propagate_type_projection_to_register(dest.ty, &dest);
-
-                    return dest;
-                } else if let Some(slot) =
-                    self.find_method_slot(nominal_type_id, method_name_symbol)
-                {
-                    // Abstract method with vtable slot - use virtual dispatch.
-                    // The actual implementation is provided by a derived class.
-                    let object = self.lower_expr(&member.object);
-                    self.emit(IrInstr::CallMethodExact {
-                        dest: Some(dest.clone()),
-                        object,
-                        method: slot,
-                        args,
-                        optional: member.optional,
-                    });
-
-                    // If checker type is unresolved, still try to carry declared return type.
-                    if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
-                        if let Some(&ret_ty) = self
-                            .method_return_type_map
-                            .get(&(nominal_type_id, method_name_symbol))
-                        {
-                            if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
-                                dest.ty = ret_ty;
-                            }
-                        }
-                    }
-                    self.propagate_type_projection_to_register(dest.ty, &dest);
-                    return dest;
+                if let Some(result) = self.try_lower_nominal_member_call(
+                    dest.clone(),
+                    member,
+                    nominal_type_id,
+                    method_name_symbol,
+                    method_name,
+                    call_ty,
+                    &args,
+                ) {
+                    return result;
                 }
             }
 
