@@ -18405,9 +18405,14 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     0x0505u16 => {
-                        // TASK_RESOLVE_NOW: create an already-fulfilled task handle.
-                        let value = args.first().copied().unwrap_or(Value::undefined());
-                        if let Err(e) = stack.push(self.settled_task_handle(task, Ok(value))) {
+                        // TASK_GET_RESULT: retrieve a fulfilled task result.
+                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let tasks = self.tasks.read();
+                        let result = tasks
+                            .get(&task_id)
+                            .and_then(|t| t.result())
+                            .unwrap_or(Value::undefined());
+                        if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

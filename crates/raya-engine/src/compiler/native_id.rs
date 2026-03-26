@@ -268,6 +268,7 @@ pub const TASK_IS_CANCELLED: u16 = 0x0501;
 pub const TASK_IS_FAILED: u16 = 0x0502;
 pub const TASK_GET_ERROR: u16 = 0x0503;
 pub const TASK_MARK_OBSERVED: u16 = 0x0504;
+pub const TASK_GET_RESULT: u16 = 0x0505;
 pub const TASK_RESOLVE_PENDING: u16 = 0x0508;
 pub const TASK_REJECT_PENDING: u16 = 0x0509;
 
@@ -819,6 +820,7 @@ pub fn native_name(id: u16) -> &'static str {
         TASK_IS_FAILED => "Task.isFailed",
         TASK_GET_ERROR => "Task.getError",
         TASK_MARK_OBSERVED => "Task.markObserved",
+        TASK_GET_RESULT => "Task.getResult",
         TASK_RESOLVE_PENDING => "Task.resolvePending",
         TASK_REJECT_PENDING => "Task.rejectPending",
 

@@ -8,6 +8,7 @@ const PROMISE_IS_DONE: number = 0x0500;
 const PROMISE_IS_CANCELLED: number = 0x0501;
 const PROMISE_IS_FAILED: number = 0x0502;
 const PROMISE_GET_ERROR: number = 0x0503;
+const PROMISE_GET_RESULT: number = 0x0505;
 const PROMISE_REJECT_NOW: number = 0x0506;
 const PROMISE_ADOPT: number = 0x0507;
 
@@ -36,45 +37,55 @@ class Promise<T> {
         onFulfilled: (value: T) => U,
         onRejected?: (reason: PromiseRejectionReason) => U
     ): Promise<U> {
-        while (!this.isDone()) {
-            sleep(0);
-        }
-        if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
-            let reason = __NATIVE_CALL<PromiseRejectionReason>(PROMISE_GET_ERROR, this);
-            if (onRejected != null) {
-                let handled = onRejected(reason);
-                return __NATIVE_CALL<Promise<U>>(PROMISE_ADOPT, handled);
+        let promise = this;
+        let onFulfilledFn = arguments[1];
+        let onRejectedFn = arguments[2];
+        let wrapped = async (): Promise<T | U> => {
+            try {
+                let value = await promise;
+                if (typeof onFulfilledFn !== "function") {
+                    return value;
+                }
+                return onFulfilledFn(value);
+            } catch (reason) {
+                if (typeof onRejectedFn !== "function") {
+                    throw reason;
+                }
+                return onRejectedFn(reason);
             }
-            throw reason;
-        }
-        let value: T = __OPCODE_AWAIT(this);
-        let handled = onFulfilled(value);
-        return __NATIVE_CALL<Promise<U>>(PROMISE_ADOPT, handled);
+        };
+        return wrapped();
     }
 
     //@@class_method
     catch<U>(onRejected: (reason: PromiseRejectionReason) => U): Promise<T | U> {
-        while (!this.isDone()) {
-            sleep(0);
-        }
-        if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
-            let reason = __NATIVE_CALL<PromiseRejectionReason>(PROMISE_GET_ERROR, this);
-            let handled = onRejected(reason);
-            return __NATIVE_CALL<Promise<T | U>>(PROMISE_ADOPT, handled);
-        }
-        let value: T = __OPCODE_AWAIT(this);
-        return __NATIVE_CALL<Promise<T | U>>(PROMISE_ADOPT, value);
+        let promise = this;
+        let onRejectedFn = arguments[1];
+        let wrapped = async (): Promise<T | U> => {
+            try {
+                return await promise;
+            } catch (reason) {
+                return onRejectedFn(reason);
+            }
+        };
+        return wrapped();
     }
 
     //@@class_method
     finally(onFinally: () => void): Promise<T> {
+        let promise = this;
+        let onFinallyFn = arguments[1];
         let wrapped = async (): Promise<T> => {
             try {
-                let value = await this;
-                onFinally();
+                let value = await promise;
+                if (typeof onFinallyFn === "function") {
+                    await onFinallyFn();
+                }
                 return value;
             } catch (reason) {
-                onFinally();
+                if (typeof onFinallyFn === "function") {
+                    await onFinallyFn();
+                }
                 throw reason;
             }
         };

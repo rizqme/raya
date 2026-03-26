@@ -4976,8 +4976,8 @@ impl<'a> Lowerer<'a> {
             }
 
             // Look up method in type registry for native dispatch
-            let prefer_js_surface_method_dispatch =
-                self.js_this_binding_compat && obj_type_id == ARRAY_TYPE_ID;
+            let prefer_js_surface_method_dispatch = self.js_this_binding_compat
+                && matches!(obj_type_id, ARRAY_TYPE_ID | TASK_TYPE_ID);
 
             let method_id = if obj_type_id != UNRESOLVED_TYPE_ID
                 && !prefer_js_surface_method_dispatch
