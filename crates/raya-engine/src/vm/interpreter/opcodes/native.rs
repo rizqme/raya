@@ -21,6 +21,7 @@ use crate::parser::{Parser, TypeContext};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{ExecutionResult, OpcodeResult, ReturnAction};
+use crate::vm::interpreter::PromiseMicrotask;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
     layout_id_from_ordered_names, ArgumentsDataProperty, ArgumentsIndexedProperty,
@@ -28,7 +29,7 @@ use crate::vm::object::{
     ExoticKind, GeneratorSnapshotData, GeneratorStateData, LayoutId, MapObject, Object, RayaBigInt,
     RayaString, RefCell, RegExpObject, SetObject, SlotMeta, TypeHandle,
 };
-use crate::vm::scheduler::{Task, TaskId, TaskState};
+use crate::vm::scheduler::{PromiseReaction, PromiseReactionKind, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
@@ -825,6 +826,201 @@ impl<'a> Interpreter<'a> {
         self.tasks.read().get(&task_id).cloned()
     }
 
+    fn enqueue_promise_microtask(&self, job: PromiseMicrotask) {
+        self.promise_microtasks.lock().push_back(job);
+    }
+
+    pub(in crate::vm::interpreter) fn task_uses_async_js_promise_semantics(
+        &self,
+        task: &Arc<Task>,
+    ) -> bool {
+        let module = task.current_module();
+        let function = module.functions.get(task.current_func_id());
+        function.is_some_and(|function| {
+            function.is_async && function.uses_js_runtime_semantics && !function.is_generator
+        })
+    }
+
+    fn normalize_promise_source_task(&mut self, value: Value, caller_task: &Arc<Task>) -> Arc<Task> {
+        if let Some(task) = self.task_from_handle_value(value) {
+            return task;
+        }
+        let settled = self.settled_task_handle(caller_task, Ok(value));
+        self.task_from_handle_value(settled)
+            .expect("settled_task_handle must create a valid task")
+    }
+
+    fn queue_or_attach_promise_reaction(
+        &self,
+        source_task: &Arc<Task>,
+        reaction: PromiseReaction,
+    ) {
+        source_task.mark_rejection_observed();
+        if !source_task.add_reaction_if_incomplete(reaction) {
+            self.enqueue_promise_microtask(PromiseMicrotask::RunReaction {
+                source_task_id: source_task.id(),
+                reaction,
+            });
+        }
+    }
+
+    fn promise_chain_handle(
+        &mut self,
+        source: Value,
+        on_fulfilled: Value,
+        on_rejected: Value,
+        caller_task: &Arc<Task>,
+    ) -> Value {
+        let target_handle = self.pending_task_handle(caller_task);
+        let target_task_id = TaskId::from_u64(target_handle.as_u64().unwrap_or(0));
+        let source_task = self.normalize_promise_source_task(source, caller_task);
+        self.queue_or_attach_promise_reaction(
+            &source_task,
+            PromiseReaction {
+                target_task_id,
+                kind: PromiseReactionKind::Chain,
+                on_fulfilled,
+                on_rejected,
+            },
+        );
+        target_handle
+    }
+
+    fn promise_finally_handle(
+        &mut self,
+        source: Value,
+        on_finally: Value,
+        caller_task: &Arc<Task>,
+    ) -> Value {
+        let target_handle = self.pending_task_handle(caller_task);
+        let target_task_id = TaskId::from_u64(target_handle.as_u64().unwrap_or(0));
+        let source_task = self.normalize_promise_source_task(source, caller_task);
+        self.queue_or_attach_promise_reaction(
+            &source_task,
+            PromiseReaction {
+                target_task_id,
+                kind: PromiseReactionKind::Finally,
+                on_fulfilled: on_finally,
+                on_rejected: Value::undefined(),
+            },
+        );
+        target_handle
+    }
+
+    pub(crate) fn run_promise_reaction(
+        &mut self,
+        source_task: &Arc<Task>,
+        reaction: PromiseReaction,
+    ) {
+        let target_handle = Value::u64(reaction.target_task_id.as_u64());
+        let Some(target_task) = self.tasks.read().get(&reaction.target_task_id).cloned() else {
+            return;
+        };
+        if matches!(target_task.state(), TaskState::Completed | TaskState::Failed) {
+            return;
+        }
+
+        let source_failed = source_task.state() == TaskState::Failed;
+        let source_result = source_task.result().unwrap_or(Value::undefined());
+        let source_reason = source_task.current_exception().unwrap_or(Value::null());
+        if source_failed {
+            source_task.mark_rejection_observed();
+        }
+
+        match reaction.kind {
+            PromiseReactionKind::Chain => {
+                let callback = if source_failed {
+                    reaction.on_rejected
+                } else {
+                    reaction.on_fulfilled
+                };
+                let input = if source_failed { source_reason } else { source_result };
+                if !self.js_call_target_supported(callback) {
+                    let _ = self.settle_existing_task_handle(
+                        target_handle,
+                        if source_failed { Err(input) } else { Ok(input) },
+                    );
+                    return;
+                }
+                let caller_module = target_task.current_module();
+                match self.invoke_callable_sync_with_this(
+                    callback,
+                    Some(Value::undefined()),
+                    &[input],
+                    &target_task,
+                    &caller_module,
+                ) {
+                    Ok(returned) => {
+                        let _ = self.settle_existing_task_handle(target_handle, Ok(returned));
+                    }
+                    Err(error) => {
+                        self.ensure_task_exception_for_error(&target_task, &error);
+                        let reason = target_task.current_exception().unwrap_or(Value::undefined());
+                        let _ = self.settle_existing_task_handle(target_handle, Err(reason));
+                    }
+                }
+            }
+            PromiseReactionKind::Finally => {
+                let original_failed = source_failed;
+                let original = if source_failed {
+                    Err(source_reason)
+                } else {
+                    Ok(source_result)
+                };
+                let callback = reaction.on_fulfilled;
+                if !self.js_call_target_supported(callback) {
+                    let _ = self.settle_existing_task_handle(target_handle, original);
+                    return;
+                }
+                let caller_module = target_task.current_module();
+                match self.invoke_callable_sync_with_this(
+                    callback,
+                    Some(Value::undefined()),
+                    &[],
+                    &target_task,
+                    &caller_module,
+                ) {
+                    Ok(returned) => {
+                        if let Some(finalizer_task) = self.task_from_handle_value(returned) {
+                            let original_value = match original {
+                                Ok(value) | Err(value) => value,
+                            };
+                            self.queue_or_attach_promise_reaction(
+                                &finalizer_task,
+                                PromiseReaction {
+                                    target_task_id: reaction.target_task_id,
+                                    kind: PromiseReactionKind::FinallyResume {
+                                        original: original_value,
+                                        failed: original_failed,
+                                    },
+                                    on_fulfilled: Value::undefined(),
+                                    on_rejected: Value::undefined(),
+                                },
+                            );
+                            return;
+                        }
+                        let _ = self.settle_existing_task_handle(target_handle, original);
+                    }
+                    Err(error) => {
+                        self.ensure_task_exception_for_error(&target_task, &error);
+                        let reason = target_task.current_exception().unwrap_or(Value::undefined());
+                        let _ = self.settle_existing_task_handle(target_handle, Err(reason));
+                    }
+                }
+            }
+            PromiseReactionKind::FinallyResume { original, failed } => {
+                if source_failed {
+                    let _ = self.settle_existing_task_handle(target_handle, Err(source_reason));
+                } else {
+                    let _ = self.settle_existing_task_handle(
+                        target_handle,
+                        if failed { Err(original) } else { Ok(original) },
+                    );
+                }
+            }
+        }
+    }
+
     fn wake_task_waiters(&self, task: &Arc<Task>) {
         let waiters = task.take_waiters();
         if waiters.is_empty() {
@@ -865,6 +1061,12 @@ impl<'a> Interpreter<'a> {
         let mut settled = vec![task.clone()];
         while let Some(source) = settled.pop() {
             self.wake_task_waiters(&source);
+            for reaction in source.take_reactions() {
+                self.enqueue_promise_microtask(PromiseMicrotask::RunReaction {
+                    source_task_id: source.id(),
+                    reaction,
+                });
+            }
 
             let adopters = source.take_adopters();
             if adopters.is_empty() {
@@ -968,6 +1170,19 @@ impl<'a> Interpreter<'a> {
             Err(exception) => self.reject_task_handle_with_exception(&pending_task, exception),
         }
         Ok(())
+    }
+
+    pub(in crate::vm::interpreter) fn settle_completed_async_task(
+        &mut self,
+        task: &Arc<Task>,
+        value: Value,
+    ) -> Result<(), VmError> {
+        if self.task_uses_async_js_promise_semantics(task) {
+            self.settle_existing_task_handle(Value::u64(task.id().as_u64()), Ok(value))
+        } else {
+            task.complete(value);
+            Ok(())
+        }
     }
 
     fn construct_builtin_promise(
@@ -4539,6 +4754,49 @@ impl<'a> Interpreter<'a> {
         }
 
         false
+    }
+
+    fn callable_has_legacy_caller_arguments_own_props(&self, target: Value) -> bool {
+        let target = self
+            .unwrapped_proxy_like(target)
+            .map(|proxy| proxy.target)
+            .unwrap_or(target);
+
+        let Some(raw_ptr) = (unsafe { target.as_ptr::<u8>() }) else {
+            return false;
+        };
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+
+        if header.type_id() != std::any::TypeId::of::<Object>() {
+            return false;
+        }
+
+        let Some(co_ptr) = (unsafe { target.as_ptr::<Object>() }) else {
+            return false;
+        };
+        let co = unsafe { &*co_ptr.as_ptr() };
+        let Some(cd) = co.callable.as_ref() else {
+            return false;
+        };
+
+        match &cd.kind {
+            CallableKind::Closure { func_id } => {
+                let Some(module) = co.callable_module() else {
+                    return false;
+                };
+                let Some(function) = module.functions.get(*func_id) else {
+                    return false;
+                };
+                !function.is_strict_js
+                    && !function.is_async
+                    && !function.is_generator
+                    && !function.name.starts_with("__arrow_")
+                    && !module.metadata.name.starts_with("__dynamic_function__/")
+            }
+            CallableKind::BoundMethod { .. }
+            | CallableKind::BoundNative { .. }
+            | CallableKind::Bound { .. } => false,
+        }
     }
 
     fn callable_matches_function_identity(
@@ -8236,9 +8494,7 @@ impl<'a> Interpreter<'a> {
             return Some(value);
         }
         if matches!(key, "caller" | "arguments")
-            && self.callable_function_info(target).is_some()
-            && !self.callable_is_strict_js(target)
-            && !self.callable_is_arrow_function(target)
+            && self.callable_has_legacy_caller_arguments_own_props(target)
         {
             return Some(Value::undefined());
         }
@@ -8288,9 +8544,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         if matches!(key, "caller" | "arguments")
-            && self.callable_function_info(target).is_some()
-            && !self.callable_is_strict_js(target)
-            && !self.callable_is_arrow_function(target)
+            && self.callable_has_legacy_caller_arguments_own_props(target)
         {
             return Some((false, false, false));
         }
@@ -15467,9 +15721,16 @@ impl<'a> Interpreter<'a> {
                                 };
                                 if let Some(ref cd) = co.callable {
                                     match &cd.kind {
-                                        CallableKind::BoundNative { native_id, .. } => {
+                                        CallableKind::BoundNative {
+                                            native_id,
+                                            receiver,
+                                        } => {
                                             return self.exec_bound_native_method_call(
-                                                stack, this_arg, *native_id, rest_args, module,
+                                                stack,
+                                                *receiver,
+                                                *native_id,
+                                                rest_args,
+                                                module,
                                                 task,
                                             );
                                         }
@@ -15523,9 +15784,16 @@ impl<'a> Interpreter<'a> {
                                 };
                                 if let Some(ref cd) = co.callable {
                                     match &cd.kind {
-                                        CallableKind::BoundNative { native_id, .. } => {
+                                        CallableKind::BoundNative {
+                                            native_id,
+                                            receiver,
+                                        } => {
                                             return self.exec_bound_native_method_call(
-                                                stack, this_arg, *native_id, apply_args, module,
+                                                stack,
+                                                *receiver,
+                                                *native_id,
+                                                apply_args,
+                                                module,
                                                 task,
                                             );
                                         }
@@ -18461,6 +18729,30 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Error(error);
                         }
                         if let Err(e) = stack.push(Value::undefined()) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x050Au16 => {
+                        let source = args.first().copied().unwrap_or(Value::undefined());
+                        let on_fulfilled = args.get(1).copied().unwrap_or(Value::undefined());
+                        let on_rejected = args.get(2).copied().unwrap_or(Value::undefined());
+                        if let Err(e) = stack.push(self.promise_chain_handle(
+                            source,
+                            on_fulfilled,
+                            on_rejected,
+                            task,
+                        )) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x050Bu16 => {
+                        let source = args.first().copied().unwrap_or(Value::undefined());
+                        let on_finally = args.get(1).copied().unwrap_or(Value::undefined());
+                        if let Err(e) =
+                            stack.push(self.promise_finally_handle(source, on_finally, task))
+                        {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

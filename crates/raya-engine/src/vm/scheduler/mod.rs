@@ -12,4 +12,7 @@ mod task;
 pub use pool::StackPool;
 pub use reactor::{IoSubmission, Reactor};
 pub use scheduler::{Scheduler, SchedulerLimits, SchedulerStats};
-pub use task::{ExceptionHandler, SuspendReason, Task, TaskHandle, TaskId, TaskState};
+pub use task::{
+    ExceptionHandler, PromiseReaction, PromiseReactionKind, SuspendReason, Task, TaskHandle,
+    TaskId, TaskState,
+};

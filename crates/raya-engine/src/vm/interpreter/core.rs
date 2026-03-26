@@ -334,6 +334,10 @@ pub struct Interpreter<'a> {
     /// Global task injector for scheduling spawned tasks
     pub(in crate::vm::interpreter) injector: &'a Arc<Injector<Arc<Task>>>,
 
+    /// Promise microtask queue drained at scheduler checkpoints.
+    pub(in crate::vm::interpreter) promise_microtasks:
+        &'a parking_lot::Mutex<std::collections::VecDeque<super::PromiseMicrotask>>,
+
     /// Metadata store for Reflect API
     pub(in crate::vm::interpreter) metadata:
         &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
@@ -1586,6 +1590,7 @@ impl<'a> Interpreter<'a> {
         pinned_handles: &'a RwLock<FxHashSet<u64>>,
         tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
         injector: &'a Arc<Injector<Arc<Task>>>,
+        promise_microtasks: &'a parking_lot::Mutex<std::collections::VecDeque<super::PromiseMicrotask>>,
         metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
         class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
         native_handler: &'a Arc<dyn NativeHandler>,
@@ -1625,6 +1630,7 @@ impl<'a> Interpreter<'a> {
             pinned_handles,
             tasks,
             injector,
+            promise_microtasks,
             metadata,
             class_metadata,
             native_handler,
@@ -1961,6 +1967,7 @@ impl<'a> Interpreter<'a> {
                         self.pinned_handles,
                         self.tasks,
                         self.injector,
+                        self.promise_microtasks,
                         self.module_layouts,
                         self.module_registry,
                         self.metadata,
@@ -2161,6 +2168,9 @@ impl<'a> Interpreter<'a> {
                     ip = frame.ip;
                     locals_base = frame.locals_base;
                     current_arg_count = frame.arg_count;
+                    task.set_current_func_id(current_func_id);
+                    task.set_current_locals_base(locals_base);
+                    task.set_current_arg_count(current_arg_count);
 
                     // Push appropriate value onto caller's stack
                     if !matches!(frame.return_action, ReturnAction::Discard) {
@@ -2482,6 +2492,7 @@ impl<'a> Interpreter<'a> {
                                         self.pinned_handles,
                                         self.tasks,
                                         self.injector,
+                                        self.promise_microtasks,
                                         self.module_layouts,
                                         self.module_registry,
                                         self.metadata,

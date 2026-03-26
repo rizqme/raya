@@ -31,50 +31,9 @@ impl<'a> Interpreter<'a> {
         closure_val: Option<Value>,
         parent_task: &Arc<Task>,
     ) -> Result<OpcodeResult, VmError> {
-        let debug_async_tasks = std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok();
-        let arg_len = args.len();
-        let debug_func_name = if debug_async_tasks {
-            target_module
-                .functions
-                .get(func_id)
-                .map(|function| function.name.clone())
-                .unwrap_or_else(|| "<unknown>".to_string())
-        } else {
-            String::new()
-        };
-        let debug_module_name = if debug_async_tasks {
-            target_module.metadata.name.clone()
-        } else {
-            String::new()
-        };
-        let new_task = Arc::new(Task::with_args(
-            func_id,
-            target_module,
-            Some(parent_task.id()),
-            args,
-        ));
-        if let Some(closure) = closure_val {
-            new_task.push_closure(closure);
-        }
-        new_task.replace_stack(self.stack_pool.acquire());
-
-        if debug_async_tasks {
-            eprintln!(
-                "[async-task] spawn task={:?} parent={:?} module={} func={}#{} argc={}",
-                new_task.id(),
-                parent_task.id(),
-                debug_module_name,
-                debug_func_name,
-                func_id,
-                arg_len
-            );
-        }
-
-        let task_id = new_task.id();
-        self.tasks.write().insert(task_id, new_task.clone());
-        self.injector.push(new_task);
-
-        stack.push(Value::u64(task_id.as_u64()))?;
+        let handle =
+            self.spawn_async_task_handle(func_id, target_module, parent_task, args, closure_val)?;
+        stack.push(handle)?;
         Ok(OpcodeResult::Continue)
     }
 

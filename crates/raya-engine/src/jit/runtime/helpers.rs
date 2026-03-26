@@ -70,6 +70,8 @@ pub struct JitRuntimeBridgeContext {
     pub pinned_handles: *const parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     pub tasks: *const Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     pub injector: *const Arc<Injector<Arc<Task>>>,
+    pub promise_microtasks:
+        *const parking_lot::Mutex<std::collections::VecDeque<crate::vm::interpreter::PromiseMicrotask>>,
     pub module_layouts: *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
     pub module_registry: *const parking_lot::RwLock<crate::vm::interpreter::ModuleRegistry>,
     pub metadata: *const parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
@@ -112,6 +114,8 @@ pub fn build_runtime_bridge_context(
     pinned_handles: &parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     tasks: &Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     injector: &Arc<Injector<Arc<Task>>>,
+    promise_microtasks:
+        &parking_lot::Mutex<std::collections::VecDeque<crate::vm::interpreter::PromiseMicrotask>>,
     module_layouts: &parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
     module_registry: &parking_lot::RwLock<crate::vm::interpreter::ModuleRegistry>,
     metadata: &parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
@@ -152,6 +156,7 @@ pub fn build_runtime_bridge_context(
         pinned_handles: pinned_handles as *const _,
         tasks: tasks as *const _,
         injector: injector as *const _,
+        promise_microtasks: promise_microtasks as *const _,
         module_layouts: module_layouts as *const _,
         module_registry: module_registry as *const _,
         metadata: metadata as *const _,
@@ -470,6 +475,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         || bridge.pinned_handles.is_null()
         || bridge.tasks.is_null()
         || bridge.injector.is_null()
+        || bridge.promise_microtasks.is_null()
         || bridge.metadata.is_null()
         || bridge.class_metadata.is_null()
         || bridge.native_handler.is_null()
@@ -503,6 +509,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         unsafe { &*bridge.pinned_handles },
         unsafe { &*bridge.tasks },
         unsafe { &*bridge.injector },
+        unsafe { &*bridge.promise_microtasks },
         unsafe { &*bridge.metadata },
         unsafe { &*bridge.class_metadata },
         unsafe { &*bridge.native_handler },
@@ -1685,6 +1692,7 @@ mod tests {
             &shared.pinned_handles,
             &shared.tasks,
             &shared.injector,
+            &shared.promise_microtasks,
             &shared.module_layouts,
             &shared.module_registry,
             &shared.metadata,
@@ -1756,6 +1764,7 @@ mod tests {
             &shared.pinned_handles,
             &shared.tasks,
             &shared.injector,
+            &shared.promise_microtasks,
             &shared.module_layouts,
             &shared.module_registry,
             &shared.metadata,
@@ -1860,6 +1869,7 @@ mod tests {
             &shared.pinned_handles,
             &shared.tasks,
             &shared.injector,
+            &shared.promise_microtasks,
             &shared.module_layouts,
             &shared.module_registry,
             &shared.metadata,

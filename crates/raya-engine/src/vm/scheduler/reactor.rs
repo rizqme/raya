@@ -359,6 +359,7 @@ impl Reactor {
                 &state.pinned_handles,
                 &state.tasks,
                 &state.injector,
+                &state.promise_microtasks,
                 &state.metadata,
                 &state.class_metadata,
                 &state.native_handler,
@@ -756,6 +757,45 @@ impl Reactor {
     // Reactor helpers
     // ========================================================================
 
+    fn build_reaction_interpreter<'a>(
+        shared_state: &'a Arc<SharedVmState>,
+        io_submit_tx: Option<&'a Sender<IoSubmission>>,
+    ) -> Interpreter<'a> {
+        Interpreter::new(
+            &shared_state.gc,
+            &shared_state.classes,
+            &shared_state.layouts,
+            &shared_state.mutex_registry,
+            &shared_state.semaphore_registry,
+            &shared_state.safepoint,
+            &shared_state.globals_by_index,
+            &shared_state.builtin_global_slots,
+            &shared_state.js_global_bindings,
+            &shared_state.js_global_binding_slots,
+            &shared_state.constant_string_cache,
+            &shared_state.ephemeral_gc_roots,
+            &shared_state.pinned_handles,
+            &shared_state.tasks,
+            &shared_state.injector,
+            &shared_state.promise_microtasks,
+            &shared_state.metadata,
+            &shared_state.class_metadata,
+            &shared_state.native_handler,
+            &shared_state.module_layouts,
+            &shared_state.module_registry,
+            &shared_state.structural_shape_adapters,
+            &shared_state.structural_shape_names,
+            &shared_state.structural_layout_shapes,
+            &shared_state.type_handles,
+            &shared_state.class_value_slots,
+            &shared_state.prop_keys,
+            &shared_state.aot_profile,
+            io_submit_tx,
+            shared_state.max_preemptions,
+            &shared_state.stack_pool,
+        )
+    }
+
     fn handle_vm_result(
         vr: VmResult,
         shared_state: &Arc<SharedVmState>,
@@ -765,6 +805,10 @@ impl Reactor {
     ) {
         match vr.result {
             ExecutionResult::Completed(value) => {
+                if Self::try_adopt_async_completion(shared_state, &vr.task, value, ready_queue) {
+                    shared_state.stack_pool.release(vr.task.take_stack());
+                    return;
+                }
                 vr.task.complete(value);
                 Self::propagate_terminal_settlement(shared_state, &vr.task, ready_queue);
                 // Return the stack to the pool for reuse by future tasks
@@ -872,6 +916,72 @@ impl Reactor {
         }
     }
 
+    fn task_uses_async_js_promise_semantics(task: &Arc<Task>) -> bool {
+        task.current_module()
+            .functions
+            .get(task.current_func_id())
+            .is_some_and(|function| {
+                function.is_async && function.uses_js_runtime_semantics && !function.is_generator
+            })
+    }
+
+    fn try_adopt_async_completion(
+        shared_state: &Arc<SharedVmState>,
+        task: &Arc<Task>,
+        value: Value,
+        ready_queue: &mut VecDeque<Arc<Task>>,
+    ) -> bool {
+        if !Self::task_uses_async_js_promise_semantics(task) {
+            return false;
+        }
+
+        let Some(source_task_id) = value.as_u64().map(TaskId::from_u64) else {
+            return false;
+        };
+
+        if source_task_id == task.id() {
+            let exc = shared_state.allocate_ephemerally_rooted_string(
+                "Promise cannot be resolved with itself".to_string(),
+            );
+            task.set_exception(exc);
+            task.fail();
+            Self::propagate_terminal_settlement(shared_state, task, ready_queue);
+            Self::track_unhandled_rejection(shared_state, task);
+            shared_state.release_ephemeral_gc_root(exc);
+            return true;
+        }
+
+        let Some(source_task) = shared_state.tasks.read().get(&source_task_id).cloned() else {
+            return false;
+        };
+
+        if source_task.add_adopter_if_incomplete(task.id()) {
+            task.set_state(TaskState::Created);
+            return true;
+        }
+
+        match source_task.state() {
+            TaskState::Completed => {
+                task.complete(source_task.result().unwrap_or(Value::undefined()));
+            }
+            TaskState::Failed => {
+                source_task.mark_rejection_observed();
+                task.set_exception(source_task.current_exception().unwrap_or(Value::null()));
+                task.fail();
+            }
+            TaskState::Created | TaskState::Running | TaskState::Suspended | TaskState::Resumed => {
+                task.set_state(TaskState::Created);
+                return true;
+            }
+        }
+
+        Self::propagate_terminal_settlement(shared_state, task, ready_queue);
+        if task.state() == TaskState::Failed {
+            Self::track_unhandled_rejection(shared_state, task);
+        }
+        true
+    }
+
     fn track_unhandled_rejection(shared_state: &Arc<SharedVmState>, task: &Arc<Task>) {
         if task.state() != TaskState::Failed {
             return;
@@ -903,12 +1013,11 @@ impl Reactor {
         if drained.is_empty() {
             return;
         }
-        let tasks = shared_state.tasks.read();
         let mut requeue = Vec::new();
         for job in drained {
             match job {
                 PromiseMicrotask::ReportUnhandledRejection(task_id, delay) => {
-                    let Some(task) = tasks.get(&task_id) else {
+                    let Some(task) = shared_state.tasks.read().get(&task_id).cloned() else {
                         continue;
                     };
                     if task.state() != TaskState::Failed || task.is_rejection_observed() {
@@ -925,15 +1034,30 @@ impl Reactor {
                         ));
                         continue;
                     }
-                    let reason = task.current_exception().unwrap_or(Value::null());
-                    eprintln!(
-                        "[runtime] Unhandled Promise rejection (task {:?}): {:?}",
-                        task_id, reason
-                    );
+                    if std::env::var("RAYA_SUPPRESS_UNHANDLED_REJECTION_LOGS").is_err() {
+                        let reason = task.current_exception().unwrap_or(Value::null());
+                        eprintln!(
+                            "[runtime] Unhandled Promise rejection (task {:?}): {:?}",
+                            task_id, reason
+                        );
+                    }
+                }
+                PromiseMicrotask::RunReaction {
+                    source_task_id,
+                    reaction,
+                } => {
+                    let Some(source_task) = shared_state.tasks.read().get(&source_task_id).cloned()
+                    else {
+                        continue;
+                    };
+                    let io_submit_guard = shared_state.io_submit_tx.lock();
+                    let io_submit_tx = io_submit_guard.as_ref();
+                    let mut interpreter =
+                        Self::build_reaction_interpreter(shared_state, io_submit_tx);
+                    interpreter.run_promise_reaction(&source_task, reaction);
                 }
             }
         }
-        drop(tasks);
         if !requeue.is_empty() {
             shared_state.promise_microtasks.lock().extend(requeue);
         }
@@ -1227,6 +1351,15 @@ impl Reactor {
         let mut settled = vec![task.clone()];
         while let Some(source) = settled.pop() {
             Self::wake_waiters(shared_state, &source, ready_queue);
+            for reaction in source.take_reactions() {
+                shared_state
+                    .promise_microtasks
+                    .lock()
+                    .push_back(PromiseMicrotask::RunReaction {
+                        source_task_id: source.id(),
+                        reaction,
+                    });
+            }
 
             let adopters = source.take_adopters();
             if adopters.is_empty() {

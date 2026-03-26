@@ -69,8 +69,27 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
         Token::Async => {
             // Look ahead to see if this is "async function" or "async foo()"
             if let Some(Token::Function) = parser.peek() {
+                if parser.current_identifier_had_escape() {
+                    return Err(ParseError::invalid_syntax(
+                        "The `async` contextual keyword must not contain Unicode escape sequences",
+                        parser.current_span(),
+                    ));
+                }
+                if parser.has_line_terminator_before_peek() {
+                    let start_span = parser.current_span();
+                    let expression = super::expr::parse_expression(parser)?;
+
+                    if parser.check(&Token::Semicolon) {
+                        parser.advance();
+                    }
+
+                    let span = parser.combine_spans(&start_span, expression.span());
+
+                    Ok(Statement::Expression(ExpressionStatement { expression, span }))
+                } else {
                 // async function declaration
-                parse_function_declaration(parser)
+                    parse_function_declaration(parser)
+                }
             } else {
                 // async call expression - parse as expression statement
                 let start_span = parser.current_span();
@@ -272,6 +291,12 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
 
     // Parse 'async' modifier
     let is_async = if parser.check(&Token::Async) {
+        if parser.current_identifier_had_escape() {
+            return Err(ParseError::invalid_syntax(
+                "The `async` contextual keyword must not contain Unicode escape sequences",
+                parser.current_span(),
+            ));
+        }
         parser.advance();
         true
     } else {
@@ -443,6 +468,12 @@ pub(super) fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Param
         });
 
         if !parser.check(&Token::RightParen) {
+            if seen_rest {
+                return Err(ParseError::invalid_syntax(
+                    "Rest parameter must be last",
+                    parser.current_span(),
+                ));
+            }
             parser.expect(Token::Comma)?;
         }
     }

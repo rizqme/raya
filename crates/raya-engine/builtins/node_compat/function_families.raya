@@ -100,6 +100,21 @@ class AsyncGeneratorFunction extends Function {
     }
 }
 
+Object.setPrototypeOf(
+    (AsyncFunction as any).prototype,
+    (Function as any).prototype,
+);
+
+Object.setPrototypeOf(
+    (GeneratorFunction as any).prototype,
+    (Function as any).prototype,
+);
+
+Object.setPrototypeOf(
+    (AsyncGeneratorFunction as any).prototype,
+    (Function as any).prototype,
+);
+
 Object.defineProperty(
     (GeneratorFunction as any).prototype,
     "prototype",

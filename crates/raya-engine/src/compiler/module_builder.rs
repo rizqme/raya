@@ -76,6 +76,7 @@ pub struct FunctionBuilder {
     is_generator: bool,
     visible_length: u8,
     is_strict_js: bool,
+    uses_js_runtime_semantics: bool,
     uses_builtin_this_coercion: bool,
     js_arguments_mapping: Vec<u16>,
     code: Vec<u8>,
@@ -100,6 +101,7 @@ impl FunctionBuilder {
             is_generator: false,
             visible_length: param_count,
             is_strict_js: false,
+            uses_js_runtime_semantics: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
             code: Vec::new(),
@@ -198,6 +200,10 @@ impl FunctionBuilder {
         self.is_strict_js = is_strict_js;
     }
 
+    pub fn set_uses_js_runtime_semantics(&mut self, uses_js_runtime_semantics: bool) {
+        self.uses_js_runtime_semantics = uses_js_runtime_semantics;
+    }
+
     pub fn set_uses_builtin_this_coercion(&mut self, uses_builtin_this_coercion: bool) {
         self.uses_builtin_this_coercion = uses_builtin_this_coercion;
     }
@@ -222,6 +228,7 @@ impl FunctionBuilder {
             is_generator: self.is_generator,
             visible_length: self.visible_length as usize,
             is_strict_js: self.is_strict_js,
+            uses_js_runtime_semantics: self.uses_js_runtime_semantics,
             uses_builtin_this_coercion: self.uses_builtin_this_coercion,
             js_arguments_mapping: self.js_arguments_mapping,
             local_count: self.local_count as usize,

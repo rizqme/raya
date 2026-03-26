@@ -20,6 +20,41 @@ use crate::parser::token::Span;
 use crate::parser::{Interner, Symbol, Type, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+fn remap_function_id(func_id: &mut FunctionId, remap: &FxHashMap<u32, u32>) {
+    if let Some(&new_id) = remap.get(&func_id.as_u32()) {
+        *func_id = FunctionId::new(new_id);
+    }
+}
+
+fn remap_function_ids_in_instr(instr: &mut IrInstr, remap: &FxHashMap<u32, u32>) {
+    match instr {
+        IrInstr::Call { func, .. }
+        | IrInstr::MakeClosure { func, .. }
+        | IrInstr::Spawn { func, .. } => remap_function_id(func, remap),
+        _ => {}
+    }
+}
+
+fn remap_function_ids_in_ir_function(func: &mut IrFunction, remap: &FxHashMap<u32, u32>) {
+    for block in &mut func.blocks {
+        for instr in &mut block.instructions {
+            remap_function_ids_in_instr(instr, remap);
+        }
+    }
+}
+
+fn remap_function_ids_in_ir_class(class: &mut IrClass, remap: &FxHashMap<u32, u32>) {
+    for method_id in &mut class.methods {
+        remap_function_id(method_id, remap);
+    }
+    for method_id in &mut class.static_methods {
+        remap_function_id(method_id, remap);
+    }
+    if let Some(constructor_id) = &mut class.constructor {
+        remap_function_id(constructor_id, remap);
+    }
+}
+
 /// Sentinel TypeId for when the lowerer cannot determine the type.
 /// Distinct from TypeId(0) (Number) and TypeId(6) (Unknown).
 /// Re-exported from type_registry for convenience.
@@ -2804,6 +2839,18 @@ impl<'a> Lowerer<'a> {
             }
         }
         self.pending_arrow_functions.sort_by_key(|(id, _)| *id);
+        let function_id_remap: FxHashMap<u32, u32> = self
+            .pending_arrow_functions
+            .iter()
+            .enumerate()
+            .map(|(new_id, (old_id, _))| (*old_id, new_id as u32))
+            .collect();
+        for class in &mut ir_module.classes {
+            remap_function_ids_in_ir_class(class, &function_id_remap);
+        }
+        for (_id, func) in &mut self.pending_arrow_functions {
+            remap_function_ids_in_ir_function(func, &function_id_remap);
+        }
         for (_id, func) in self.pending_arrow_functions.drain(..) {
             ir_module.add_function(func);
         }
@@ -3811,6 +3858,7 @@ impl<'a> Lowerer<'a> {
             .params
             .iter()
             .any(|p| !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_)));
+        let use_js_parameter_env = self.js_parameter_environment_required(&func.params);
 
         // Reset per-function state
         self.next_register = 0;
@@ -3825,7 +3873,7 @@ impl<'a> Lowerer<'a> {
         self.register_nested_array_element_object_fields.clear();
         // IMPORTANT: If there are destructuring parameters, start local allocation AFTER parameter slots
         // to avoid destructured variables overwriting parameter values
-        if has_destructuring_params {
+        if use_js_parameter_env || has_destructuring_params {
             let fixed_param_count =
                 func.params.iter().filter(|p| !p.is_rest).count() + usize::from(has_js_this_slot);
             self.next_local = fixed_param_count as u16;
@@ -3873,6 +3921,12 @@ impl<'a> Lowerer<'a> {
         let wrapper_tag = module_wrapper_alias_tag(name);
         self.prepare_executable_body_declarations(&func.body.statements, wrapper_tag);
 
+        if use_js_parameter_env {
+            for param in &func.params {
+                self.preallocate_parameter_pattern_locals(&param.pattern);
+            }
+        }
+
         // Create parameter registers (excluding rest parameters)
         let mut params = Vec::new();
         let mut rest_param_info: Option<(&Pattern, TypeId)> = None;
@@ -3881,6 +3935,7 @@ impl<'a> Lowerer<'a> {
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
         let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
         let mut param_local_indices = Vec::with_capacity(func.params.len());
+        let mut raw_param_slots = Vec::new();
         let function_type_params = func.type_params.as_deref();
 
         if has_js_this_slot {
@@ -3911,6 +3966,7 @@ impl<'a> Lowerer<'a> {
                 .map(|t| self.resolve_param_type_from_annotation(t, function_type_params, None))
                 .unwrap_or(UNRESOLVED);
             let reg = self.alloc_register(ty);
+            raw_param_slots.push(params.len() as u16);
             if let Some(type_ann) = &param.type_annotation {
                 let nominal_type_id = self.resolve_param_nominal_type_from_annotation(
                     type_ann,
@@ -3941,7 +3997,10 @@ impl<'a> Lowerer<'a> {
 
             // Extract parameter name from pattern
             if let Pattern::Identifier(ident) = &param.pattern {
-                let local_idx = if has_destructuring_params {
+                let local_idx = if use_js_parameter_env {
+                    self.lookup_local(ident.name)
+                        .expect("preallocated parameter local must exist")
+                } else if has_destructuring_params {
                     let local_idx = decl_param_idx as u16 + u16::from(has_js_this_slot);
                     self.local_map.insert(ident.name, local_idx);
                     local_idx
@@ -4020,7 +4079,6 @@ impl<'a> Lowerer<'a> {
             .iter()
             .take_while(|param| !param.is_rest && param.default_value.is_none() && !param.optional)
             .count();
-        let use_js_parameter_env = self.js_parameter_environment_required(&func.params);
         let is_strict_js = self.js_strict_context
             || func
                 .body
@@ -4054,6 +4112,7 @@ impl<'a> Lowerer<'a> {
         ir_func.is_generator = func.is_generator;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
+        ir_func.uses_js_runtime_semantics = true;
         if let Some(type_params) = &func.type_params {
             ir_func.type_param_ids = type_params
                 .iter()
@@ -4100,31 +4159,35 @@ impl<'a> Lowerer<'a> {
             self.init_eval_completion_local();
         }
 
-        // Bind destructuring patterns in function parameters
-        // This must happen after entry block is created so we can emit instructions
-        for (param_idx, pattern, value_reg) in destructure_params {
-            // Register object field layout for destructuring
-            if let ast::Pattern::Object(_) = pattern {
-                if let Some(type_ann) = func
-                    .params
-                    .get(param_idx)
-                    .and_then(|p| p.type_annotation.as_ref())
-                {
-                    if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
-                        self.register_object_fields
-                            .insert(value_reg.id, field_layout);
-                    }
-                    if let Some(nested_array_layouts) =
-                        self.extract_array_element_object_layouts_from_type(type_ann)
+        if use_js_parameter_env {
+            self.emit_js_parameter_initialization(&func.params, &raw_param_slots);
+        } else {
+            // Bind destructuring patterns in function parameters
+            // This must happen after entry block is created so we can emit instructions
+            for (param_idx, pattern, value_reg) in destructure_params {
+                // Register object field layout for destructuring
+                if let ast::Pattern::Object(_) = pattern {
+                    if let Some(type_ann) = func
+                        .params
+                        .get(param_idx)
+                        .and_then(|p| p.type_annotation.as_ref())
                     {
-                        for (field_idx, layout) in nested_array_layouts {
-                            self.register_nested_array_element_object_fields
-                                .insert((value_reg.id, field_idx), layout);
+                        if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
+                            self.register_object_fields
+                                .insert(value_reg.id, field_layout);
+                        }
+                        if let Some(nested_array_layouts) =
+                            self.extract_array_element_object_layouts_from_type(type_ann)
+                        {
+                            for (field_idx, layout) in nested_array_layouts {
+                                self.register_nested_array_element_object_fields
+                                    .insert((value_reg.id, field_idx), layout);
+                            }
                         }
                     }
                 }
+                self.bind_pattern(pattern, value_reg);
             }
-            self.bind_pattern(pattern, value_reg);
         }
 
         // Register structural slot views for typed parameters so slot-based member
@@ -4146,10 +4209,15 @@ impl<'a> Lowerer<'a> {
         if let Some((rest_pattern, rest_ty)) = rest_param_info {
             let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
             self.bind_pattern(rest_pattern, rest_value);
+            if use_js_parameter_env {
+                self.clear_parameter_tdz_for_pattern(rest_pattern);
+            }
         }
 
         // Emit null-check + default-value for parameters with defaults
-        self.emit_default_params(&func.params);
+        if !use_js_parameter_env {
+            self.emit_default_params(&func.params);
+        }
         self.emit_js_function_var_hoists(&func.body.statements);
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
@@ -4884,6 +4952,7 @@ impl<'a> Lowerer<'a> {
                     ir_func.is_generator = method.is_generator;
                     ir_func.visible_length = visible_length;
                     ir_func.is_strict_js = true;
+                    ir_func.uses_js_runtime_semantics = true;
                     ir_func.uses_builtin_this_coercion = self.builtin_this_coercion_compat;
                     let mut type_param_ids = Vec::new();
                     if let Some(class_type_params) = &class.type_params {
@@ -5996,6 +6065,9 @@ impl<'a> Lowerer<'a> {
     /// Must be called after entry block creation and parameter registration,
     /// before lowering the function body.
     fn emit_default_params(&mut self, params: &[ast::Parameter]) {
+        if self.js_parameter_environment_required(params) {
+            return;
+        }
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         self.parameter_scope_eval_mode = true;
         for param in params {

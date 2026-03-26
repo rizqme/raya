@@ -515,6 +515,7 @@ pub fn main_entry() -> Result<i32> {
 }
 
 pub fn run(args: Args) -> Result<i32> {
+    std::env::set_var("RAYA_SUPPRESS_UNHANDLED_REJECTION_LOGS", "1");
     let root = args
         .root
         .unwrap_or_else(default_test262_root)

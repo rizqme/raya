@@ -766,6 +766,7 @@ impl ModuleCompiler {
                 is_generator: false,
                 visible_length: 0,
                 is_strict_js: false,
+                uses_js_runtime_semantics: false,
                 uses_builtin_this_coercion: false,
                 js_arguments_mapping: Vec::new(),
                 local_count: 0,

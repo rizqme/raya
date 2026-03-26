@@ -3658,6 +3658,32 @@ impl<'a> Lowerer<'a> {
                     && !self.type_is_callable(callee_ty)
                     && !self.runtime_call_may_be_callable(callee_ty)
                 {
+                    if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
+                        let closure_raw = self.alloc_register(closure_ty);
+                        self.emit(IrInstr::LoadLocal {
+                            dest: closure_raw.clone(),
+                            index: local_idx,
+                        });
+                        let closure = if self.refcell_registers.contains_key(&local_idx) {
+                            let val = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                            self.emit(IrInstr::LoadRefCell {
+                                dest: val.clone(),
+                                refcell: closure_raw,
+                            });
+                            val
+                        } else {
+                            closure_raw
+                        };
+                        let receiver = self.lower_undefined_literal();
+                        if call.has_spread_arguments() {
+                            let args_array = self.lower_call_argument_array(&call.arguments);
+                            self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+                        } else {
+                            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+                        }
+                        self.propagate_type_projection_to_register(call_ty, &dest);
+                        return dest;
+                    }
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
                             message: format!(
@@ -3783,7 +3809,9 @@ impl<'a> Lowerer<'a> {
                     index: global_idx,
                 });
                 if let Some(&func_id) = self.closure_globals.get(&global_idx) {
-                    if self.async_closures.contains(&func_id) {
+                    if self.async_closures.contains(&func_id)
+                        || self.async_functions.contains(&func_id)
+                    {
                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                             eprintln!(
                                 "[lower] SpawnClosure[global-async] '{}' global_idx={} func_id={}",
@@ -3876,7 +3904,9 @@ impl<'a> Lowerer<'a> {
                 }
 
                 if let Some(&func_id) = self.closure_globals.get(&binding.global_idx) {
-                    if self.async_closures.contains(&func_id) {
+                    if self.async_closures.contains(&func_id)
+                        || self.async_functions.contains(&func_id)
+                    {
                         self.emit(IrInstr::SpawnClosure {
                             dest: dest.clone(),
                             closure,
@@ -9931,6 +9961,7 @@ impl<'a> Lowerer<'a> {
         ir_func.is_generator = func.is_generator;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
+        ir_func.uses_js_runtime_semantics = true;
         if self.emit_sourcemap {
             ir_func.source_span = func.span;
         }
@@ -10550,6 +10581,7 @@ impl<'a> Lowerer<'a> {
         ir_func.is_async = arrow.is_async;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
+        ir_func.uses_js_runtime_semantics = true;
         if self.emit_sourcemap {
             ir_func.source_span = arrow.span;
         }

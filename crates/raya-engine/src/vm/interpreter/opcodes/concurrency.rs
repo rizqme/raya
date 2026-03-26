@@ -2,7 +2,7 @@
 
 use crate::compiler::{Module, Opcode};
 use crate::vm::gc::header_ptr_from_value_ptr;
-use crate::vm::interpreter::execution::OpcodeResult;
+use crate::vm::interpreter::execution::{ExecutionResult, OpcodeResult};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Array, CallableKind, Object};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
@@ -14,6 +14,87 @@ use std::sync::Arc;
 use std::time::Instant;
 
 impl<'a> Interpreter<'a> {
+    pub(in crate::vm::interpreter) fn spawn_async_task_handle(
+        &mut self,
+        func_index: usize,
+        target_module: Arc<Module>,
+        parent_task: &Arc<Task>,
+        args: Vec<Value>,
+        closure_val: Option<Value>,
+    ) -> Result<Value, VmError> {
+        let debug_async_tasks = std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok();
+        let arg_len = args.len();
+        let debug_func_name = if debug_async_tasks {
+            target_module
+                .functions
+                .get(func_index)
+                .map(|function| function.name.clone())
+                .unwrap_or_else(|| "<unknown>".to_string())
+        } else {
+            String::new()
+        };
+        let debug_module_name = if debug_async_tasks {
+            target_module.metadata.name.clone()
+        } else {
+            String::new()
+        };
+        let new_task = Arc::new(Task::with_args(
+            func_index,
+            target_module.clone(),
+            Some(parent_task.id()),
+            args,
+        ));
+        if let Some(closure) = closure_val {
+            new_task.push_closure(closure);
+        }
+        new_task.replace_stack(self.stack_pool.acquire());
+
+        if debug_async_tasks {
+            eprintln!(
+                "[async-task] spawn task={:?} parent={:?} module={} func={}#{} argc={}",
+                new_task.id(),
+                parent_task.id(),
+                debug_module_name,
+                debug_func_name,
+                func_index,
+                arg_len
+            );
+        }
+
+        let eager_start = target_module
+            .functions
+            .get(func_index)
+            .is_some_and(|function| function.is_async && function.uses_js_runtime_semantics);
+        let task_id = new_task.id();
+        self.tasks.write().insert(task_id, new_task.clone());
+
+        if eager_start {
+            match self.run(&new_task) {
+                ExecutionResult::Completed(value) => {
+                    self.settle_completed_async_task(&new_task, value)?;
+                }
+                ExecutionResult::Suspended(reason) => {
+                    new_task.suspend(reason);
+                }
+                ExecutionResult::Failed(error) => {
+                    self.ensure_task_exception_for_error(&new_task, &error);
+                    new_task.fail();
+                    if !new_task.is_cancelled() && !new_task.is_rejection_observed() {
+                        self.promise_microtasks.lock().push_back(
+                            crate::vm::interpreter::PromiseMicrotask::ReportUnhandledRejection(
+                                task_id, 2,
+                            ),
+                        );
+                    }
+                }
+            }
+        } else {
+            self.injector.push(new_task);
+        }
+
+        Ok(Value::u64(task_id.as_u64()))
+    }
+
     pub(in crate::vm::interpreter) fn exec_concurrency_ops(
         &mut self,
         stack: &mut Stack,
@@ -42,36 +123,38 @@ impl<'a> Interpreter<'a> {
                     }
                 }
 
-                let new_task = Arc::new(Task::with_args(
-                    func_index,
-                    task.current_module(),
-                    Some(task.id()),
-                    args,
-                ));
-                new_task.replace_stack(self.stack_pool.acquire());
-
-                if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
-                    let module_ref = task.current_module();
-                    let func_name = module_ref
+                if task
+                    .current_module()
+                    .functions
+                    .get(func_index)
+                    .is_some_and(|function| function.uses_js_this_slot)
+                {
+                    let implicit_this = if task
+                        .current_module()
                         .functions
                         .get(func_index)
-                        .map(|function| function.name.as_str())
-                        .unwrap_or("<unknown>");
-                    eprintln!(
-                        "[async-task] spawn-op task={:?} parent={:?} module={} func={}#{}",
-                        new_task.id(),
-                        task.id(),
-                        module_ref.metadata.name,
-                        func_name,
-                        func_index
-                    );
+                        .is_some_and(|function| function.is_strict_js)
+                    {
+                        Value::undefined()
+                    } else {
+                        self.builtin_global_value("globalThis")
+                            .unwrap_or(Value::undefined())
+                    };
+                    args.push(implicit_this);
                 }
 
-                let task_id = new_task.id();
-                self.tasks.write().insert(task_id, new_task.clone());
-                self.injector.push(new_task);
+                let handle = match self.spawn_async_task_handle(
+                    func_index,
+                    task.current_module(),
+                    task,
+                    args,
+                    None,
+                ) {
+                    Ok(handle) => handle,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
 
-                if let Err(e) = stack.push(Value::u64(task_id.as_u64())) {
+                if let Err(e) = stack.push(handle) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -106,7 +189,8 @@ impl<'a> Interpreter<'a> {
                     &*header_ptr_from_value_ptr(closure_val.as_ptr::<u8>().unwrap().as_ptr())
                 };
 
-                let new_task = if header.type_id() == std::any::TypeId::of::<Object>() {
+                let (target_module, closure_to_push, spawn_args, func_id) =
+                    if header.type_id() == std::any::TypeId::of::<Object>() {
                     let obj = unsafe { &*closure_val.as_ptr::<Object>().unwrap().as_ptr() };
                     let Some(ref callable) = obj.callable else {
                         return OpcodeResult::Error(VmError::TypeError(
@@ -116,34 +200,37 @@ impl<'a> Interpreter<'a> {
                     match &callable.kind {
                         CallableKind::BoundMethod { func_id, receiver } => {
                             let mut method_args = Vec::with_capacity(args.len() + 1);
-                            method_args.push(*receiver);
+                            let receiver_final = if self.callable_uses_js_this_slot(closure_val) {
+                                match self.js_this_value_for_callable(closure_val, Some(*receiver)) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                }
+                            } else {
+                                *receiver
+                            };
+                            method_args.push(receiver_final);
                             method_args.extend(args);
                             let target_module = obj
                                 .callable_module()
                                 .unwrap_or_else(|| task.current_module());
-                            Arc::new(Task::with_args(
-                                *func_id,
-                                target_module,
-                                Some(task.id()),
-                                method_args,
-                            ))
+                            (target_module, None, method_args, *func_id)
                         }
                         CallableKind::Closure { func_id } => {
-                            // Don't prepend captures to args - the closure body uses LoadCaptured
-                            // which reads from the Closure object via task.current_closure()
+                            let mut frame_args =
+                                Vec::with_capacity(args.len() + 1);
+                            if self.callable_uses_js_this_slot(closure_val) {
+                                let this_arg =
+                                    match self.js_this_value_for_callable(closure_val, None) {
+                                        Ok(value) => value,
+                                        Err(error) => return OpcodeResult::Error(error),
+                                    };
+                                frame_args.push(this_arg);
+                            }
+                            frame_args.extend(args);
                             let target_module = obj
                                 .callable_module()
                                 .unwrap_or_else(|| task.current_module());
-                            let new_task = Arc::new(Task::with_args(
-                                *func_id,
-                                target_module,
-                                Some(task.id()),
-                                args,
-                            ));
-                            // Push the closure onto the spawned task's closure stack
-                            // so LoadCaptured can find it when the task starts executing
-                            new_task.push_closure(closure_val);
-                            new_task
+                            (target_module, Some(closure_val), frame_args, *func_id)
                         }
                         _ => {
                             return OpcodeResult::Error(VmError::TypeError(
@@ -157,31 +244,18 @@ impl<'a> Interpreter<'a> {
                     ));
                 };
 
-                new_task.replace_stack(self.stack_pool.acquire());
+                let handle = match self.spawn_async_task_handle(
+                    func_id,
+                    target_module,
+                    task,
+                    spawn_args,
+                    closure_to_push,
+                ) {
+                    Ok(handle) => handle,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
 
-                if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
-                    let module_ref = new_task.current_module();
-                    let func_id = new_task.current_func_id();
-                    let func_name = module_ref
-                        .functions
-                        .get(func_id)
-                        .map(|function| function.name.as_str())
-                        .unwrap_or("<unknown>");
-                    eprintln!(
-                        "[async-task] spawn-closure task={:?} parent={:?} module={} func={}#{}",
-                        new_task.id(),
-                        task.id(),
-                        module_ref.metadata.name,
-                        func_name,
-                        func_id
-                    );
-                }
-
-                let task_id = new_task.id();
-                self.tasks.write().insert(task_id, new_task.clone());
-                self.injector.push(new_task);
-
-                if let Err(e) = stack.push(Value::u64(task_id.as_u64())) {
+                if let Err(e) = stack.push(handle) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue

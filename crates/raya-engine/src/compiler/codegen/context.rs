@@ -56,6 +56,7 @@ impl FunctionContext {
         is_generator: bool,
         visible_length: u8,
         is_strict_js: bool,
+        uses_js_runtime_semantics: bool,
         uses_builtin_this_coercion: bool,
         js_arguments_mapping: Vec<u16>,
     ) -> Self {
@@ -68,6 +69,7 @@ impl FunctionContext {
                 builder.set_is_generator(is_generator);
                 builder.set_visible_length(visible_length);
                 builder.set_is_strict_js(is_strict_js);
+                builder.set_uses_js_runtime_semantics(uses_js_runtime_semantics);
                 builder.set_uses_builtin_this_coercion(uses_builtin_this_coercion);
                 builder.set_js_arguments_mapping(js_arguments_mapping);
                 builder
@@ -445,6 +447,7 @@ impl IrCodeGenerator {
             func.is_generator,
             func.visible_length as u8,
             func.is_strict_js,
+            func.uses_js_runtime_semantics,
             func.uses_builtin_this_coercion,
             func.js_arguments_mapping.clone(),
         );

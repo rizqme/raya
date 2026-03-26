@@ -14,7 +14,7 @@ use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
 use crate::vm::native_registry::{NativeFunctionRegistry, ResolvedNatives};
 use crate::vm::object::TypeHandle;
 use crate::vm::reflect::{ClassMetadata, ClassMetadataRegistry, MetadataStore};
-use crate::vm::scheduler::{IoSubmission, StackPool, Task, TaskId};
+use crate::vm::scheduler::{IoSubmission, PromiseReaction, StackPool, Task, TaskId};
 use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
 use crate::vm::value::Value;
 use crossbeam::channel::Sender;
@@ -25,13 +25,18 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Promise-related microtasks processed by scheduler checkpoints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub enum PromiseMicrotask {
     /// Report a task rejection if still unhandled at checkpoint drain time.
     ///
     /// The countdown provides a grace turn so user code can attach an awaiter/
     /// handler after the task fails but before we surface it as unhandled.
     ReportUnhandledRejection(TaskId, u8),
+    /// Run a Promise reaction against the settled source task.
+    RunReaction {
+        source_task_id: TaskId,
+        reaction: PromiseReaction,
+    },
 }
 
 /// Runtime layout assigned to a registered module.

@@ -683,6 +683,8 @@ pub struct Function {
     pub visible_length: usize,
     /// Whether JS `this` should use strict semantics.
     pub is_strict_js: bool,
+    /// Whether this function should follow JS runtime async/call semantics.
+    pub uses_js_runtime_semantics: bool,
     /// Whether JS `this` should box primitives but preserve nullish receivers.
     pub uses_builtin_this_coercion: bool,
     /// Sloppy-mode `arguments` index -> local slot mapping.
@@ -709,6 +711,7 @@ impl Function {
         writer.emit_u8(u8::from(self.is_generator));
         writer.emit_u32(self.visible_length as u32);
         writer.emit_u8(u8::from(self.is_strict_js));
+        writer.emit_u8(u8::from(self.uses_js_runtime_semantics));
         writer.emit_u8(u8::from(self.uses_builtin_this_coercion));
         writer.emit_u32(self.js_arguments_mapping.len() as u32);
         for &slot in &self.js_arguments_mapping {
@@ -734,6 +737,7 @@ impl Function {
         let is_generator = reader.read_u8()? != 0;
         let visible_length = reader.read_u32()? as usize;
         let is_strict_js = reader.read_u8()? != 0;
+        let uses_js_runtime_semantics = reader.read_u8()? != 0;
         let uses_builtin_this_coercion = reader.read_u8()? != 0;
         let js_arguments_mapping_len = reader.read_u32()? as usize;
         let mut js_arguments_mapping = Vec::with_capacity(js_arguments_mapping_len);
@@ -755,6 +759,7 @@ impl Function {
             is_generator,
             visible_length,
             is_strict_js,
+            uses_js_runtime_semantics,
             uses_builtin_this_coercion,
             js_arguments_mapping,
             local_count,
@@ -2021,6 +2026,7 @@ mod tests {
             is_generator: false,
             visible_length: 0,
             is_strict_js: false,
+            uses_js_runtime_semantics: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
             local_count: 1,
@@ -2180,6 +2186,7 @@ mod tests {
             is_generator: false,
             visible_length: 1,
             is_strict_js: false,
+            uses_js_runtime_semantics: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
             local_count: 2,

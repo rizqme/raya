@@ -3233,8 +3233,14 @@ impl<'a> Lowerer<'a> {
             span: Span::new(0, 0, 0, 0),
         };
 
-        // Std wrapper nested functions may have a pre-assigned function ID.
-        let preassigned_func_id = self.function_id_for_decl(func_decl);
+        // Ordinary nested declarations should lower as fresh closures. Reusing
+        // declaration-registration IDs here can point block-scoped functions at
+        // the wrong callable body shape, especially for async declarations.
+        let in_module_wrapper = self
+            .current_function
+            .as_ref()
+            .is_some_and(|f| is_module_wrapper_function_name(&f.name));
+        let preassigned_func_id = in_module_wrapper.then(|| self.function_id_for_decl(func_decl)).flatten();
         let closure_reg =
             self.lower_function_expression_with_preassigned_id(&function_expr, preassigned_func_id);
         if let Some(func_id) = preassigned_func_id.or(self.last_arrow_func_id) {
@@ -3252,10 +3258,6 @@ impl<'a> Lowerer<'a> {
         // Module-wrapper functions rely on sibling helper functions from class methods
         // (e.g., EnvNamespace.cwd() calling local `cwd()`), so expose wrapper-local
         // function declarations in function_map for direct identifier calls.
-        let in_module_wrapper = self
-            .current_function
-            .as_ref()
-            .is_some_and(|f| is_module_wrapper_function_name(&f.name));
         if in_module_wrapper {
             if let Some(func_id) = self.last_arrow_func_id {
                 self.function_map.insert(func_decl.name.name, func_id);

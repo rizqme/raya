@@ -11,6 +11,8 @@ const PROMISE_GET_ERROR: number = 0x0503;
 const PROMISE_GET_RESULT: number = 0x0505;
 const PROMISE_REJECT_NOW: number = 0x0506;
 const PROMISE_ADOPT: number = 0x0507;
+const PROMISE_CHAIN: number = 0x050A;
+const PROMISE_FINALLY: number = 0x050B;
 
 type PromiseRejectionReason = Object | string | number | boolean | null;
 
@@ -37,59 +39,22 @@ class Promise<T> {
         onFulfilled: (value: T) => U,
         onRejected?: (reason: PromiseRejectionReason) => U
     ): Promise<U> {
-        let promise = this;
-        let onFulfilledFn = arguments[1];
-        let onRejectedFn = arguments[2];
-        let wrapped = async (): Promise<T | U> => {
-            try {
-                let value = await promise;
-                if (typeof onFulfilledFn !== "function") {
-                    return value;
-                }
-                return onFulfilledFn(value);
-            } catch (reason) {
-                if (typeof onRejectedFn !== "function") {
-                    throw reason;
-                }
-                return onRejectedFn(reason);
-            }
-        };
-        return wrapped();
+        return __NATIVE_CALL<Promise<U>>(PROMISE_CHAIN, this, onFulfilled, onRejected);
     }
 
     //@@class_method
     catch<U>(onRejected: (reason: PromiseRejectionReason) => U): Promise<T | U> {
-        let promise = this;
-        let onRejectedFn = arguments[1];
-        let wrapped = async (): Promise<T | U> => {
-            try {
-                return await promise;
-            } catch (reason) {
-                return onRejectedFn(reason);
-            }
-        };
-        return wrapped();
+        return __NATIVE_CALL<Promise<T | U>>(
+            PROMISE_CHAIN,
+            this,
+            undefined,
+            onRejected
+        );
     }
 
     //@@class_method
     finally(onFinally: () => void): Promise<T> {
-        let promise = this;
-        let onFinallyFn = arguments[1];
-        let wrapped = async (): Promise<T> => {
-            try {
-                let value = await promise;
-                if (typeof onFinallyFn === "function") {
-                    await onFinallyFn();
-                }
-                return value;
-            } catch (reason) {
-                if (typeof onFinallyFn === "function") {
-                    await onFinallyFn();
-                }
-                throw reason;
-            }
-        };
-        return wrapped();
+        return __NATIVE_CALL<Promise<T>>(PROMISE_FINALLY, this, onFinally);
     }
 
     static resolve<U>(value: U): Promise<U> {

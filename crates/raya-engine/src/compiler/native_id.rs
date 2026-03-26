@@ -271,6 +271,8 @@ pub const TASK_MARK_OBSERVED: u16 = 0x0504;
 pub const TASK_GET_RESULT: u16 = 0x0505;
 pub const TASK_RESOLVE_PENDING: u16 = 0x0508;
 pub const TASK_REJECT_PENDING: u16 = 0x0509;
+pub const TASK_CHAIN: u16 = 0x050A;
+pub const TASK_FINALLY: u16 = 0x050B;
 
 // ============================================================================
 // Error (0x06xx)

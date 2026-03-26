@@ -43,6 +43,8 @@ pub struct IrFunction {
     pub visible_length: usize,
     /// Whether JS `this` should use strict semantics.
     pub is_strict_js: bool,
+    /// Whether this function should follow JS runtime async/call semantics.
+    pub uses_js_runtime_semantics: bool,
     /// Whether JS `this` should box primitives but preserve nullish receivers.
     pub uses_builtin_this_coercion: bool,
     /// Sloppy-mode `arguments` index -> local slot mapping.
@@ -70,6 +72,7 @@ impl IrFunction {
             is_generator: false,
             visible_length,
             is_strict_js: false,
+            uses_js_runtime_semantics: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
         }

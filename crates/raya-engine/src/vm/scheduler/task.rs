@@ -149,6 +149,21 @@ pub struct ExceptionHandler {
     pub mutex_count: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum PromiseReactionKind {
+    Chain,
+    Finally,
+    FinallyResume { original: Value, failed: bool },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PromiseReaction {
+    pub target_task_id: TaskId,
+    pub kind: PromiseReactionKind,
+    pub on_fulfilled: Value,
+    pub on_rejected: Value,
+}
+
 // ============================================================================
 // Grouped state structs
 // ============================================================================
@@ -162,6 +177,7 @@ struct LifecycleState {
     result: Option<Value>,
     waiters: Vec<TaskId>,
     adopters: Vec<TaskId>,
+    reactions: Vec<PromiseReaction>,
     awaiting_task: Option<TaskId>,
     rejection_observed: bool,
 }
@@ -322,6 +338,7 @@ impl Task {
                 result: None,
                 waiters: Vec::new(),
                 adopters: Vec::new(),
+                reactions: Vec::new(),
                 awaiting_task: None,
                 rejection_observed: false,
             }),
@@ -836,6 +853,28 @@ impl Task {
     /// Take all adopting promise/task handles waiting to mirror this task.
     pub fn take_adopters(&self) -> Vec<TaskId> {
         std::mem::take(&mut self.lifecycle.lock().adopters)
+    }
+
+    /// Register a promise reaction to run when this task settles.
+    ///
+    /// Returns `true` when the reaction was registered, `false` when the task
+    /// had already reached a terminal state and the caller should enqueue an
+    /// immediate microtask instead.
+    pub fn add_reaction_if_incomplete(&self, reaction: PromiseReaction) -> bool {
+        let mut lifecycle = self.lifecycle.lock();
+        match lifecycle.state {
+            TaskState::Completed | TaskState::Failed => false,
+            _ => {
+                lifecycle.reactions.push(reaction);
+                lifecycle.rejection_observed = true;
+                true
+            }
+        }
+    }
+
+    /// Take all registered promise reactions waiting on this task.
+    pub fn take_reactions(&self) -> Vec<PromiseReaction> {
+        std::mem::take(&mut self.lifecycle.lock().reactions)
     }
 
     /// Number of tasks currently waiting on this task.
@@ -1493,6 +1532,7 @@ impl Task {
                     .expect("snapshot restore failed: could not decode task result"),
                 waiters: Vec::new(),
                 adopters: Vec::new(),
+                reactions: Vec::new(),
                 awaiting_task: None,
                 rejection_observed: false,
             }),
