@@ -348,10 +348,7 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> Option<Value> {
-        let task_id = target
-            .as_u64()
-            .map(crate::vm::scheduler::TaskId::from_u64)?;
-        if !self.tasks.read().contains_key(&task_id) {
+        if self.promise_handle_from_value(target).is_none() {
             return None;
         }
         if !matches!(key, "then" | "catch" | "finally") {
@@ -1883,9 +1880,8 @@ impl<'a> Interpreter<'a> {
                 } else if js_numeric_semantics && checked_bigint_ptr(value).is_some() {
                     "bigint"
                 } else if value
-                    .as_u64()
-                    .map(crate::vm::scheduler::TaskId::from_u64)
-                    .is_some_and(|task_id| self.tasks.read().contains_key(&task_id))
+                    .is_u64()
+                    && self.promise_handle_from_value(value).is_some()
                 {
                     // Async JS promises are represented by task handles internally, but
                     // observable JS semantics still require `typeof promise === "object"`.

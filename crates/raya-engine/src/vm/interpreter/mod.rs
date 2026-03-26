@@ -31,7 +31,7 @@ pub use safepoint::{SafepointCoordinator, StopReason};
 #[cfg(feature = "jit")]
 pub use shared_state::{JitTelemetry, JitTelemetrySnapshot};
 pub use shared_state::{
-    JsGlobalBindingRecord, ModuleRuntimeLayout, PromiseMicrotask, PropertyKeyRegistry,
+    JsGlobalBindingRecord, ModuleRuntimeLayout, PromiseHandle, PromiseMicrotask, PropertyKeyRegistry,
     RuntimeTypeHandleRegistry, ShapeAdapter, SharedVmState, StructuralAdapterKey,
     StructuralSlotBinding,
 };

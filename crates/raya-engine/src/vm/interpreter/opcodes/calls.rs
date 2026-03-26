@@ -571,11 +571,9 @@ impl<'a> Interpreter<'a> {
                         );
                     }
 
-                    if let Some(task_id) = receiver_val.as_u64().map(crate::vm::scheduler::TaskId::from_u64)
+                    if self.promise_handle_from_value(receiver_val).is_some()
+                        && matches!(method_name, "then" | "catch" | "finally")
                     {
-                        if self.tasks.read().contains_key(&task_id)
-                            && matches!(method_name, "then" | "catch" | "finally")
-                        {
                             let mut args = Vec::with_capacity(arg_count);
                             for _ in 0..arg_count {
                                 match stack.pop() {
@@ -629,7 +627,6 @@ impl<'a> Interpreter<'a> {
                                 return OpcodeResult::Error(error);
                             }
                             return OpcodeResult::Continue;
-                        }
                     }
                 }
 

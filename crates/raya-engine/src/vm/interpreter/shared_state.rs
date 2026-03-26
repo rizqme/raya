@@ -39,6 +39,28 @@ pub enum PromiseMicrotask {
     },
 }
 
+/// Internal handle for a task-backed JS Promise value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PromiseHandle(TaskId);
+
+impl PromiseHandle {
+    pub fn new(task_id: TaskId) -> Self {
+        Self(task_id)
+    }
+
+    pub fn task_id(self) -> TaskId {
+        self.0
+    }
+
+    pub fn from_value(value: Value) -> Option<Self> {
+        value.as_u64().map(TaskId::from_u64).map(Self)
+    }
+
+    pub fn into_value(self) -> Value {
+        Value::u64(self.0.as_u64())
+    }
+}
+
 /// Runtime layout assigned to a registered module.
 #[derive(Debug, Clone)]
 pub struct ModuleRuntimeLayout {

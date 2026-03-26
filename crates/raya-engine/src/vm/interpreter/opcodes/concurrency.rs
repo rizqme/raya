@@ -3,7 +3,7 @@
 use crate::compiler::{Module, Opcode};
 use crate::vm::interpreter::execution::{ExecutionResult, OpcodeResult};
 use crate::vm::interpreter::opcodes::objects::CallableInvocationPlan;
-use crate::vm::interpreter::Interpreter;
+use crate::vm::interpreter::{Interpreter, PromiseHandle};
 use crate::vm::object::Array;
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -92,7 +92,7 @@ impl<'a> Interpreter<'a> {
             self.injector.push(new_task);
         }
 
-        Ok(Value::u64(task_id.as_u64()))
+        Ok(PromiseHandle::new(task_id).into_value())
     }
 
     pub(in crate::vm::interpreter) fn exec_concurrency_ops(
@@ -237,14 +237,14 @@ impl<'a> Interpreter<'a> {
                 };
 
                 // JS-like await normalization: awaiting a non-promise value resolves immediately.
-                let Some(task_id_u64) = awaited_val.as_u64() else {
+                let Some(awaited_handle) = self.promise_handle_from_value(awaited_val) else {
                     if let Err(e) = stack.push(awaited_val) {
                         return OpcodeResult::Error(e);
                     }
                     return OpcodeResult::Continue;
                 };
 
-                let mut awaited_id = TaskId::from_u64(task_id_u64);
+                let mut awaited_id = awaited_handle.task_id();
 
                 loop {
                     let tasks_guard = self.tasks.read();
@@ -268,12 +268,8 @@ impl<'a> Interpreter<'a> {
                     match awaited_task.state() {
                         TaskState::Completed => {
                             let result = awaited_task.result().unwrap_or(Value::null());
-                            if let Some(nested_id) = result
-                                .as_u64()
-                                .map(TaskId::from_u64)
-                                .filter(|nested_id| self.tasks.read().contains_key(nested_id))
-                            {
-                                awaited_id = nested_id;
+                            if let Some(nested_handle) = self.promise_handle_from_value(result) {
+                                awaited_id = nested_handle.task_id();
                                 continue;
                             }
                             if let Err(e) = stack.push(result) {
@@ -299,12 +295,10 @@ impl<'a> Interpreter<'a> {
                             match awaited_task.state() {
                                 TaskState::Completed => {
                                     let result = awaited_task.result().unwrap_or(Value::null());
-                                    if let Some(nested_id) = result
-                                        .as_u64()
-                                        .map(TaskId::from_u64)
-                                        .filter(|nested_id| self.tasks.read().contains_key(nested_id))
+                                    if let Some(nested_handle) =
+                                        self.promise_handle_from_value(result)
                                     {
-                                        awaited_id = nested_id;
+                                        awaited_id = nested_handle.task_id();
                                         continue;
                                     }
                                     if let Err(e) = stack.push(result) {
@@ -366,7 +360,7 @@ impl<'a> Interpreter<'a> {
                     let tasks_guard = self.tasks.read();
                     for i in 0..task_count {
                         let elem = arr.get(i).unwrap_or(Value::null());
-                        let Some(task_id_u64) = elem.as_u64() else {
+                        let Some(awaited_handle) = self.promise_handle_from_value(elem) else {
                             // WaitAll arrays can be re-executed after suspension with
                             // elements that are already materialized results (for
                             // example pointer-backed strings). Treat them like Await:
@@ -374,7 +368,7 @@ impl<'a> Interpreter<'a> {
                             results.push(elem);
                             continue;
                         };
-                        let awaited_id = TaskId::from_u64(task_id_u64);
+                        let awaited_id = awaited_handle.task_id();
 
                         if let Some(awaited_task) = tasks_guard.get(&awaited_id) {
                             // Await-all attaches a consumer for every member task.
@@ -648,16 +642,16 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                let task_id_u64 = match task_id_val.as_u64() {
-                    Some(id) => id,
+                let handle = match self.promise_handle_from_value(task_id_val) {
+                    Some(handle) => handle,
                     None => {
                         return OpcodeResult::Error(VmError::TypeError(
-                            "TaskCancel: expected task handle (u64)".to_string(),
+                            "TaskCancel: expected task-backed promise handle".to_string(),
                         ));
                     }
                 };
 
-                let target_id = TaskId::from_u64(task_id_u64);
+                let target_id = handle.task_id();
 
                 // Look up the task and cancel it
                 if let Some(target_task) = self.tasks.read().get(&target_id).cloned() {

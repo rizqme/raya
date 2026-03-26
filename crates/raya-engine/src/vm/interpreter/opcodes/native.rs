@@ -21,7 +21,7 @@ use crate::parser::{Parser, TypeContext};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{ExecutionResult, OpcodeResult, ReturnAction};
-use crate::vm::interpreter::PromiseMicrotask;
+use crate::vm::interpreter::{PromiseHandle, PromiseMicrotask};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
     layout_id_from_ordered_names, ArgumentsDataProperty, ArgumentsIndexedProperty,
@@ -766,7 +766,11 @@ impl<'a> Interpreter<'a> {
         unsafe { Value::from_ptr(NonNull::new(signal_ptr.as_ptr()).expect("signal ptr")) }
     }
 
-    fn settled_task_handle(&mut self, caller_task: &Arc<Task>, value: Result<Value, Value>) -> Value {
+    fn settled_task_handle(
+        &mut self,
+        caller_task: &Arc<Task>,
+        value: Result<Value, Value>,
+    ) -> Value {
         let settled_task = Arc::new(Task::with_args(
             0,
             caller_task.current_module(),
@@ -805,7 +809,7 @@ impl<'a> Interpreter<'a> {
         }
         let task_id = settled_task.id();
         self.tasks.write().insert(task_id, settled_task);
-        Value::u64(task_id.as_u64())
+        PromiseHandle::new(task_id).into_value()
     }
 
     fn pending_task_handle(&mut self, caller_task: &Arc<Task>) -> Value {
@@ -818,12 +822,27 @@ impl<'a> Interpreter<'a> {
         pending_task.replace_stack(self.stack_pool.acquire());
         let task_id = pending_task.id();
         self.tasks.write().insert(task_id, pending_task);
-        Value::u64(task_id.as_u64())
+        PromiseHandle::new(task_id).into_value()
+    }
+
+    pub(in crate::vm::interpreter) fn promise_handle_from_value(
+        &self,
+        value: Value,
+    ) -> Option<PromiseHandle> {
+        let handle = PromiseHandle::from_value(value)?;
+        self.tasks
+            .read()
+            .contains_key(&handle.task_id())
+            .then_some(handle)
+    }
+
+    fn task_from_promise_handle(&self, handle: PromiseHandle) -> Option<Arc<Task>> {
+        self.tasks.read().get(&handle.task_id()).cloned()
     }
 
     fn task_from_handle_value(&self, value: Value) -> Option<Arc<Task>> {
-        let task_id = value.as_u64().map(TaskId::from_u64)?;
-        self.tasks.read().get(&task_id).cloned()
+        let handle = self.promise_handle_from_value(value)?;
+        self.task_from_promise_handle(handle)
     }
 
     fn enqueue_promise_microtask(&self, job: PromiseMicrotask) {
@@ -872,7 +891,10 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
     ) -> Value {
         let target_handle = self.pending_task_handle(caller_task);
-        let target_task_id = TaskId::from_u64(target_handle.as_u64().unwrap_or(0));
+        let target_task_id = self
+            .promise_handle_from_value(target_handle)
+            .expect("pending_task_handle must produce a valid PromiseHandle")
+            .task_id();
         let source_task = self.normalize_promise_source_task(source, caller_task);
         self.queue_or_attach_promise_reaction(
             &source_task,
@@ -893,7 +915,10 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
     ) -> Value {
         let target_handle = self.pending_task_handle(caller_task);
-        let target_task_id = TaskId::from_u64(target_handle.as_u64().unwrap_or(0));
+        let target_task_id = self
+            .promise_handle_from_value(target_handle)
+            .expect("pending_task_handle must produce a valid PromiseHandle")
+            .task_id();
         let source_task = self.normalize_promise_source_task(source, caller_task);
         self.queue_or_attach_promise_reaction(
             &source_task,
@@ -912,7 +937,7 @@ impl<'a> Interpreter<'a> {
         source_task: &Arc<Task>,
         reaction: PromiseReaction,
     ) {
-        let target_handle = Value::u64(reaction.target_task_id.as_u64());
+        let target_handle = PromiseHandle::new(reaction.target_task_id).into_value();
         let Some(target_task) = self.tasks.read().get(&reaction.target_task_id).cloned() else {
             return;
         };
@@ -1131,13 +1156,12 @@ impl<'a> Interpreter<'a> {
         task_handle: Value,
         value: Result<Value, Value>,
     ) -> Result<(), VmError> {
-        let Some(task_id_u64) = task_handle.as_u64() else {
+        let Some(handle) = self.promise_handle_from_value(task_handle) else {
             return Err(VmError::TypeError(
                 "Promise resolver receiver is not a task handle".to_string(),
             ));
         };
-        let task_id = TaskId::from_u64(task_id_u64);
-        let Some(pending_task) = self.tasks.read().get(&task_id).cloned() else {
+        let Some(pending_task) = self.task_from_promise_handle(handle) else {
             return Err(VmError::TypeError(
                 "Promise resolver target task does not exist".to_string(),
             ));
@@ -1178,7 +1202,7 @@ impl<'a> Interpreter<'a> {
         value: Value,
     ) -> Result<(), VmError> {
         if self.task_uses_async_js_promise_semantics(task) {
-            self.settle_existing_task_handle(Value::u64(task.id().as_u64()), Ok(value))
+            self.settle_existing_task_handle(PromiseHandle::new(task.id()).into_value(), Ok(value))
         } else {
             task.complete(value);
             Ok(())
@@ -1215,9 +1239,8 @@ impl<'a> Interpreter<'a> {
             caller_task,
             caller_module,
         ) {
-            if let Some(task_id_u64) = promise_handle.as_u64() {
-                let task_id = TaskId::from_u64(task_id_u64);
-                if let Some(pending_task) = self.tasks.read().get(&task_id).cloned() {
+            if let Some(handle) = self.promise_handle_from_value(promise_handle) {
+                if let Some(pending_task) = self.task_from_promise_handle(handle) {
                     self.ensure_task_exception_for_error(&pending_task, &error);
                     pending_task.fail();
                 }
@@ -7030,20 +7053,18 @@ impl<'a> Interpreter<'a> {
             return Some(prototype);
         }
 
-        if let Some(task_id) = value.as_u64().map(TaskId::from_u64) {
-            if self.tasks.read().contains_key(&task_id) {
-                let prototype = self
-                    .builtin_global_value("Promise")
-                    .and_then(|ctor| self.constructor_prototype_value(ctor));
-                if debug_proto_resolve {
-                    eprintln!(
-                        "[proto-of] value={:#x} task-promise -> {:?}",
-                        value.raw(),
-                        prototype.map(|v| format!("{:#x}", v.raw()))
-                    );
-                }
-                return prototype;
+        if self.promise_handle_from_value(value).is_some() {
+            let prototype = self
+                .builtin_global_value("Promise")
+                .and_then(|ctor| self.constructor_prototype_value(ctor));
+            if debug_proto_resolve {
+                eprintln!(
+                    "[proto-of] value={:#x} task-promise -> {:?}",
+                    value.raw(),
+                    prototype.map(|v| format!("{:#x}", v.raw()))
+                );
             }
+            return prototype;
         }
 
         if let Some(nominal_type_id) = self.constructor_nominal_type_id(value) {
@@ -15946,10 +15967,8 @@ impl<'a> Interpreter<'a> {
                         }
 
                         let mut result = false;
-                        let is_task_backed_promise = args[0]
-                            .as_u64()
-                            .map(TaskId::from_u64)
-                            .is_some_and(|task_id| self.tasks.read().contains_key(&task_id));
+                        let is_task_backed_promise =
+                            self.promise_handle_from_value(args[0]).is_some();
                         if !self.is_js_object_value(args[0]) && !is_task_backed_promise {
                             if let Err(error) = stack.push(Value::bool(false)) {
                                 return OpcodeResult::Error(error);
@@ -18607,10 +18626,14 @@ impl<'a> Interpreter<'a> {
                     // Task native calls
                     0x0500u16 => {
                         // TASK_IS_DONE: check if task completed
-                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let task_id = args
+                            .first()
+                            .copied()
+                            .and_then(|value| self.promise_handle_from_value(value))
+                            .map(|handle| handle.task_id());
                         let tasks = self.tasks.read();
-                        let is_done = tasks
-                            .get(&task_id)
+                        let is_done = task_id
+                            .and_then(|task_id| tasks.get(&task_id))
                             .map(|t| matches!(t.state(), TaskState::Completed | TaskState::Failed))
                             .unwrap_or(true);
                         if let Err(e) = stack.push(Value::bool(is_done)) {
@@ -18620,10 +18643,14 @@ impl<'a> Interpreter<'a> {
                     }
                     0x0501u16 => {
                         // TASK_IS_CANCELLED: check if task cancelled
-                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let task_id = args
+                            .first()
+                            .copied()
+                            .and_then(|value| self.promise_handle_from_value(value))
+                            .map(|handle| handle.task_id());
                         let tasks = self.tasks.read();
-                        let is_cancelled = tasks
-                            .get(&task_id)
+                        let is_cancelled = task_id
+                            .and_then(|task_id| tasks.get(&task_id))
                             .map(|t| t.is_cancelled())
                             .unwrap_or(false);
                         if let Err(e) = stack.push(Value::bool(is_cancelled)) {
@@ -18633,10 +18660,14 @@ impl<'a> Interpreter<'a> {
                     }
                     0x0502u16 => {
                         // TASK_IS_FAILED: check if task failed
-                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let task_id = args
+                            .first()
+                            .copied()
+                            .and_then(|value| self.promise_handle_from_value(value))
+                            .map(|handle| handle.task_id());
                         let tasks = self.tasks.read();
-                        let is_failed = tasks
-                            .get(&task_id)
+                        let is_failed = task_id
+                            .and_then(|task_id| tasks.get(&task_id))
                             .map(|t| t.state() == TaskState::Failed)
                             .unwrap_or(false);
                         if let Err(e) = stack.push(Value::bool(is_failed)) {
@@ -18646,10 +18677,14 @@ impl<'a> Interpreter<'a> {
                     }
                     0x0503u16 => {
                         // TASK_GET_ERROR: retrieve rejection reason and mark it observed
-                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let task_id = args
+                            .first()
+                            .copied()
+                            .and_then(|value| self.promise_handle_from_value(value))
+                            .map(|handle| handle.task_id());
                         let tasks = self.tasks.read();
-                        let reason = tasks
-                            .get(&task_id)
+                        let reason = task_id
+                            .and_then(|task_id| tasks.get(&task_id))
                             .and_then(|t| {
                                 t.mark_rejection_observed();
                                 t.current_exception()
@@ -18662,9 +18697,13 @@ impl<'a> Interpreter<'a> {
                     }
                     0x0504u16 => {
                         // TASK_MARK_OBSERVED: mark rejection as handled
-                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let task_id = args
+                            .first()
+                            .copied()
+                            .and_then(|value| self.promise_handle_from_value(value))
+                            .map(|handle| handle.task_id());
                         let tasks = self.tasks.read();
-                        if let Some(task) = tasks.get(&task_id) {
+                        if let Some(task) = task_id.and_then(|task_id| tasks.get(&task_id)) {
                             task.mark_rejection_observed();
                         }
                         if let Err(e) = stack.push(Value::null()) {
@@ -18674,10 +18713,14 @@ impl<'a> Interpreter<'a> {
                     }
                     0x0505u16 => {
                         // TASK_GET_RESULT: retrieve a fulfilled task result.
-                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let task_id = args
+                            .first()
+                            .copied()
+                            .and_then(|value| self.promise_handle_from_value(value))
+                            .map(|handle| handle.task_id());
                         let tasks = self.tasks.read();
-                        let result = tasks
-                            .get(&task_id)
+                        let result = task_id
+                            .and_then(|task_id| tasks.get(&task_id))
                             .and_then(|t| t.result())
                             .unwrap_or(Value::undefined());
                         if let Err(e) = stack.push(result) {
@@ -18697,11 +18740,9 @@ impl<'a> Interpreter<'a> {
                         // TASK_ADOPT: preserve an existing task-backed promise; otherwise
                         // wrap the value in an already-fulfilled task handle.
                         let value = args.first().copied().unwrap_or(Value::undefined());
-                        let adopted = value
-                            .as_u64()
-                            .map(TaskId::from_u64)
-                            .filter(|task_id| self.tasks.read().contains_key(task_id))
-                            .map(|_| value)
+                        let adopted = self
+                            .promise_handle_from_value(value)
+                            .map(PromiseHandle::into_value)
                             .unwrap_or_else(|| self.settled_task_handle(task, Ok(value)));
                         if let Err(e) = stack.push(adopted) {
                             return OpcodeResult::Error(e);
