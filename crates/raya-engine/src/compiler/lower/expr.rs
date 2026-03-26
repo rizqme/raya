@@ -610,6 +610,149 @@ impl<'a> Lowerer<'a> {
         None
     }
 
+    fn try_lower_late_bound_member_call(
+        &mut self,
+        dest: Register,
+        member: &ast::MemberExpression,
+        callee_expr: &Expression,
+        object: Register,
+        nominal_type_id: Option<NominalTypeId>,
+        receiver_requires_late_bound: bool,
+        has_registry_dispatch: bool,
+        method_name: &str,
+        call_ty: TypeId,
+        args: &[Register],
+    ) -> Option<Register> {
+        if nominal_type_id.is_some() || !receiver_requires_late_bound || has_registry_dispatch {
+            return None;
+        }
+
+        if let Expression::Identifier(obj_ident) = &*member.object {
+            if let Some(ctor_symbol) = self
+                .late_bound_object_ctor_map
+                .get(&obj_ident.name)
+                .copied()
+                .or_else(|| {
+                    self.constructor_value_ctor_map
+                        .get(&obj_ident.name)
+                        .copied()
+                })
+            {
+                let ctor_name = self.interner.resolve(ctor_symbol);
+                if super::class_methods::build_class_method_ir(ctor_name, method_name).is_some() {
+                    let func_id = self.get_or_build_class_method(ctor_name, method_name);
+                    let mut call_args = vec![object.clone()];
+                    call_args.extend(args.iter().cloned());
+                    self.emit(IrInstr::Call {
+                        dest: Some(dest.clone()),
+                        func: func_id,
+                        args: call_args,
+                    });
+                    self.propagate_type_projection_to_register(call_ty, &dest);
+                    return Some(dest);
+                }
+            }
+        }
+
+        let checker_validated = if let Expression::Identifier(obj_ident) = &*member.object {
+            self.constructor_value_ctor_map.contains_key(&obj_ident.name) || {
+                let obj_ty = self.get_expr_type(&member.object);
+                self.type_has_checker_validated_class_members(obj_ty)
+            }
+        } else {
+            let obj_ty = self.get_expr_type(&member.object);
+            self.type_has_checker_validated_class_members(obj_ty)
+        };
+        if !self.allow_unresolved_runtime_fallback && !checker_validated {
+            self.errors
+                .push(crate::compiler::CompileError::InternalError {
+                    message: format!(
+                        "strict mode forbids runtime late-bound fallback for member call '{}.{}(...)'",
+                        match &*member.object {
+                            Expression::Identifier(obj_ident) => {
+                                self.interner.resolve(obj_ident.name).to_string()
+                            }
+                            _ => "<expr>".to_string(),
+                        },
+                        method_name
+                    ),
+                });
+            self.poison_register(&dest);
+            return Some(dest);
+        }
+        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            if let Expression::Identifier(obj_ident) = &*member.object {
+                eprintln!(
+                    "[lower] late-bound member call '{}.{}(...)' via late_bound_object_vars",
+                    self.interner.resolve(obj_ident.name),
+                    method_name
+                );
+            }
+        }
+        let closure = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LateBoundMember {
+            dest: closure.clone(),
+            object: object.clone(),
+            property: method_name.to_string(),
+        });
+        self.emit_member_closure_invoke(
+            dest.clone(),
+            object,
+            closure,
+            args.to_vec(),
+            call_ty,
+            &member.object,
+            callee_expr,
+            method_name,
+        );
+        Some(dest)
+    }
+
+    fn try_lower_variable_object_field_member_call(
+        &mut self,
+        dest: Register,
+        member: &ast::MemberExpression,
+        callee_expr: &Expression,
+        method_name: &str,
+        call_ty: TypeId,
+        args: &[Register],
+        nominal_type_id: Option<NominalTypeId>,
+    ) -> Option<Register> {
+        if nominal_type_id.is_some() {
+            return None;
+        }
+        let Expression::Identifier(obj_ident) = &*member.object else {
+            return None;
+        };
+        let Some(fields) = self.variable_object_fields.get(&obj_ident.name) else {
+            return None;
+        };
+        if !fields.iter().any(|(n, _)| n == method_name) {
+            return None;
+        }
+
+        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            eprintln!(
+                "[lower] concrete-layout member call '{}.{}(...)' via variable_object_fields (WILL USE LoadFieldExact+CallClosure)",
+                self.interner.resolve(obj_ident.name),
+                method_name
+            );
+        }
+        let closure = self.lower_member(member);
+        let receiver = self.lower_expr(&member.object);
+        self.emit_member_closure_invoke(
+            dest.clone(),
+            receiver,
+            closure,
+            args.to_vec(),
+            call_ty,
+            &member.object,
+            callee_expr,
+            method_name,
+        );
+        Some(dest)
+    }
+
     fn resolve_identifier_closure_source(
         &mut self,
         ident: &ast::Identifier,
@@ -4890,33 +5033,16 @@ impl<'a> Lowerer<'a> {
             // identifier with a known field layout (variable_object_fields) but the checker
             // type is unresolved (e.g. captured from an outer scope inside a nested function).
             // This avoids falling into JsonGet when the object is a stdlib module default export.
-            if nominal_type_id.is_none() {
-                if let Expression::Identifier(obj_ident) = &*member.object {
-                    if let Some(fields) = self.variable_object_fields.get(&obj_ident.name) {
-                        if fields.iter().any(|(n, _)| n == method_name) {
-                            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                                eprintln!(
-                                    "[lower] concrete-layout member call '{}.{}(...)' via variable_object_fields (WILL USE LoadFieldExact+CallClosure)",
-                                    self.interner.resolve(obj_ident.name),
-                                    method_name
-                                );
-                            }
-                            let closure = self.lower_member(member);
-                            let receiver = self.lower_expr(&member.object);
-                            self.emit_member_closure_invoke(
-                                dest.clone(),
-                                receiver,
-                                closure,
-                                args,
-                                call_ty,
-                                &member.object,
-                                &call.callee,
-                                method_name,
-                            );
-                            return dest;
-                        }
-                    }
-                }
+            if let Some(result) = self.try_lower_variable_object_field_member_call(
+                dest.clone(),
+                member,
+                &call.callee,
+                method_name,
+                call_ty,
+                &args,
+                nominal_type_id,
+            ) {
+                return result;
             }
 
             // Fall back to registry-based dispatch
@@ -5075,96 +5201,19 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Imported-constructor objects (without local class metadata) must use
-            // late-bound member lookup regardless of primitive checker fallbacks.
-            if nominal_type_id.is_none() && receiver_requires_late_bound && !has_registry_dispatch {
-                if let Expression::Identifier(obj_ident) = &*member.object {
-                    if let Some(ctor_symbol) = self
-                        .late_bound_object_ctor_map
-                        .get(&obj_ident.name)
-                        .copied()
-                        .or_else(|| {
-                            self.constructor_value_ctor_map
-                                .get(&obj_ident.name)
-                                .copied()
-                        })
-                    {
-                        let ctor_name = self.interner.resolve(ctor_symbol);
-                        if super::class_methods::build_class_method_ir(ctor_name, method_name)
-                            .is_some()
-                        {
-                            let func_id = self.get_or_build_class_method(ctor_name, method_name);
-                            let mut call_args = vec![object.clone()];
-                            call_args.extend(args);
-                            self.emit(IrInstr::Call {
-                                dest: Some(dest.clone()),
-                                func: func_id,
-                                args: call_args,
-                            });
-                            self.propagate_type_projection_to_register(call_ty, &dest);
-                            return dest;
-                        }
-                    }
-                }
-
-                // Allow late-bound fallback when the checker has resolved the object
-                // type as a class with declared methods — these are imported class
-                // instances from std/dependency modules that the lowerer cannot resolve
-                // statically but the checker has validated.
-                let checker_validated = if let Expression::Identifier(obj_ident) = &*member.object {
-                    self.constructor_value_ctor_map
-                        .contains_key(&obj_ident.name)
-                        || {
-                            let obj_ty = self.get_expr_type(&member.object);
-                            self.type_has_checker_validated_class_members(obj_ty)
-                        }
-                } else {
-                    let obj_ty = self.get_expr_type(&member.object);
-                    self.type_has_checker_validated_class_members(obj_ty)
-                };
-                if !self.allow_unresolved_runtime_fallback && !checker_validated {
-                    self.errors
-                        .push(crate::compiler::CompileError::InternalError {
-                            message: format!(
-                                "strict mode forbids runtime late-bound fallback for member call '{}.{}(...)'",
-                                match &*member.object {
-                                    Expression::Identifier(obj_ident) => {
-                                        self.interner.resolve(obj_ident.name).to_string()
-                                    }
-                                    _ => "<expr>".to_string(),
-                                },
-                                method_name
-                            ),
-                        });
-                    self.poison_register(&dest);
-                    return dest;
-                }
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    if let Expression::Identifier(obj_ident) = &*member.object {
-                        eprintln!(
-                            "[lower] late-bound member call '{}.{}(...)' via late_bound_object_vars",
-                            self.interner.resolve(obj_ident.name),
-                            method_name
-                        );
-                    }
-                }
-                let closure = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::LateBoundMember {
-                    dest: closure.clone(),
-                    object: object.clone(),
-                    property: method_name.to_string(),
-                });
-                self.emit_member_closure_invoke(
-                    dest.clone(),
-                    object.clone(),
-                    closure,
-                    args,
-                    call_ty,
-                    &member.object,
-                    &call.callee,
-                    method_name,
-                );
-                return dest;
+            if let Some(result) = self.try_lower_late_bound_member_call(
+                dest.clone(),
+                member,
+                &call.callee,
+                object.clone(),
+                nominal_type_id,
+                receiver_requires_late_bound,
+                has_registry_dispatch,
+                method_name,
+                call_ty,
+                &args,
+            ) {
+                return result;
             }
 
             // For no-arg calls like length(), check registry properties (opcode dispatch)
