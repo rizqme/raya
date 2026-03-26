@@ -543,8 +543,11 @@ impl<'a> Interpreter<'a> {
                         }
                     }
 
-                    if let Some(native_id) =
-                        builtin_handle_native_method_id(receiver_val, method_name)
+                    if let Some(native_id) = builtin_handle_native_method_id(
+                        self.pinned_handles,
+                        receiver_val,
+                        method_name,
+                    )
                     {
                         let mut args = Vec::with_capacity(arg_count);
                         for _ in 0..arg_count {
@@ -566,6 +569,67 @@ impl<'a> Interpreter<'a> {
                             module,
                             task,
                         );
+                    }
+
+                    if let Some(task_id) = receiver_val.as_u64().map(crate::vm::scheduler::TaskId::from_u64)
+                    {
+                        if self.tasks.read().contains_key(&task_id)
+                            && matches!(method_name, "then" | "catch" | "finally")
+                        {
+                            let mut args = Vec::with_capacity(arg_count);
+                            for _ in 0..arg_count {
+                                match stack.pop() {
+                                    Ok(v) => args.push(v),
+                                    Err(e) => return OpcodeResult::Error(e),
+                                }
+                            }
+                            match stack.pop() {
+                                Ok(_) => {}
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                            args.reverse();
+
+                            let Some(promise_ctor) = self.builtin_global_value("Promise") else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "Promise constructor is not available".to_string(),
+                                ));
+                            };
+                            let Some(promise_proto) = self.constructor_prototype_value(promise_ctor)
+                            else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "Promise.prototype is not available".to_string(),
+                                ));
+                            };
+                            let method = match self.get_property_value_via_js_semantics_with_context(
+                                promise_proto,
+                                method_name,
+                                task,
+                                module,
+                            ) {
+                                Ok(Some(value)) if Self::is_callable_value(value) => value,
+                                Ok(_) => {
+                                    return OpcodeResult::Error(VmError::TypeError(format!(
+                                        "Promise.prototype.{} is not callable",
+                                        method_name
+                                    )))
+                                }
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                            let result = match self.invoke_callable_sync_with_this(
+                                method,
+                                Some(receiver_val),
+                                &args,
+                                task,
+                                module,
+                            ) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                            if let Err(error) = stack.push(result) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
                     }
                 }
 

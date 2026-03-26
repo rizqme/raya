@@ -69,7 +69,11 @@ impl<'a> Interpreter<'a> {
                         Value::f64(len as f64)
                     })
                 } else {
-                    super::types::builtin_handle_native_method_id(receiver, &member_name)
+                    super::types::builtin_handle_native_method_id(
+                        self.pinned_handles,
+                        receiver,
+                        &member_name,
+                    )
                         .map(|native_id| bound_native(self, native_id))
                         .or(Some(Value::null()))
                 }
@@ -79,7 +83,11 @@ impl<'a> Interpreter<'a> {
                 if member_name == "length" {
                     Some(Value::i32(s.len() as i32))
                 } else {
-                    super::types::builtin_handle_native_method_id(receiver, &member_name)
+                    super::types::builtin_handle_native_method_id(
+                        self.pinned_handles,
+                        receiver,
+                        &member_name,
+                    )
                         .map(|native_id| bound_native(self, native_id))
                         .or(Some(Value::null()))
                 }

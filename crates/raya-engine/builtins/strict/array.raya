@@ -63,7 +63,7 @@ function arrayOfTarget(receiver: any, length: number): any {
 }
 
 function arrayHasOwnIndex(target: any, index: number): boolean {
-    return Object.prototype.hasOwnProperty.call(target, "" + index);
+    return Object.getOwnPropertyDescriptor(target, "" + index) != null;
 }
 
 function arrayCreateDataProperty(target: any, index: number, value: any): void {

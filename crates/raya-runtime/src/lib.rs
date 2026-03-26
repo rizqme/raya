@@ -546,6 +546,11 @@ impl Runtime {
         Ok(result)
     }
 
+    /// Create a fully configured VM for this runtime's options.
+    pub fn create_vm(&self) -> raya_engine::vm::Vm {
+        vm_setup::create_vm(&self.options)
+    }
+
     /// Execute a compiled program graph and explicitly drain/terminate the VM.
     ///
     /// Use this when the caller only needs success/failure and does not need to

@@ -5,6 +5,8 @@ const FUNCTION_CALL_HELPER: number = 0x000E;
 const FUNCTION_APPLY_HELPER: number = 0x000F;
 const FUNCTION_BIND_HELPER: number = 0x0010;
 const FUNCTION_CONSTRUCTOR_HELPER: number = 0x0012;
+const OBJECT_GENERATOR_NEXT: number = 0x0045;
+const OBJECT_GENERATOR_RETURN: number = 0x0046;
 
 class Function {
     constructor(...parts: any[]) {
@@ -72,6 +74,18 @@ class Generator {
 
 class AsyncGenerator {
     constructor() {}
+
+    async next(value: any = undefined): Promise<any> {
+        return __NATIVE_CALL<any>(OBJECT_GENERATOR_NEXT, this, value);
+    }
+
+    async return(value: any = undefined): Promise<any> {
+        return __NATIVE_CALL<any>(OBJECT_GENERATOR_RETURN, this, value);
+    }
+
+    __asyncIteratorObject(): any {
+        return this;
+    }
 }
 
 class GeneratorFunction extends Function {

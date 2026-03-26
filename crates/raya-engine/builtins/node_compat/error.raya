@@ -38,7 +38,7 @@ function errorMessageToPrimitive(value: any): any {
 
     let exoticToPrimitive = value[Symbol.toPrimitive];
     if (typeof exoticToPrimitive == "function") {
-        let result = exoticToPrimitive.call(value, "string");
+        let result = value[Symbol.toPrimitive]("string");
         if (isErrorMessagePrimitive(result)) {
             return result;
         }

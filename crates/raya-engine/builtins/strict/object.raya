@@ -6,6 +6,7 @@ const OBJECT_HASH_CODE: number = 0x0002;
 const OBJECT_EQUALS: number = 0x0003;
 const OBJECT_TO_STRING: number = 0x0001;
 const OBJECT_SAME_VALUE: number = 0x0008;
+const OBJECT_GET_OWN_PROPERTY_DESCRIPTOR: number = 0x0005;
 const OBJECT_GET_PROTOTYPE_OF: number = 0x0011;
 const OBJECT_IS_EXTENSIBLE: number = 0x0015;
 const OBJECT_PREVENT_EXTENSIONS: number = 0x0016;
@@ -19,6 +20,18 @@ class Object {
 
     valueOf(): Object {
         return this;
+    }
+
+    hasOwnProperty(key: any): boolean {
+        return Object.getOwnPropertyDescriptor(this, key) != null;
+    }
+
+    propertyIsEnumerable(key: any): boolean {
+        let desc = Object.getOwnPropertyDescriptor(this, key);
+        if (desc == null) {
+            return false;
+        }
+        return desc["enumerable"] == true;
     }
 
     isPrototypeOf(value: any): boolean {
@@ -53,6 +66,10 @@ class Object {
 
     static is(a: unknown, b: unknown): boolean {
         return __NATIVE_CALL<boolean>(OBJECT_SAME_VALUE, a, b);
+    }
+
+    static getOwnPropertyDescriptor<T>(obj: T, key: any): any {
+        return __NATIVE_CALL<any>(OBJECT_GET_OWN_PROPERTY_DESCRIPTOR, obj, key);
     }
 
     static getPrototypeOf<T>(obj: T): Object | null {

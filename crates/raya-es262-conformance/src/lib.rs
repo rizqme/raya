@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const HARNESS_CORE_PRELUDE: &str = r#"
 class Test262Error extends Error {
@@ -127,6 +127,30 @@ function __assert_throws(expectedErrorConstructor, func, message) {
     }
     $ERROR(String(message));
 }
+"#;
+
+const ASYNC_DONE_PRELUDE: &str = r#"
+globalThis.__test262AsyncState__ = 0;
+globalThis.__test262AsyncFailure__ = "";
+globalThis.$DONE = function(error) {
+    if (globalThis.__test262AsyncState__ !== 0) {
+        return;
+    }
+    if (error == null) {
+        globalThis.__test262AsyncState__ = 1;
+        return;
+    }
+
+    globalThis.__test262AsyncState__ = 2;
+    if (typeof error === "object" && error !== null) {
+        let name = "name" in error ? String(error.name) : "Error";
+        let message = "message" in error ? String(error.message) : String(error);
+        globalThis.__test262AsyncFailure__ = name + ": " + message;
+        return;
+    }
+
+    globalThis.__test262AsyncFailure__ = "Test262Error: " + String(error);
+};
 "#;
 
 const HOST_262_PRELUDE: &str = r#"
@@ -912,6 +936,7 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
         .and_then(|negative| negative.error_type.as_deref());
 
     let temp_path = case_artifact_path(case);
+    let is_async = loaded.metadata.flags.iter().any(|flag| flag == "async");
 
     let outcome = match negative_phase {
         Some("parse") | Some("resolution") => {
@@ -926,7 +951,7 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
                 }
             }
         }
-        Some("runtime") => match execute_case_program(runtime, &temp_path, &transformed) {
+        Some("runtime") => match execute_case_program(runtime, &temp_path, &transformed, is_async) {
             Ok(()) => TestOutcome::Failed("expected runtime failure".to_string()),
             Err(error) => {
                 if matches_expected_error(&error, expected_error) {
@@ -936,7 +961,7 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
                 }
             }
         },
-        _ => match execute_case_program(runtime, &temp_path, &transformed) {
+        _ => match execute_case_program(runtime, &temp_path, &transformed, is_async) {
             Ok(()) => TestOutcome::Passed,
             Err(error) => TestOutcome::Failed(error),
         },
@@ -1041,7 +1066,12 @@ fn execute_case_program(
     runtime: &Runtime,
     path: &Path,
     source: &str,
+    is_async: bool,
 ) -> std::result::Result<(), String> {
+    if is_async {
+        return execute_async_case_program(runtime, path, source);
+    }
+
     let debug_case = std::env::var("RAYA_DEBUG_ES262_CASE").is_ok();
     if debug_case {
         eprintln!("[es262-case] compile:start path={}", path.display());
@@ -1066,19 +1096,122 @@ fn execute_case_program(
     result
 }
 
+fn execute_async_case_program(
+    runtime: &Runtime,
+    path: &Path,
+    source: &str,
+) -> std::result::Result<(), String> {
+    let debug_case = std::env::var("RAYA_DEBUG_ES262_CASE").is_ok();
+    if debug_case {
+        eprintln!("[es262-case] async-compile:start path={}", path.display());
+    }
+    let program = runtime
+        .compile_program_source_at_path(source, path)
+        .map_err(|error| format!("compilation failed: {}", error))?;
+    let mut vm = runtime.create_vm();
+    let result = runtime
+        .execute_program_with_vm(&program, &mut vm)
+        .map_err(|error| format!("runtime failed: {}", error));
+
+    let wait_timeout = Duration::from_secs(2);
+    let settled = vm.wait_quiescent(wait_timeout);
+    let drained = vm.wait_all(wait_timeout);
+
+    let outcome = match result {
+        Err(error) => Err(error),
+        Ok(_) => match probe_async_state(runtime, &mut vm) {
+            Ok(1) => Ok(()),
+            Ok(2) => Err(probe_async_failure(runtime, &mut vm)),
+            Ok(0) if !settled || !drained => Err(
+                "async test did not settle before the completion timeout".to_string(),
+            ),
+            Ok(0) => Err("async test did not call $DONE".to_string()),
+            Ok(other) => Err(format!("unexpected async completion state: {}", other)),
+            Err(error) => Err(error),
+        },
+    };
+
+    if debug_case {
+        eprintln!(
+            "[es262-case] async-execute:done path={} ok={} settled={} drained={}",
+            path.display(),
+            outcome.is_ok(),
+            settled,
+            drained
+        );
+    }
+
+    vm.terminate();
+    outcome
+}
+
+fn probe_async_state(
+    runtime: &Runtime,
+    vm: &mut raya_engine::vm::Vm,
+) -> std::result::Result<i32, String> {
+    let probe = runtime
+        .compile_program_source("return globalThis.__test262AsyncState__;")
+        .map_err(|error| format!("failed to compile async completion probe: {}", error))?;
+    let value = runtime
+        .execute_program_with_vm(&probe, vm)
+        .map_err(|error| format!("failed to execute async completion probe: {}", error))?;
+    if let Some(state) = value.as_i32() {
+        return Ok(state);
+    }
+    if let Some(state) = value.as_i64() {
+        return i32::try_from(state)
+            .map_err(|_| format!("async completion probe returned out-of-range i64 state: {state}"));
+    }
+    if let Some(state) = value.as_u64() {
+        return i32::try_from(state)
+            .map_err(|_| format!("async completion probe returned out-of-range u64 state: {state}"));
+    }
+    if let Some(state) = value.as_f64() {
+        if state.is_finite() && state.fract() == 0.0 {
+            return i32::try_from(state as i64).map_err(|_| {
+                format!("async completion probe returned out-of-range f64 state: {state}")
+            });
+        }
+    }
+    Err(format!(
+        "async completion probe returned a non-integer state: {:?}",
+        value
+    ))
+}
+
+fn probe_async_failure(runtime: &Runtime, vm: &mut raya_engine::vm::Vm) -> String {
+    let probe = match runtime.compile_program_source(
+        r#"throw new Error(globalThis.__test262AsyncFailure__ || "async test failed via $DONE");"#,
+    ) {
+        Ok(program) => program,
+        Err(error) => {
+            return format!(
+                "async test failed via $DONE (and failure probe compilation failed: {})",
+                error
+            );
+        }
+    };
+
+    match runtime.execute_program_with_vm(&probe, vm) {
+        Ok(_) => "async test failed via $DONE".to_string(),
+        Err(error) => format!("runtime failed: {}", error),
+    }
+}
+
 fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<String, String> {
     let is_raw = case.metadata.flags.iter().any(|flag| flag == "raw");
+    let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
     for flag in &case.metadata.flags {
         match flag.as_str() {
-            "async" | "module" | "CanBlockIsFalse" => {
+            "module" | "CanBlockIsFalse" => {
                 return Err(format!("unsupported test flag: {}", flag));
             }
-            "generated" | "onlyStrict" | "noStrict" | "raw" => {}
+            "async" | "generated" | "onlyStrict" | "noStrict" | "raw" => {}
             _ => {}
         }
     }
 
-    if case.source.contains("$DONE") {
+    if done_callback_regex().is_match(&case.source) && !is_async {
         return Err("uses async completion callback".to_string());
     }
     if import_export_regex().is_match(&case.source) {
@@ -1131,6 +1264,10 @@ fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<St
     } else {
         final_source.push_str(strict_prefix);
         final_source.push_str(&required_harness_prelude(&transformed, &include_sources));
+        if is_async {
+            final_source.push_str(ASYNC_DONE_PRELUDE);
+            final_source.push('\n');
+        }
         if matches!(supported_host_hooks, Some(true)) {
             final_source.push_str(HOST_262_PRELUDE);
             final_source.push('\n');
@@ -1213,6 +1350,7 @@ fn transform_source(source: &str) -> std::result::Result<String, String> {
     transformed = transformed.replace("assert.sameValue(", "__assert_sameValue(");
     transformed = transformed.replace("assert.notSameValue(", "__assert_notSameValue(");
     transformed = transformed.replace("assert.throws(", "__assert_throws(");
+    transformed = transformed.replace("assert.throwsAsync", "__assert_throwsAsync");
     transformed = transformed.replace("assert.compareArray(", "__assert_compareArray(");
     transformed = bare_assert_regex()
         .replace_all(&transformed, "${prefix}__assert(")
@@ -1264,6 +1402,11 @@ fn unsupported_assert_regex() -> &'static Regex {
         Regex::new(r"assert\.[A-Za-z_$][A-Za-z0-9_$]*")
             .expect("unsupported assert regex should compile")
     })
+}
+
+fn done_callback_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"(?P<prefix>^|[^.\w$])\$DONE\s*\(").expect("$DONE regex"))
 }
 
 fn host_hook_regex() -> &'static Regex {

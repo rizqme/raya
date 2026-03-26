@@ -480,6 +480,7 @@ pub struct ArgumentsObjectData {
 #[derive(Clone)]
 pub struct GeneratorStateData {
     pub task_id: TaskId,
+    pub is_async: bool,
     pub started: bool,
     pub closed: bool,
     pub pending_return_completion: Option<Value>,
@@ -491,6 +492,7 @@ impl std::fmt::Debug for GeneratorStateData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GeneratorStateData")
             .field("task_id", &self.task_id)
+            .field("is_async", &self.is_async)
             .field("started", &self.started)
             .field("closed", &self.closed)
             .field("pending_return_completion", &self.pending_return_completion)

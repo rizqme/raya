@@ -665,17 +665,23 @@ impl<'a> Interpreter<'a> {
         iterator_value
     }
 
-    fn generator_iterator_object(&self, task_id: TaskId, prototype: Option<Value>) -> Value {
+    fn generator_iterator_object(
+        &self,
+        task_id: TaskId,
+        prototype: Option<Value>,
+        is_async: bool,
+    ) -> Value {
         let mut iterator = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
         iterator.generator_state = Some(Box::new(GeneratorStateData {
             task_id,
+            is_async,
             started: false,
             closed: false,
             pending_return_completion: None,
             completion: Value::undefined(),
             completion_emitted: false,
         }));
-        {
+        if !is_async {
             let dyn_props = iterator.ensure_dyn_props();
             dyn_props.insert(
                 self.intern_prop_key("next"),
@@ -721,7 +727,8 @@ impl<'a> Interpreter<'a> {
         let iterator_value =
             unsafe { Value::from_ptr(NonNull::new(iterator_ptr.as_ptr()).expect("iterator ptr")) };
 
-        if let Some(obj_ptr) = checked_object_ptr(iterator_value) {
+        if !is_async {
+            if let Some(obj_ptr) = checked_object_ptr(iterator_value) {
             let iterator = unsafe { &mut *obj_ptr.as_ptr() };
             if let Some(dyn_props) = iterator.dyn_props_mut() {
                 for key in ["next", "return", "Symbol.iterator"] {
@@ -735,6 +742,7 @@ impl<'a> Interpreter<'a> {
                     }
                 }
             }
+        }
         }
 
         iterator_value
@@ -866,6 +874,10 @@ impl<'a> Interpreter<'a> {
         closure: Option<Value>,
         caller_task: &Arc<Task>,
     ) -> Result<Value, VmError> {
+        let is_async = function_module
+            .functions
+            .get(func_id)
+            .is_some_and(|function| function.is_async);
         let generator_task = Arc::new(Task::with_args(
             func_id,
             function_module,
@@ -913,7 +925,11 @@ impl<'a> Interpreter<'a> {
             generator_task.current_module().as_ref(),
             caller_task,
         )?;
-        Ok(self.generator_iterator_object(generator_task.id(), iterator_prototype))
+        Ok(self.generator_iterator_object(
+            generator_task.id(),
+            iterator_prototype,
+            is_async,
+        ))
     }
 }
 
@@ -10413,8 +10429,14 @@ impl<'a> Interpreter<'a> {
     }
 
     fn own_builtin_native_method_value(&self, target: Value, key: &str) -> Option<Value> {
-        let native_id =
-            crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key)?;
+        if let Some(value) = self.task_promise_method_value(target, key) {
+            return Some(value);
+        }
+        let native_id = crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(
+            self.pinned_handles,
+            target,
+            key,
+        )?;
         let method = Object::new_bound_native(target, native_id);
         let method_ptr = self.gc.lock().allocate(method);
         Some(unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) })
@@ -10948,8 +10970,21 @@ impl<'a> Interpreter<'a> {
             ));
         }
 
-        if crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key)
-            .is_some()
+        if self.task_promise_method_value(target, key).is_some() {
+            return Some(JsOwnPropertyShape::data(
+                JsOwnPropertySource::BuiltinNativeMethod,
+                true,
+                true,
+                false,
+            ));
+        }
+
+        if crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(
+            self.pinned_handles,
+            target,
+            key,
+        )
+        .is_some()
         {
             return Some(JsOwnPropertyShape::data(
                 JsOwnPropertySource::BuiltinNativeMethod,
@@ -11900,9 +11935,11 @@ impl<'a> Interpreter<'a> {
                         .callable_virtual_property_descriptor(target, key)
                         .is_some()
                         || crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(
-                            target, key,
+                            self.pinned_handles,
+                            target,
+                            key,
                         )
-                        .is_some()
+                            .is_some()
                         || self.has_constructor_static_method(target, key)
                         || self.has_class_vtable_method(target, key));
                 if !runtime_placeholder {
@@ -15104,6 +15141,34 @@ impl<'a> Interpreter<'a> {
                                     type_info,
                                     args.len()
                                 );
+                                let current_func_id = task.current_func_id();
+                                let current_func_name = module
+                                    .functions
+                                    .get(current_func_id)
+                                    .map(|function| function.name.as_str())
+                                    .unwrap_or("<unknown>");
+                                eprintln!(
+                                    "[CALL_HELPER] current={}::{}#{}",
+                                    module.metadata.name,
+                                    current_func_name,
+                                    current_func_id
+                                );
+                                for (index, frame) in
+                                    task.get_execution_frames().iter().rev().take(6).enumerate()
+                                {
+                                    let frame_func_name = frame
+                                        .module
+                                        .functions
+                                        .get(frame.func_id)
+                                        .map(|function| function.name.as_str())
+                                        .unwrap_or("<unknown>");
+                                    eprintln!(
+                                        "[CALL_HELPER] frame[{index}]={}::{}#{}",
+                                        frame.module.metadata.name,
+                                        frame_func_name,
+                                        frame.func_id
+                                    );
+                                }
                             }
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Function.prototype.call target is not callable".to_string(),
@@ -17502,6 +17567,7 @@ impl<'a> Interpreter<'a> {
                         let iterator = self.generator_iterator_object(
                             task_id,
                             self.default_generator_instance_prototype(false),
+                            false,
                         );
                         if let Err(error) = stack.push(iterator) {
                             return OpcodeResult::Error(error);

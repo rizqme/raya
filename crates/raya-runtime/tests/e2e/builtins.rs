@@ -308,6 +308,21 @@ fn test_node_compat_generator_instance_falls_back_to_generator_prototype() {
 }
 
 #[test]
+fn test_node_compat_async_generator_next_exposes_promise_then() {
+    expect_string_runtime_node_compat(
+        r#"
+        async function* gen() {
+            yield 1;
+        }
+        let it = gen();
+        let step = it.next();
+        return JSON.stringify([typeof it.next, typeof step, typeof step.then]);
+    "#,
+        r#"["function","object","function"]"#,
+    );
+}
+
+#[test]
 fn test_node_compat_async_generator_instance_falls_back_to_async_generator_prototype() {
     expect_bool_runtime_node_compat(
         r#"

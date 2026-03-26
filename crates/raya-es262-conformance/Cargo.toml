@@ -19,4 +19,5 @@ doctest = false
 anyhow.workspace = true
 clap.workspace = true
 regex.workspace = true
+raya-engine.workspace = true
 raya-runtime.workspace = true

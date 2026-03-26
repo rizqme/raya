@@ -66,6 +66,7 @@ fn well_known_symbol_lookup_name(property: &str) -> Option<&str> {
 fn protocol_alias_names(key: &str) -> &'static [&'static str] {
     match key {
         "Symbol.iterator" => &["__iteratorObject", "iterator"],
+        "Symbol.asyncIterator" => &["__asyncIteratorObject", "asyncIterator"],
         _ => &[],
     }
 }
@@ -130,6 +131,7 @@ fn object_ptr_checked(value: Value) -> Option<NonNull<Object>> {
 }
 
 pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
+    pinned_handles: &parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     value: Value,
     key: &str,
 ) -> Option<u16> {
@@ -213,7 +215,7 @@ pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
         }
     }
     let handle = value.as_u64()?;
-    if handle == 0 {
+    if handle == 0 || !pinned_handles.read().contains(&handle) {
         return None;
     }
     let ptr = handle as *const u8;
@@ -341,6 +343,44 @@ pub(in crate::vm::interpreter) fn dyn_key_parts(
 }
 
 impl<'a> Interpreter<'a> {
+    pub(in crate::vm::interpreter) fn task_promise_method_value(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<Value> {
+        let task_id = target
+            .as_u64()
+            .map(crate::vm::scheduler::TaskId::from_u64)?;
+        if !self.tasks.read().contains_key(&task_id) {
+            return None;
+        }
+        if !matches!(key, "then" | "catch" | "finally") {
+            return None;
+        }
+
+        let promise_ctor = self.builtin_global_value("Promise")?;
+        let promise_proto = self.constructor_prototype_value(promise_ctor)?;
+        let method = self
+            .property_value_with_protocol_alias(promise_proto, key)
+            .or_else(|| self.prototype_chain_property_value_with_protocol_alias(promise_proto, key))?;
+        if !Self::is_callable_value(method) {
+            return None;
+        }
+
+        let bound = Object::new_bound_function(
+            method,
+            target,
+            Vec::new(),
+            format!("bound {key}"),
+            Value::i32(0),
+            false,
+        );
+        let bound_ptr = self.gc.lock().allocate(bound);
+        Some(unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(bound_ptr.as_ptr()).expect("bound promise method"))
+        })
+    }
+
     fn property_value_with_protocol_alias(&self, target: Value, key: &str) -> Option<Value> {
         // Check fields first
         if let Some(value) = self.get_field_value_by_name(target, key) {
@@ -390,8 +430,12 @@ impl<'a> Interpreter<'a> {
                 }
             }
         }
+        if let Some(value) = self.task_promise_method_value(target, key) {
+            return Some(value);
+        }
         // Check builtin native methods
-        if let Some(native_id) = builtin_handle_native_method_id(target, key) {
+        if let Some(native_id) = builtin_handle_native_method_id(self.pinned_handles, target, key)
+        {
             let method = Object::new_bound_native(target, native_id);
             let method_ptr = self.gc.lock().allocate(method);
             let val =
@@ -1244,11 +1288,18 @@ impl<'a> Interpreter<'a> {
                                 Err(error) => return OpcodeResult::Error(error),
                             } {
                                 value
-                            } else if let Some(native_id) =
-                                builtin_handle_native_method_id(obj_val, key_str).or_else(|| {
+                            } else if let Some(native_id) = builtin_handle_native_method_id(
+                                self.pinned_handles,
+                                obj_val,
+                                key_str,
+                            )
+                            .or_else(|| {
                                     for alias in protocol_alias_names(key_str) {
-                                        if let Some(native_id) =
-                                            builtin_handle_native_method_id(obj_val, alias)
+                                        if let Some(native_id) = builtin_handle_native_method_id(
+                                            self.pinned_handles,
+                                            obj_val,
+                                            alias,
+                                        )
                                         {
                                             return Some(native_id);
                                         }
@@ -1300,11 +1351,18 @@ impl<'a> Interpreter<'a> {
                                 Err(error) => return OpcodeResult::Error(error),
                             } {
                                 value
-                            } else if let Some(native_id) =
-                                builtin_handle_native_method_id(obj_val, key_str).or_else(|| {
+                            } else if let Some(native_id) = builtin_handle_native_method_id(
+                                self.pinned_handles,
+                                obj_val,
+                                key_str,
+                            )
+                            .or_else(|| {
                                     for alias in protocol_alias_names(key_str) {
-                                        if let Some(native_id) =
-                                            builtin_handle_native_method_id(obj_val, alias)
+                                        if let Some(native_id) = builtin_handle_native_method_id(
+                                            self.pinned_handles,
+                                            obj_val,
+                                            alias,
+                                        )
                                         {
                                             return Some(native_id);
                                         }
@@ -1371,8 +1429,11 @@ impl<'a> Interpreter<'a> {
                                 ) {
                                     Ok(Some(value)) => value,
                                     Ok(None) => {
-                                        if let Some(native_id) =
-                                            builtin_handle_native_method_id(obj_val, key_str)
+                                        if let Some(native_id) = builtin_handle_native_method_id(
+                                            self.pinned_handles,
+                                            obj_val,
+                                            key_str,
+                                        )
                                         {
                                             let method =
                                                 Object::new_bound_native(obj_val, native_id);

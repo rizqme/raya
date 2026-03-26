@@ -57,7 +57,7 @@ function __toPrimitive(value: any, preferredType: string): any {
 
     let exoticToPrimitive = value[Symbol.toPrimitive];
     if (typeof exoticToPrimitive == "function") {
-        let result = exoticToPrimitive.call(value, preferredType);
+        let result = value[Symbol.toPrimitive](preferredType);
         if (__isPrimitiveValue(result)) {
             return result;
         }
