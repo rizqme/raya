@@ -51,6 +51,13 @@ enum CheckerValidatedMemberCallKind {
     CallableProperty,
 }
 
+#[derive(Clone, Copy)]
+enum ClosureInvokeMode {
+    Sync { result_ty: TypeId },
+    SyncNoPropagate,
+    Spawn,
+}
+
 #[derive(Clone)]
 enum PreparedDestructuringTarget {
     Identifier(Symbol),
@@ -127,6 +134,53 @@ impl<'a> Lowerer<'a> {
         } else {
             self.default_js_function_type()
         }
+    }
+
+    fn emit_closure_invoke(
+        &mut self,
+        dest: Register,
+        closure: Register,
+        args: Vec<Register>,
+        mode: ClosureInvokeMode,
+    ) {
+        match mode {
+            ClosureInvokeMode::Spawn => {
+                self.emit(IrInstr::SpawnClosure { dest, closure, args });
+            }
+            ClosureInvokeMode::Sync { result_ty } => {
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args,
+                });
+                self.propagate_type_projection_to_register(result_ty, &dest);
+            }
+            ClosureInvokeMode::SyncNoPropagate => {
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest),
+                    closure,
+                    args,
+                });
+            }
+        }
+    }
+
+    fn emit_call_or_spawn_closure(
+        &mut self,
+        dest: Register,
+        closure: Register,
+        args: Vec<Register>,
+        callee_ty: TypeId,
+        result_ty: TypeId,
+    ) {
+        let mode = if self.type_id_is_async_callable(callee_ty) {
+            ClosureInvokeMode::Spawn
+        } else {
+            ClosureInvokeMode::Sync {
+                result_ty,
+            }
+        };
+        self.emit_closure_invoke(dest, closure, args, mode);
     }
 
     fn member_write_uses_dynamic_property_path(
@@ -3725,11 +3779,12 @@ impl<'a> Lowerer<'a> {
                                 func_id.as_u32()
                             );
                         }
-                        self.emit(IrInstr::SpawnClosure {
-                            dest: dest.clone(),
+                        self.emit_closure_invoke(
+                            dest.clone(),
                             closure,
                             args,
-                        });
+                            ClosureInvokeMode::Spawn,
+                        );
                         return dest;
                     }
                 }
@@ -3741,11 +3796,12 @@ impl<'a> Lowerer<'a> {
                         self.interner.resolve(ident.name)
                     );
                 }
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(dest.clone()),
+                self.emit_closure_invoke(
+                    dest.clone(),
                     closure,
                     args,
-                });
+                    ClosureInvokeMode::SyncNoPropagate,
+                );
 
                 // Propagate return type for bound method calls
                 if let Some(&(nominal_type_id, method_name)) =
@@ -3820,24 +3876,27 @@ impl<'a> Lowerer<'a> {
                                 func_id.as_u32()
                             );
                         }
-                        self.emit(IrInstr::SpawnClosure {
-                            dest: dest.clone(),
+                        self.emit_closure_invoke(
+                            dest.clone(),
                             closure,
                             args,
-                        });
+                            ClosureInvokeMode::Spawn,
+                        );
                     } else {
-                        self.emit(IrInstr::CallClosure {
-                            dest: Some(dest.clone()),
+                        self.emit_closure_invoke(
+                            dest.clone(),
                             closure,
                             args,
-                        });
+                            ClosureInvokeMode::SyncNoPropagate,
+                        );
                     }
                 } else {
-                    self.emit(IrInstr::CallClosure {
-                        dest: Some(dest.clone()),
+                    self.emit_closure_invoke(
+                        dest.clone(),
                         closure,
                         args,
-                    });
+                        ClosureInvokeMode::SyncNoPropagate,
+                    );
                 }
 
                 // Propagate return type for bound method calls (global variable path)
@@ -3907,21 +3966,22 @@ impl<'a> Lowerer<'a> {
                     if self.async_closures.contains(&func_id)
                         || self.async_functions.contains(&func_id)
                     {
-                        self.emit(IrInstr::SpawnClosure {
-                            dest: dest.clone(),
+                        self.emit_closure_invoke(
+                            dest.clone(),
                             closure,
                             args,
-                        });
+                            ClosureInvokeMode::Spawn,
+                        );
                         return dest;
                     }
                 }
 
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(dest.clone()),
+                self.emit_closure_invoke(
+                    dest.clone(),
                     closure,
                     args,
-                });
-                self.propagate_type_projection_to_register(call_ty, &dest);
+                    ClosureInvokeMode::Sync { result_ty: call_ty },
+                );
                 return dest;
             }
 
@@ -3964,20 +4024,21 @@ impl<'a> Lowerer<'a> {
                                 is_ancestor
                             );
                         }
-                        self.emit(IrInstr::SpawnClosure {
-                            dest: dest.clone(),
+                        self.emit_closure_invoke(
+                            dest.clone(),
                             closure,
                             args,
-                        });
+                            ClosureInvokeMode::Spawn,
+                        );
                         return dest;
                     }
                 }
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(dest.clone()),
+                self.emit_closure_invoke(
+                    dest.clone(),
                     closure,
                     args,
-                });
-                self.propagate_type_projection_to_register(call_ty, &dest);
+                    ClosureInvokeMode::Sync { result_ty: call_ty },
+                );
                 return dest;
             }
         }
@@ -5276,20 +5337,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let closure = self.lower_expr(&call.callee);
-        if self.type_id_is_async_callable(callee_ty) {
-            self.emit(IrInstr::SpawnClosure {
-                dest: dest.clone(),
-                closure,
-                args,
-            });
-        } else {
-            self.emit(IrInstr::CallClosure {
-                dest: Some(dest.clone()),
-                closure,
-                args,
-            });
-            self.propagate_type_projection_to_register(call_ty, &dest);
-        }
+        self.emit_call_or_spawn_closure(dest.clone(), closure, args, callee_ty, call_ty);
         dest
     }
 
@@ -5482,18 +5530,19 @@ impl<'a> Lowerer<'a> {
         } else {
             let args = self.lower_call_argument_values(&call.arguments);
             if self.type_id_is_async_callable(self.get_expr_type(&call.callee)) {
-                self.emit(IrInstr::SpawnClosure {
-                    dest: call_result.clone(),
-                    closure: callee,
+                self.emit_closure_invoke(
+                    call_result.clone(),
+                    callee,
                     args,
-                });
+                    ClosureInvokeMode::Spawn,
+                );
             } else {
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(call_result.clone()),
-                    closure: callee,
+                self.emit_closure_invoke(
+                    call_result.clone(),
+                    callee,
                     args,
-                });
-                self.propagate_type_projection_to_register(call_ty, &call_result);
+                    ClosureInvokeMode::Sync { result_ty: call_ty },
+                );
             }
         }
         let call_exit = self.current_block;
@@ -11528,16 +11577,6 @@ impl<'a> Lowerer<'a> {
             return awaited_value;
         }
 
-        let checker_awaitability = value_awaitability(self.type_ctx, checker_arg_ty, promise_ty);
-        let lowered_awaitability = value_awaitability(self.type_ctx, lowered_arg_ty, promise_ty);
-        let should_emit_await = checker_awaitability != Awaitability::None
-            || lowered_awaitability != Awaitability::None;
-
-        // JS-compatible await semantics: non-awaitables resolve immediately.
-        if !should_emit_await {
-            return awaited_value;
-        }
-
         let result_ty = self.get_expr_type(await_node);
         let dest = self.alloc_register(if result_ty == UNRESOLVED {
             if let Some(Type::Task(task_ty)) = self.type_ctx.get(checker_arg_ty) {
@@ -11551,6 +11590,10 @@ impl<'a> Lowerer<'a> {
             result_ty
         });
 
+        // Lowering always emits Await for scalar values and lets the runtime
+        // decide whether the operand is a promise/task. That keeps JS await
+        // semantics centralized in the runtime instead of depending on checker
+        // type guesses here.
         self.emit(IrInstr::Await {
             dest: dest.clone(),
             task: awaited_value,
@@ -11575,11 +11618,12 @@ impl<'a> Lowerer<'a> {
             if self.should_resolve_from_direct_eval_env(ident) {
                 let closure =
                     self.emit_direct_eval_binding_get(self.interner.resolve(ident.name), false);
-                self.emit(IrInstr::SpawnClosure {
-                    dest: dest.clone(),
+                self.emit_closure_invoke(
+                    dest.clone(),
                     closure,
                     args,
-                });
+                    ClosureInvokeMode::Spawn,
+                );
                 return dest;
             }
 
@@ -11641,11 +11685,12 @@ impl<'a> Lowerer<'a> {
                         local_idx
                     );
                 }
-                self.emit(IrInstr::SpawnClosure {
-                    dest: dest.clone(),
+                self.emit_closure_invoke(
+                    dest.clone(),
                     closure,
                     args,
-                });
+                    ClosureInvokeMode::Spawn,
+                );
                 return dest;
             }
         }
@@ -11692,11 +11737,12 @@ impl<'a> Lowerer<'a> {
             // Dynamic/late-bound member fallback:
             // lower member access and spawn the resulting callable.
             let closure = self.lower_member(member);
-            self.emit(IrInstr::SpawnClosure {
-                dest: dest.clone(),
+            self.emit_closure_invoke(
+                dest.clone(),
                 closure,
                 args,
-            });
+                ClosureInvokeMode::Spawn,
+            );
             return dest;
         }
 
@@ -11745,11 +11791,12 @@ impl<'a> Lowerer<'a> {
                 callee_ty.as_u32()
             );
         }
-        self.emit(IrInstr::SpawnClosure {
-            dest: dest.clone(),
-            closure: callee_reg,
+        self.emit_closure_invoke(
+            dest.clone(),
+            callee_reg,
             args,
-        });
+            ClosureInvokeMode::Spawn,
+        );
         dest
     }
 
