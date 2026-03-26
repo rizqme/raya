@@ -481,6 +481,7 @@ impl<'a> EarlyErrorPass<'a> {
         body_has_use_strict: bool,
         span: crate::parser::Span,
         kind: ParameterListKind,
+        await_reserved_in_arrow_defaults: bool,
     ) {
         let simple = Self::is_simple_parameter_list(params);
         if body_has_use_strict && !simple {
@@ -523,20 +524,47 @@ impl<'a> EarlyErrorPass<'a> {
 
             if let Some(default) = &param.default_value {
                 if kind == ParameterListKind::Arrow {
-                    self.check_arrow_parameter_default(default, binding_strict);
+                    self.check_arrow_parameter_default(
+                        default,
+                        binding_strict,
+                        await_reserved_in_arrow_defaults,
+                    );
                 }
                 self.check_expr(default);
             }
         }
     }
 
-    fn check_arrow_parameter_default(&mut self, expr: &Expression, binding_strict: bool) {
+    fn check_arrow_parameter_default(
+        &mut self,
+        expr: &Expression,
+        binding_strict: bool,
+        await_reserved: bool,
+    ) {
         if let Some(yield_span) = self.find_yield_expression_span(expr) {
             self.error(
                 "Yield is not allowed in arrow parameter defaults",
                 yield_span,
             );
             return;
+        }
+
+        if await_reserved {
+            if let Some(await_span) = self.find_await_expression_span(expr) {
+                self.error(
+                    "Await is not allowed in arrow parameter defaults",
+                    await_span,
+                );
+                return;
+            }
+
+            if let Some(await_ident) = self.find_identifier_reference_named(expr, "await") {
+                self.error(
+                    "Identifier 'await' is not allowed in arrow parameter defaults",
+                    await_ident.span,
+                );
+                return;
+            }
         }
 
         if let Some(yield_ident) = self.find_identifier_reference_named(expr, "yield") {
@@ -878,6 +906,24 @@ impl<'a> EarlyErrorPass<'a> {
         }
     }
 
+    fn find_await_expression_span_in_jsx_attr_value(
+        &self,
+        value: &JsxAttributeValue,
+    ) -> Option<crate::parser::Span> {
+        match value {
+            JsxAttributeValue::StringLiteral(_) => None,
+            JsxAttributeValue::Expression(expr) => self.find_await_expression_span(expr),
+            JsxAttributeValue::JsxElement(elem) => elem
+                .children
+                .iter()
+                .find_map(|child| self.find_await_expression_span_in_jsx_child(child)),
+            JsxAttributeValue::JsxFragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|child| self.find_await_expression_span_in_jsx_child(child)),
+        }
+    }
+
     fn find_identifier_reference_named_in_jsx_child<'b>(
         &self,
         child: &'b JsxChild,
@@ -959,6 +1005,46 @@ impl<'a> EarlyErrorPass<'a> {
                 .children
                 .iter()
                 .find_map(|nested| self.find_yield_expression_span_in_jsx_child(nested)),
+        }
+    }
+
+    fn find_await_expression_span_in_jsx_child(
+        &self,
+        child: &JsxChild,
+    ) -> Option<crate::parser::Span> {
+        match child {
+            JsxChild::Text(_) => None,
+            JsxChild::Expression(expr) => expr
+                .expression
+                .as_ref()
+                .and_then(|expr| self.find_await_expression_span(expr)),
+            JsxChild::Element(elem) => {
+                for attr in &elem.opening.attributes {
+                    match attr {
+                        JsxAttribute::Attribute { value, .. } => {
+                            if let Some(value) = value {
+                                if let Some(found) =
+                                    self.find_await_expression_span_in_jsx_attr_value(value)
+                                {
+                                    return Some(found);
+                                }
+                            }
+                        }
+                        JsxAttribute::Spread { argument, .. } => {
+                            if let Some(found) = self.find_await_expression_span(argument) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                elem.children
+                    .iter()
+                    .find_map(|nested| self.find_await_expression_span_in_jsx_child(nested))
+            }
+            JsxChild::Fragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|nested| self.find_await_expression_span_in_jsx_child(nested)),
         }
     }
 
@@ -1398,6 +1484,7 @@ impl<'a> EarlyErrorPass<'a> {
                         body_has_use_strict,
                         func.span,
                         ParameterListKind::OrdinaryFunction,
+                        false,
                     );
                     for param in &func.params {
                         this.declare_pattern_with(&param.pattern, |pass, ident| {
@@ -1444,6 +1531,7 @@ impl<'a> EarlyErrorPass<'a> {
                     body_has_use_strict,
                     func.span,
                     ParameterListKind::OrdinaryFunction,
+                    false,
                 );
                 for param in &func.params {
                     this.declare_pattern_with(&param.pattern, |pass, ident| {
@@ -1472,6 +1560,7 @@ impl<'a> EarlyErrorPass<'a> {
             body_has_use_strict,
             arrow.span,
             ParameterListKind::Arrow,
+            arrow.is_async || self.current_function().is_some_and(|ctx| ctx.is_async),
         );
         self.push_function(
             arrow.is_async,
@@ -1544,6 +1633,7 @@ impl<'a> EarlyErrorPass<'a> {
                             false,
                             method.span,
                             ParameterListKind::OrdinaryFunction,
+                            false,
                         );
                         if let Some(body) = &method.body {
                             this.push_function(
@@ -1583,6 +1673,7 @@ impl<'a> EarlyErrorPass<'a> {
                             false,
                             ctor.span,
                             ParameterListKind::OrdinaryFunction,
+                            false,
                         );
                         this.push_function(
                             false,
@@ -1922,6 +2013,192 @@ impl<'a> EarlyErrorPass<'a> {
             }
         }
         self.check_assignment_pattern_target(&prop.value);
+    }
+
+    fn find_await_expression_span(&self, expr: &Expression) -> Option<crate::parser::Span> {
+        match expr {
+            Expression::Array(array) => {
+                array.elements.iter().flatten().find_map(|elem| match elem {
+                    ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
+                        self.find_await_expression_span(expr)
+                    }
+                })
+            }
+            Expression::Object(object) => object.properties.iter().find_map(|prop| match prop {
+                ObjectProperty::Property(prop) => {
+                    if let PropertyKey::Computed(expr) = &prop.key {
+                        self.find_await_expression_span(expr)
+                            .or_else(|| self.find_await_expression_span(&prop.value))
+                    } else {
+                        self.find_await_expression_span(&prop.value)
+                    }
+                }
+                ObjectProperty::Spread(spread) => self.find_await_expression_span(&spread.argument),
+            }),
+            Expression::TemplateLiteral(tpl) => tpl.parts.iter().find_map(|part| match part {
+                TemplatePart::Expression(expr) => self.find_await_expression_span(expr),
+                TemplatePart::String(_) => None,
+            }),
+            Expression::Unary(unary) => self.find_await_expression_span(&unary.operand),
+            Expression::Binary(binary) => self
+                .find_await_expression_span(&binary.left)
+                .or_else(|| self.find_await_expression_span(&binary.right)),
+            Expression::Assignment(assign) => self
+                .find_await_expression_span(&assign.left)
+                .or_else(|| self.find_await_expression_span(&assign.right)),
+            Expression::Logical(logical) => self
+                .find_await_expression_span(&logical.left)
+                .or_else(|| self.find_await_expression_span(&logical.right)),
+            Expression::Conditional(cond) => self
+                .find_await_expression_span(&cond.test)
+                .or_else(|| self.find_await_expression_span(&cond.consequent))
+                .or_else(|| self.find_await_expression_span(&cond.alternate)),
+            Expression::Call(call) => self
+                .find_await_expression_span(&call.callee)
+                .or_else(|| {
+                    call.arguments
+                        .iter()
+                        .find_map(|arg| self.find_await_expression_span(arg.expression()))
+                }),
+            Expression::AsyncCall(call) => self
+                .find_await_expression_span(&call.callee)
+                .or_else(|| {
+                    call.arguments
+                        .iter()
+                        .find_map(|arg| self.find_await_expression_span(arg.expression()))
+                }),
+            Expression::Member(member) => self.find_await_expression_span(&member.object),
+            Expression::Index(index) => self
+                .find_await_expression_span(&index.object)
+                .or_else(|| self.find_await_expression_span(&index.index)),
+            Expression::New(new_expr) => self
+                .find_await_expression_span(&new_expr.callee)
+                .or_else(|| {
+                    new_expr
+                        .arguments
+                        .iter()
+                        .find_map(|arg| self.find_await_expression_span(arg.expression()))
+                }),
+            Expression::Await(await_expr) => Some(await_expr.span),
+            Expression::Yield(yield_expr) => yield_expr
+                .value
+                .as_deref()
+                .and_then(|arg| self.find_await_expression_span(arg)),
+            Expression::Typeof(typeof_expr) => {
+                self.find_await_expression_span(&typeof_expr.argument)
+            }
+            Expression::Parenthesized(paren) => self.find_await_expression_span(&paren.expression),
+            Expression::JsxElement(elem) => {
+                for attr in &elem.opening.attributes {
+                    match attr {
+                        JsxAttribute::Attribute { value, .. } => {
+                            if let Some(value) = value {
+                                if let Some(found) =
+                                    self.find_await_expression_span_in_jsx_attr_value(value)
+                                {
+                                    return Some(found);
+                                }
+                            }
+                        }
+                        JsxAttribute::Spread { argument, .. } => {
+                            if let Some(found) = self.find_await_expression_span(argument) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                elem.children
+                    .iter()
+                    .find_map(|child| self.find_await_expression_span_in_jsx_child(child))
+            }
+            Expression::JsxFragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|child| self.find_await_expression_span_in_jsx_child(child)),
+            Expression::InstanceOf(instanceof) => {
+                self.find_await_expression_span(&instanceof.object)
+            }
+            Expression::In(in_expr) => self
+                .find_await_expression_span(&in_expr.property)
+                .or_else(|| self.find_await_expression_span(&in_expr.object)),
+            Expression::TypeCast(cast) => self.find_await_expression_span(&cast.object),
+            Expression::TaggedTemplate(tagged) => self
+                .find_await_expression_span(&tagged.tag)
+                .or_else(|| {
+                    tagged.template.parts.iter().find_map(|part| match part {
+                        TemplatePart::Expression(expr) => self.find_await_expression_span(expr),
+                        TemplatePart::String(_) => None,
+                    })
+                }),
+            Expression::Arrow(arrow) => arrow
+                .params
+                .iter()
+                .find_map(|param| self.find_parameter_await_span(param)),
+            Expression::Function(func) => func
+                .params
+                .iter()
+                .find_map(|param| self.find_parameter_await_span(param)),
+            Expression::DynamicImport(import) => self.find_await_expression_span(&import.source),
+            Expression::Identifier(_)
+            | Expression::IntLiteral(_)
+            | Expression::FloatLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::This(_)
+            | Expression::NewTarget(_)
+            | Expression::Super(_)
+            | Expression::RegexLiteral(_) => None,
+        }
+    }
+
+    fn find_parameter_await_span(&self, param: &Parameter) -> Option<crate::parser::Span> {
+        self.find_pattern_await_span(&param.pattern).or_else(|| {
+            param.default_value
+                .as_ref()
+                .and_then(|expr| self.find_await_expression_span(expr))
+        })
+    }
+
+    fn find_pattern_await_span(&self, pattern: &Pattern) -> Option<crate::parser::Span> {
+        match pattern {
+            Pattern::Identifier(ident) => {
+                (self.interner.resolve(ident.name) == "await").then_some(ident.span)
+            }
+            Pattern::Array(array) => {
+                for elem in array.elements.iter().flatten() {
+                    if let Some(span) = self.find_pattern_await_span(&elem.pattern) {
+                        return Some(span);
+                    }
+                    if let Some(default) = &elem.default {
+                        if let Some(span) = self.find_await_expression_span(default) {
+                            return Some(span);
+                        }
+                    }
+                }
+                array
+                    .rest
+                    .as_ref()
+                    .and_then(|rest| self.find_pattern_await_span(rest))
+            }
+            Pattern::Object(object) => {
+                for prop in &object.properties {
+                    if let Some(span) = self.find_pattern_await_span(&prop.value) {
+                        return Some(span);
+                    }
+                    if let Some(default) = &prop.default {
+                        if let Some(span) = self.find_await_expression_span(default) {
+                            return Some(span);
+                        }
+                    }
+                }
+                object
+                    .rest
+                    .as_ref()
+                    .and_then(|rest| (self.interner.resolve(rest.name) == "await").then_some(rest.span))
+            }
+            Pattern::Rest(rest) => self.find_pattern_await_span(&rest.argument),
+        }
     }
 
     fn is_valid_assignment_target(expr: &Expression, allow_pattern_defaults: bool) -> bool {
@@ -2310,6 +2587,18 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.message.contains("Identifier 'await' is not allowed")));
+    }
+
+    #[test]
+    fn test_async_arrow_forbids_await_in_nested_arrow_parameter_default() {
+        let (module, interner) = parse_module("async () => { (a = await /r/g) => {}; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("Await is not allowed in arrow parameter defaults")
+        }));
     }
 
     #[test]

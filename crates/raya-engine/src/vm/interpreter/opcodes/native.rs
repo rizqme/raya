@@ -6551,6 +6551,22 @@ impl<'a> Interpreter<'a> {
             return Some(prototype);
         }
 
+        if let Some(task_id) = value.as_u64().map(TaskId::from_u64) {
+            if self.tasks.read().contains_key(&task_id) {
+                let prototype = self
+                    .builtin_global_value("Promise")
+                    .and_then(|ctor| self.constructor_prototype_value(ctor));
+                if debug_proto_resolve {
+                    eprintln!(
+                        "[proto-of] value={:#x} task-promise -> {:?}",
+                        value.raw(),
+                        prototype.map(|v| format!("{:#x}", v.raw()))
+                    );
+                }
+                return prototype;
+            }
+        }
+
         if let Some(nominal_type_id) = self.constructor_nominal_type_id(value) {
             let parent_id = {
                 let classes = self.classes.read();

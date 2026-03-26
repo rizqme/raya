@@ -793,6 +793,43 @@ mod tests {
     }
 
     #[test]
+    fn test_async_line_terminator_splits_expression_statement() {
+        use crate::parser::ast::{Expression, Statement};
+
+        let parser = Parser::new("async\nidentifier => {}").unwrap();
+        let (module, interner) = parser.parse().unwrap();
+
+        assert_eq!(module.statements.len(), 2);
+
+        match &module.statements[0] {
+            Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+                Expression::Identifier(ident) => {
+                    assert_eq!(interner.resolve(ident.name), "async");
+                }
+                other => panic!("Expected identifier expression, got {:?}", other),
+            },
+            other => panic!(
+                "Expected first statement to be expression, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+
+        match &module.statements[1] {
+            Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+                Expression::Arrow(arrow) => {
+                    assert!(!arrow.is_async);
+                    assert_eq!(arrow.params.len(), 1);
+                }
+                other => panic!("Expected arrow expression, got {:?}", other),
+            },
+            other => panic!(
+                "Expected second statement to be expression, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    #[test]
     fn test_parenthesized_object_expression_stays_grouped() {
         use crate::parser::ast::Expression;
 

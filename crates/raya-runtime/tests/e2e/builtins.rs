@@ -452,6 +452,17 @@ fn test_promise_then_resolved_promise_calls_only_fulfilled_handler() {
 }
 
 #[test]
+fn test_async_arrow_returns_value_with_promise_prototype() {
+    expect_bool_with_builtins(
+        r#"
+        let p = (async () => await 1 + await 2)();
+        return Object.getPrototypeOf(p) === Promise.prototype;
+    "#,
+        true,
+    );
+}
+
+#[test]
 fn test_promise_then_rejection_passthrough_to_catch() {
     expect_i32_with_builtins(
         r#"

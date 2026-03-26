@@ -56,12 +56,31 @@ function __isSameValue(a, b) {
     return a !== a && b !== b;
 }
 
+function __assert_formatValue(value) {
+    if (value === 0 && (1 / value) === -Infinity) {
+        return "-0";
+    }
+    if (typeof value === "string") {
+        if (typeof JSON !== "undefined") {
+            return JSON.stringify(value);
+        }
+        return "\"" + value + "\"";
+    }
+    return String(value);
+}
+
 function __assert_sameValue(actual, expected, message) {
     if (__isSameValue(actual, expected)) {
         return;
     }
     if (message == null) {
-        $ERROR("Expected SameValue");
+        $ERROR(
+            "Expected SameValue(<<" +
+                __assert_formatValue(actual) +
+                ">>, <<" +
+                __assert_formatValue(expected) +
+                ">>) to be true"
+        );
     }
     $ERROR(String(message));
 }
@@ -71,7 +90,13 @@ function __assert_notSameValue(actual, expected, message) {
         return;
     }
     if (message == null) {
-        $ERROR("Expected different values");
+        $ERROR(
+            "Expected SameValue(<<" +
+                __assert_formatValue(actual) +
+                ">>, <<" +
+                __assert_formatValue(expected) +
+                ">>) to be false"
+        );
     }
     $ERROR(String(message));
 }

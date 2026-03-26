@@ -293,6 +293,13 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
             parser.advance();
 
+            if parser.has_line_terminator_before_current() {
+                return Ok(Expression::Identifier(Identifier {
+                    name: parser.intern("async"),
+                    span: start_span,
+                }));
+            }
+
             // async { ... } block expression — fire-and-forget task
             // Desugars to: async (() => { body })()
             if parser.check(&Token::LeftBrace) {
