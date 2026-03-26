@@ -6677,8 +6677,8 @@ impl<'a> Interpreter<'a> {
         //    earlier generic callable-prototype cache entries so wrapper
         //    constructors (Boolean/Number/String) can hydrate real prototype
         //    members instead of reusing a bare generic object.
-        if let Some((visible_name, _)) = self.callable_function_info(constructor) {
-            if let Some(proto) = self.create_prototype_for_class_by_name(&visible_name, constructor)
+        if let Some(global_name) = self.builtin_global_name_for_value(constructor) {
+            if let Some(proto) = self.create_prototype_for_class_by_name(&global_name, constructor)
             {
                 return Some(proto);
             }

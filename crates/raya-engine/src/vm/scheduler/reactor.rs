@@ -855,10 +855,14 @@ impl Reactor {
                 }
             }
             ExecutionResult::Failed(e) => {
-                let msg = e.to_string();
-                let exc = shared_state.allocate_ephemerally_rooted_string(msg);
-                vr.task.set_exception(exc);
-                shared_state.release_ephemeral_gc_root(exc);
+                // Preserve any explicit JS exception object already attached by the
+                // interpreter so rejected async tasks surface the original reason.
+                if !vr.task.has_exception() {
+                    let msg = e.to_string();
+                    let exc = shared_state.allocate_ephemerally_rooted_string(msg);
+                    vr.task.set_exception(exc);
+                    shared_state.release_ephemeral_gc_root(exc);
+                }
                 vr.task.fail();
                 Self::wake_waiters(shared_state, &vr.task, ready_queue);
                 Self::track_unhandled_rejection(shared_state, &vr.task);
