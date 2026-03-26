@@ -406,6 +406,9 @@ pub struct SharedVmState {
     /// Promise microtask queue (FIFO), drained at scheduler checkpoints.
     pub promise_microtasks: Mutex<std::collections::VecDeque<PromiseMicrotask>>,
 
+    /// Whether unhandled Promise rejections should be reported to the host log.
+    pub report_unhandled_promise_rejections: AtomicBool,
+
     /// Whether the reactor has reached a quiescent checkpoint with no
     /// internally queued work.
     pub reactor_is_quiescent: AtomicBool,
@@ -662,6 +665,7 @@ impl SharedVmState {
             safepoint,
             tasks,
             promise_microtasks: Mutex::new(std::collections::VecDeque::new()),
+            report_unhandled_promise_rejections: AtomicBool::new(true),
             reactor_is_quiescent: AtomicBool::new(false),
             reactor_quiescent_epoch: AtomicU64::new(0),
             injector,
@@ -707,6 +711,62 @@ impl SharedVmState {
         if previous != quiescent {
             self.reactor_quiescent_epoch.fetch_add(1, Ordering::AcqRel);
         }
+    }
+
+    pub fn enqueue_promise_microtask(&self, job: PromiseMicrotask) {
+        self.promise_microtasks.lock().push_back(job);
+    }
+
+    pub fn take_promise_microtasks(&self) -> Vec<PromiseMicrotask> {
+        let mut drained = Vec::new();
+        let mut queue = self.promise_microtasks.lock();
+        while let Some(job) = queue.pop_front() {
+            drained.push(job);
+        }
+        drained
+    }
+
+    pub fn requeue_promise_microtasks<I>(&self, jobs: I)
+    where
+        I: IntoIterator<Item = PromiseMicrotask>,
+    {
+        self.promise_microtasks.lock().extend(jobs);
+    }
+
+    pub fn set_unhandled_promise_rejection_reporting_enabled(&self, enabled: bool) {
+        self.report_unhandled_promise_rejections
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn unhandled_promise_rejection_reporting_enabled(&self) -> bool {
+        self.report_unhandled_promise_rejections
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn should_track_unhandled_rejection(&self, task: &Arc<Task>) -> bool {
+        task.state() == crate::vm::scheduler::TaskState::Failed
+            && !task.is_cancelled()
+            && !task.is_rejection_observed()
+    }
+
+    pub fn schedule_unhandled_rejection_check(&self, task: &Arc<Task>, delay: u8) {
+        if !self.should_track_unhandled_rejection(task) {
+            return;
+        }
+        self.enqueue_promise_microtask(PromiseMicrotask::ReportUnhandledRejection(
+            task.id(),
+            delay,
+        ));
+    }
+
+    pub fn report_unhandled_rejection(&self, task_id: TaskId, reason: Value) {
+        if !self.unhandled_promise_rejection_reporting_enabled() {
+            return;
+        }
+        eprintln!(
+            "[runtime] Unhandled Promise rejection (task {:?}): {:?}",
+            task_id, reason
+        );
     }
 
     /// Snapshot heap roots reachable from globals and live tasks.

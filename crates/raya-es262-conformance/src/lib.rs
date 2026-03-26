@@ -515,7 +515,6 @@ pub fn main_entry() -> Result<i32> {
 }
 
 pub fn run(args: Args) -> Result<i32> {
-    std::env::set_var("RAYA_SUPPRESS_UNHANDLED_REJECTION_LOGS", "1");
     let root = args
         .root
         .unwrap_or_else(default_test262_root)
@@ -1172,6 +1171,7 @@ fn execute_async_case_program(
         .compile_program_source_at_path(source, path)
         .map_err(|error| format!("compilation failed: {}", error))?;
     let mut vm = runtime.create_vm();
+    vm.set_unhandled_promise_rejection_reporting_enabled(false);
     let result = runtime
         .execute_program_with_vm(&program, &mut vm)
         .map_err(|error| format!("runtime failed: {}", error));

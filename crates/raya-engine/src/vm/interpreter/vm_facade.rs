@@ -597,6 +597,12 @@ impl Vm {
         self.scheduler.shared_state()
     }
 
+    /// Enable or suppress host logging for unhandled Promise rejections.
+    pub fn set_unhandled_promise_rejection_reporting_enabled(&self, enabled: bool) {
+        self.shared_state()
+            .set_unhandled_promise_rejection_reporting_enabled(enabled);
+    }
+
     /// Read an ambient builtin global value by name.
     pub fn builtin_global_value(&self, name: &str) -> Option<Value> {
         self.shared_state().get_builtin_global(name)

@@ -909,7 +909,7 @@ impl Reactor {
                 }
                 vr.task.fail();
                 Self::propagate_terminal_settlement(shared_state, &vr.task, ready_queue);
-                Self::track_unhandled_rejection(shared_state, &vr.task);
+                shared_state.schedule_unhandled_rejection_check(&vr.task, 1);
                 // Return the stack to the pool for reuse by future tasks
                 shared_state.stack_pool.release(vr.task.take_stack());
             }
@@ -946,7 +946,7 @@ impl Reactor {
             task.set_exception(exc);
             task.fail();
             Self::propagate_terminal_settlement(shared_state, task, ready_queue);
-            Self::track_unhandled_rejection(shared_state, task);
+            shared_state.schedule_unhandled_rejection_check(task, 1);
             shared_state.release_ephemeral_gc_root(exc);
             return true;
         }
@@ -977,39 +977,13 @@ impl Reactor {
 
         Self::propagate_terminal_settlement(shared_state, task, ready_queue);
         if task.state() == TaskState::Failed {
-            Self::track_unhandled_rejection(shared_state, task);
+            shared_state.schedule_unhandled_rejection_check(task, 1);
         }
         true
     }
 
-    fn track_unhandled_rejection(shared_state: &Arc<SharedVmState>, task: &Arc<Task>) {
-        if task.state() != TaskState::Failed {
-            return;
-        }
-        // Cancelled tasks are expected control-flow for fire-and-forget work
-        // (e.g. server background loops) and should not be treated as unhandled
-        // Promise rejections.
-        if task.is_cancelled() {
-            return;
-        }
-        if task.is_rejection_observed() {
-            return;
-        }
-
-        shared_state
-            .promise_microtasks
-            .lock()
-            .push_back(PromiseMicrotask::ReportUnhandledRejection(task.id(), 1));
-    }
-
     fn drain_promise_microtasks(shared_state: &Arc<SharedVmState>, quiescent_checkpoint: bool) {
-        let mut drained = Vec::new();
-        {
-            let mut queue = shared_state.promise_microtasks.lock();
-            while let Some(job) = queue.pop_front() {
-                drained.push(job);
-            }
-        }
+        let drained = shared_state.take_promise_microtasks();
         if drained.is_empty() {
             return;
         }
@@ -1020,7 +994,7 @@ impl Reactor {
                     let Some(task) = shared_state.tasks.read().get(&task_id).cloned() else {
                         continue;
                     };
-                    if task.state() != TaskState::Failed || task.is_rejection_observed() {
+                    if !shared_state.should_track_unhandled_rejection(&task) {
                         continue;
                     }
                     if !quiescent_checkpoint {
@@ -1034,13 +1008,8 @@ impl Reactor {
                         ));
                         continue;
                     }
-                    if std::env::var("RAYA_SUPPRESS_UNHANDLED_REJECTION_LOGS").is_err() {
-                        let reason = task.current_exception().unwrap_or(Value::null());
-                        eprintln!(
-                            "[runtime] Unhandled Promise rejection (task {:?}): {:?}",
-                            task_id, reason
-                        );
-                    }
+                    let reason = task.current_exception().unwrap_or(Value::null());
+                    shared_state.report_unhandled_rejection(task_id, reason);
                 }
                 PromiseMicrotask::RunReaction {
                     source_task_id,
@@ -1059,7 +1028,7 @@ impl Reactor {
             }
         }
         if !requeue.is_empty() {
-            shared_state.promise_microtasks.lock().extend(requeue);
+            shared_state.requeue_promise_microtasks(requeue);
         }
     }
 
