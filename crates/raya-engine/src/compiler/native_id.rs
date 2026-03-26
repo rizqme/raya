@@ -268,6 +268,8 @@ pub const TASK_IS_CANCELLED: u16 = 0x0501;
 pub const TASK_IS_FAILED: u16 = 0x0502;
 pub const TASK_GET_ERROR: u16 = 0x0503;
 pub const TASK_MARK_OBSERVED: u16 = 0x0504;
+pub const TASK_RESOLVE_PENDING: u16 = 0x0508;
+pub const TASK_REJECT_PENDING: u16 = 0x0509;
 
 // ============================================================================
 // Error (0x06xx)
@@ -810,6 +812,15 @@ pub fn native_name(id: u16) -> &'static str {
         JSON_STRINGIFY => "JSON.stringify",
         JSON_PARSE => "JSON.parse",
         JSON_MERGE => "JSON.merge",
+
+        // Task
+        TASK_IS_DONE => "Task.isDone",
+        TASK_IS_CANCELLED => "Task.isCancelled",
+        TASK_IS_FAILED => "Task.isFailed",
+        TASK_GET_ERROR => "Task.getError",
+        TASK_MARK_OBSERVED => "Task.markObserved",
+        TASK_RESOLVE_PENDING => "Task.resolvePending",
+        TASK_REJECT_PENDING => "Task.rejectPending",
 
         // Reflect - Metadata
         REFLECT_DEFINE_METADATA => "Reflect.defineMetadata",

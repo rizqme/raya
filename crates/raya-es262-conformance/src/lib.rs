@@ -1243,7 +1243,7 @@ fn probe_async_state(
 
 fn probe_async_failure(runtime: &Runtime, vm: &mut raya_engine::vm::Vm) -> String {
     let probe = match runtime.compile_program_source(
-        r#"throw new Error(globalThis.__test262AsyncFailure__ || "async test failed via $DONE");"#,
+        r#"return String(globalThis.__test262AsyncFailure__);"#,
     ) {
         Ok(program) => program,
         Err(error) => {
@@ -1255,7 +1255,11 @@ fn probe_async_failure(runtime: &Runtime, vm: &mut raya_engine::vm::Vm) -> Strin
     };
 
     match runtime.execute_program_with_vm(&probe, vm) {
-        Ok(_) => "async test failed via $DONE".to_string(),
+        Ok(value) => value
+            .as_string()
+            .map(|ptr| unsafe { &*ptr.as_ptr() }.data.clone())
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| format!("async test failed via $DONE (probe returned {:?})", value)),
         Err(error) => format!("runtime failed: {}", error),
     }
 }

@@ -161,6 +161,7 @@ struct LifecycleState {
     start_time: Option<Instant>,
     result: Option<Value>,
     waiters: Vec<TaskId>,
+    adopters: Vec<TaskId>,
     awaiting_task: Option<TaskId>,
     rejection_observed: bool,
 }
@@ -320,6 +321,7 @@ impl Task {
                 start_time: None,
                 result: None,
                 waiters: Vec::new(),
+                adopters: Vec::new(),
                 awaiting_task: None,
                 rejection_observed: false,
             }),
@@ -816,6 +818,24 @@ impl Task {
     /// Take all waiting tasks (used when task completes)
     pub fn take_waiters(&self) -> Vec<TaskId> {
         std::mem::take(&mut self.lifecycle.lock().waiters)
+    }
+
+    /// Add a promise/task handle that should mirror this task's eventual settlement.
+    pub fn add_adopter_if_incomplete(&self, adopter_id: TaskId) -> bool {
+        let mut lifecycle = self.lifecycle.lock();
+        match lifecycle.state {
+            TaskState::Completed | TaskState::Failed => false,
+            _ => {
+                lifecycle.adopters.push(adopter_id);
+                lifecycle.rejection_observed = true;
+                true
+            }
+        }
+    }
+
+    /// Take all adopting promise/task handles waiting to mirror this task.
+    pub fn take_adopters(&self) -> Vec<TaskId> {
+        std::mem::take(&mut self.lifecycle.lock().adopters)
     }
 
     /// Number of tasks currently waiting on this task.
@@ -1472,6 +1492,7 @@ impl Task {
                     .transpose()
                     .expect("snapshot restore failed: could not decode task result"),
                 waiters: Vec::new(),
+                adopters: Vec::new(),
                 awaiting_task: None,
                 rejection_observed: false,
             }),

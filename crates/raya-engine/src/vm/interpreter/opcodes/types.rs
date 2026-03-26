@@ -1882,6 +1882,14 @@ impl<'a> Interpreter<'a> {
                     "boolean"
                 } else if js_numeric_semantics && checked_bigint_ptr(value).is_some() {
                     "bigint"
+                } else if value
+                    .as_u64()
+                    .map(crate::vm::scheduler::TaskId::from_u64)
+                    .is_some_and(|task_id| self.tasks.read().contains_key(&task_id))
+                {
+                    // Async JS promises are represented by task handles internally, but
+                    // observable JS semantics still require `typeof promise === "object"`.
+                    "object"
                 } else if value.is_i32()
                     || value.is_f64()
                     || value.is_f32()

@@ -11390,51 +11390,79 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        fn value_awaitability(type_ctx: &TC, ty: TypeId) -> Awaitability {
+        fn value_awaitability(type_ctx: &TC, ty: TypeId, promise_ty: Option<TypeId>) -> Awaitability {
             match type_ctx.get(ty) {
                 Some(Type::Task(_)) => Awaitability::Definite,
                 Some(Type::Class(class)) if class.name == "Promise" => Awaitability::Definite,
+                Some(Type::Class(_)) => promise_ty
+                    .and_then(|promise_ty| {
+                        let mut subtype_ctx =
+                            crate::parser::types::subtyping::SubtypingContext::new(type_ctx);
+                        subtype_ctx.is_subtype(ty, promise_ty).then_some(Awaitability::Definite)
+                    })
+                    .unwrap_or(Awaitability::None),
+                Some(Type::Reference(reference)) if reference.name == "Promise" => {
+                    Awaitability::Definite
+                }
+                Some(Type::Reference(reference)) => type_ctx
+                    .lookup_named_type(&reference.name)
+                    .map(|named| value_awaitability(type_ctx, named, promise_ty))
+                    .unwrap_or(Awaitability::Maybe),
                 Some(Type::Union(union)) => union
                     .members
                     .iter()
                     .copied()
                     .fold(Awaitability::None, |acc, member| {
-                        merge_awaitability(acc, value_awaitability(type_ctx, member))
+                        merge_awaitability(acc, value_awaitability(type_ctx, member, promise_ty))
                     }),
                 Some(Type::TypeVar(tv)) => {
                     tv.constraint.map_or(Awaitability::Maybe, |constraint| {
-                        value_awaitability(type_ctx, constraint)
+                        value_awaitability(type_ctx, constraint, promise_ty)
                     })
                 }
+                Some(Type::Generic(generic)) => value_awaitability(type_ctx, generic.base, promise_ty),
                 Some(Type::Any) | Some(Type::Unknown) | Some(Type::JSObject) => Awaitability::Maybe,
                 None => Awaitability::Maybe,
                 _ => Awaitability::None,
             }
         }
 
-        fn array_awaitability(type_ctx: &TC, ty: TypeId) -> Option<Awaitability> {
+        fn array_awaitability(
+            type_ctx: &TC,
+            ty: TypeId,
+            promise_ty: Option<TypeId>,
+        ) -> Option<Awaitability> {
             match type_ctx.get(ty) {
-                Some(Type::Array(arr)) => Some(value_awaitability(type_ctx, arr.element)),
+                Some(Type::Array(arr)) => {
+                    Some(value_awaitability(type_ctx, arr.element, promise_ty))
+                }
                 Some(Type::Tuple(tuple)) => Some(
                     tuple
                         .elements
                         .iter()
                         .copied()
                         .fold(Awaitability::None, |acc, elem| {
-                            merge_awaitability(acc, value_awaitability(type_ctx, elem))
+                            merge_awaitability(
+                                acc,
+                                value_awaitability(type_ctx, elem, promise_ty),
+                            )
                         }),
                 ),
                 _ => None,
             }
         }
 
+        let promise_ty = self
+            .type_ctx
+            .lookup_named_type(crate::parser::TypeContext::PROMISE_TYPE_NAME);
+
         // Lower the awaited expression first; decisions below are based on checker + lowered type.
         let awaited_value = self.lower_expr(&await_expr.argument);
         let checker_arg_ty = self.get_expr_type(&await_expr.argument);
         let lowered_arg_ty = awaited_value.ty;
 
-        let checker_array_awaitability = array_awaitability(self.type_ctx, checker_arg_ty);
-        let lowered_array_awaitability = array_awaitability(self.type_ctx, lowered_arg_ty);
+        let checker_array_awaitability = array_awaitability(self.type_ctx, checker_arg_ty, promise_ty);
+        let lowered_array_awaitability = array_awaitability(self.type_ctx, lowered_arg_ty, promise_ty);
 
         let checker_needs_waitall = matches!(
             checker_array_awaitability,
@@ -11468,8 +11496,8 @@ impl<'a> Lowerer<'a> {
             return awaited_value;
         }
 
-        let checker_awaitability = value_awaitability(self.type_ctx, checker_arg_ty);
-        let lowered_awaitability = value_awaitability(self.type_ctx, lowered_arg_ty);
+        let checker_awaitability = value_awaitability(self.type_ctx, checker_arg_ty, promise_ty);
+        let lowered_awaitability = value_awaitability(self.type_ctx, lowered_arg_ty, promise_ty);
         let should_emit_await = checker_awaitability != Awaitability::None
             || lowered_awaitability != Awaitability::None;
 
@@ -13118,9 +13146,18 @@ impl<'a> Lowerer<'a> {
             return false;
         }
 
+        let promise_ty = self
+            .type_ctx
+            .lookup_named_type(crate::parser::TypeContext::PROMISE_TYPE_NAME);
+
         match self.type_ctx.get(ty_id) {
             Some(Type::Task(_)) => true,
             Some(Type::Class(class_ty)) if class_ty.name == "Promise" => true,
+            Some(Type::Class(_)) => promise_ty.is_some_and(|promise_ty| {
+                let mut subtype_ctx =
+                    crate::parser::types::subtyping::SubtypingContext::new(self.type_ctx);
+                subtype_ctx.is_subtype(ty_id, promise_ty)
+            }),
             Some(Type::Reference(type_ref)) => {
                 if type_ref.name == "Promise" {
                     return true;
@@ -13129,6 +13166,7 @@ impl<'a> Lowerer<'a> {
                     .lookup_named_type(&type_ref.name)
                     .is_some_and(|named| self.type_id_is_promise_like(named))
             }
+            Some(Type::Generic(generic)) => self.type_id_is_promise_like(generic.base),
             Some(Type::TypeVar(tv)) => tv
                 .constraint
                 .is_some_and(|constraint| self.type_id_is_promise_like(constraint)),

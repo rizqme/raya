@@ -201,12 +201,19 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Continue;
                 };
 
-                let awaited_id = TaskId::from_u64(task_id_u64);
+                let mut awaited_id = TaskId::from_u64(task_id_u64);
 
-                // Check if the awaited task is already complete
-                let tasks_guard = self.tasks.read();
-                if let Some(awaited_task) = tasks_guard.get(&awaited_id).cloned() {
+                loop {
+                    let tasks_guard = self.tasks.read();
+                    let Some(awaited_task) = tasks_guard.get(&awaited_id).cloned() else {
+                        drop(tasks_guard);
+                        if let Err(e) = stack.push(awaited_val) {
+                            return OpcodeResult::Error(e);
+                        }
+                        return OpcodeResult::Continue;
+                    };
                     drop(tasks_guard);
+
                     if awaited_task.is_cancelled() {
                         awaited_task.mark_rejection_observed();
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
@@ -217,62 +224,65 @@ impl<'a> Interpreter<'a> {
 
                     match awaited_task.state() {
                         TaskState::Completed => {
-                            // Already done, push result
                             let result = awaited_task.result().unwrap_or(Value::null());
+                            if let Some(nested_id) = result
+                                .as_u64()
+                                .map(TaskId::from_u64)
+                                .filter(|nested_id| self.tasks.read().contains_key(nested_id))
+                            {
+                                awaited_id = nested_id;
+                                continue;
+                            }
                             if let Err(e) = stack.push(result) {
                                 return OpcodeResult::Error(e);
                             }
-                            OpcodeResult::Continue
+                            return OpcodeResult::Continue;
                         }
                         TaskState::Failed => {
-                            // Propagate exception
                             awaited_task.mark_rejection_observed();
                             if let Some(exc) = awaited_task.current_exception() {
                                 task.set_exception(exc);
                             }
-                            OpcodeResult::Error(VmError::RuntimeError(format!(
+                            return OpcodeResult::Error(VmError::RuntimeError(format!(
                                 "Awaited task {:?} failed",
                                 awaited_id
-                            )))
+                            )));
                         }
                         _ => {
-                            // Not done yet - register as waiter and suspend
                             if awaited_task.add_waiter_if_incomplete(task.id()) {
-                                // Attaching an awaiter means the rejection will be
-                                // observed by user code if this task later fails.
                                 awaited_task.mark_rejection_observed();
-                                OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id))
-                            } else {
-                                match awaited_task.state() {
-                                    TaskState::Completed => {
-                                        let result = awaited_task.result().unwrap_or(Value::null());
-                                        if let Err(e) = stack.push(result) {
-                                            return OpcodeResult::Error(e);
-                                        }
-                                        OpcodeResult::Continue
+                                return OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id));
+                            }
+                            match awaited_task.state() {
+                                TaskState::Completed => {
+                                    let result = awaited_task.result().unwrap_or(Value::null());
+                                    if let Some(nested_id) = result
+                                        .as_u64()
+                                        .map(TaskId::from_u64)
+                                        .filter(|nested_id| self.tasks.read().contains_key(nested_id))
+                                    {
+                                        awaited_id = nested_id;
+                                        continue;
                                     }
-                                    TaskState::Failed => {
-                                        awaited_task.mark_rejection_observed();
-                                        if let Some(exc) = awaited_task.current_exception() {
-                                            task.set_exception(exc);
-                                        }
-                                        OpcodeResult::Error(VmError::RuntimeError(format!(
-                                            "Awaited task {:?} failed",
-                                            awaited_id
-                                        )))
+                                    if let Err(e) = stack.push(result) {
+                                        return OpcodeResult::Error(e);
                                     }
-                                    _ => OpcodeResult::Continue,
+                                    return OpcodeResult::Continue;
                                 }
+                                TaskState::Failed => {
+                                    awaited_task.mark_rejection_observed();
+                                    if let Some(exc) = awaited_task.current_exception() {
+                                        task.set_exception(exc);
+                                    }
+                                    return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                        "Awaited task {:?} failed",
+                                        awaited_id
+                                    )));
+                                }
+                                _ => return OpcodeResult::Continue,
                             }
                         }
                     }
-                } else {
-                    drop(tasks_guard);
-                    // Unknown task id value: treat as already-resolved literal.
-                    if let Err(e) = stack.push(awaited_val) {
-                        return OpcodeResult::Error(e);
-                    }
-                    OpcodeResult::Continue
                 }
             }
 

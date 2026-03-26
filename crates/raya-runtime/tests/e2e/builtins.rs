@@ -573,6 +573,72 @@ fn test_promise_catch_rethrow_stays_rejected() {
     );
 }
 
+#[test]
+fn test_node_compat_same_named_async_throw_collision_rejects_with_test262error() {
+    expect_string_runtime_node_compat(
+        r#"
+        function Test262Error(message) {
+            this.name = "Test262Error";
+            this.message = message;
+        }
+
+        function throwsAsync(expectedErrorConstructor, func) {
+            return new Promise(function(resolve) {
+                var fail = function(detail) {
+                    throw new Test262Error(detail);
+                };
+                var expectedName = expectedErrorConstructor.name;
+                var res = func();
+                var onResFulfilled, onResRejected;
+                var resSettlementP = new Promise(function(onFulfilled, onRejected) {
+                    onResFulfilled = onFulfilled;
+                    onResRejected = onRejected;
+                });
+                res.then(onResFulfilled, onResRejected);
+                resolve(resSettlementP.then(
+                    function() {
+                        fail("no exception");
+                    },
+                    function(thrown) {
+                        var actualName;
+                        if (thrown === null || typeof thrown !== "object") {
+                            fail("not object");
+                        } else if (thrown.constructor !== expectedErrorConstructor) {
+                            actualName = thrown.constructor.name;
+                            if (expectedName === actualName) {
+                                fail("same name different ctor");
+                            }
+                            fail("got " + actualName);
+                        }
+                    }
+                ));
+            });
+        }
+
+        async function inspect() {
+            let intrinsicTypeError = TypeError;
+            function TypeError() {}
+            try {
+                await throwsAsync(intrinsicTypeError, async function() {
+                    throw new TypeError();
+                });
+                return "fulfilled";
+            } catch (err) {
+                return JSON.stringify([
+                    err && err.constructor && err.constructor.name,
+                    err && err.name,
+                    err && err.message,
+                    typeof err
+                ]);
+            }
+        }
+
+        return await inspect();
+    "#,
+        r#"["Test262Error","Test262Error","same name different ctor","object"]"#,
+    );
+}
+
 // ============================================================================
 // Symbol tests
 // ============================================================================

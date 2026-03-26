@@ -766,7 +766,7 @@ impl Reactor {
         match vr.result {
             ExecutionResult::Completed(value) => {
                 vr.task.complete(value);
-                Self::wake_waiters(shared_state, &vr.task, ready_queue);
+                Self::propagate_terminal_settlement(shared_state, &vr.task, ready_queue);
                 // Return the stack to the pool for reuse by future tasks
                 shared_state.stack_pool.release(vr.task.take_stack());
             }
@@ -864,7 +864,7 @@ impl Reactor {
                     shared_state.release_ephemeral_gc_root(exc);
                 }
                 vr.task.fail();
-                Self::wake_waiters(shared_state, &vr.task, ready_queue);
+                Self::propagate_terminal_settlement(shared_state, &vr.task, ready_queue);
                 Self::track_unhandled_rejection(shared_state, &vr.task);
                 // Return the stack to the pool for reuse by future tasks
                 shared_state.stack_pool.release(vr.task.take_stack());
@@ -1214,6 +1214,53 @@ impl Reactor {
             if task.resume_if_pending() {
                 task.clear_suspend_reason();
                 ready_queue.push_back(task.clone());
+            }
+        }
+    }
+
+    /// Wake tasks waiting on a terminal task and cascade any adopted promises/tasks.
+    fn propagate_terminal_settlement(
+        shared_state: &Arc<SharedVmState>,
+        task: &Arc<Task>,
+        ready_queue: &mut VecDeque<Arc<Task>>,
+    ) {
+        let mut settled = vec![task.clone()];
+        while let Some(source) = settled.pop() {
+            Self::wake_waiters(shared_state, &source, ready_queue);
+
+            let adopters = source.take_adopters();
+            if adopters.is_empty() {
+                continue;
+            }
+
+            let source_failed = source.state() == TaskState::Failed;
+            let source_result = source.result();
+            let source_exception = if source_failed {
+                source.mark_rejection_observed();
+                Some(source.current_exception().unwrap_or(Value::null()))
+            } else {
+                None
+            };
+
+            let tasks_map = shared_state.tasks.read();
+            let adopter_tasks: Vec<_> = adopters
+                .into_iter()
+                .filter_map(|task_id| tasks_map.get(&task_id).cloned())
+                .collect();
+            drop(tasks_map);
+
+            for adopter in adopter_tasks {
+                match adopter.state() {
+                    TaskState::Completed | TaskState::Failed => continue,
+                    _ => {}
+                }
+                if let Some(exception) = source_exception {
+                    adopter.set_exception(exception);
+                    adopter.fail();
+                } else if let Some(result) = source_result {
+                    adopter.complete(result);
+                }
+                settled.push(adopter);
             }
         }
     }

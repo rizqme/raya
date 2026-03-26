@@ -807,6 +807,211 @@ impl<'a> Interpreter<'a> {
         Value::u64(task_id.as_u64())
     }
 
+    fn pending_task_handle(&mut self, caller_task: &Arc<Task>) -> Value {
+        let pending_task = Arc::new(Task::with_args(
+            0,
+            caller_task.current_module(),
+            Some(caller_task.id()),
+            vec![],
+        ));
+        pending_task.replace_stack(self.stack_pool.acquire());
+        let task_id = pending_task.id();
+        self.tasks.write().insert(task_id, pending_task);
+        Value::u64(task_id.as_u64())
+    }
+
+    fn task_from_handle_value(&self, value: Value) -> Option<Arc<Task>> {
+        let task_id = value.as_u64().map(TaskId::from_u64)?;
+        self.tasks.read().get(&task_id).cloned()
+    }
+
+    fn wake_task_waiters(&self, task: &Arc<Task>) {
+        let waiters = task.take_waiters();
+        if waiters.is_empty() {
+            return;
+        }
+
+        let task_failed = task.state() == TaskState::Failed;
+        let task_result = task.result();
+        let task_exception = if task_failed {
+            task.mark_rejection_observed();
+            Some(task.current_exception().unwrap_or(Value::null()))
+        } else {
+            None
+        };
+
+        let tasks_map = self.tasks.read();
+        let waiter_tasks: Vec<_> = waiters
+            .into_iter()
+            .filter_map(|task_id| tasks_map.get(&task_id).cloned())
+            .collect();
+        drop(tasks_map);
+
+        for waiter in waiter_tasks {
+            if let Some(exception) = task_exception {
+                let _ = waiter.take_resume_value();
+                waiter.set_exception(exception);
+            } else if let Some(result) = task_result {
+                waiter.set_resume_value(result);
+            }
+            if waiter.resume_if_pending() {
+                waiter.clear_suspend_reason();
+                self.injector.push(waiter);
+            }
+        }
+    }
+
+    fn propagate_task_settlement(&self, task: &Arc<Task>) {
+        let mut settled = vec![task.clone()];
+        while let Some(source) = settled.pop() {
+            self.wake_task_waiters(&source);
+
+            let adopters = source.take_adopters();
+            if adopters.is_empty() {
+                continue;
+            }
+
+            let source_failed = source.state() == TaskState::Failed;
+            let source_result = source.result();
+            let source_exception = if source_failed {
+                source.mark_rejection_observed();
+                Some(source.current_exception().unwrap_or(Value::null()))
+            } else {
+                None
+            };
+
+            let tasks_map = self.tasks.read();
+            let adopter_tasks: Vec<_> = adopters
+                .into_iter()
+                .filter_map(|task_id| tasks_map.get(&task_id).cloned())
+                .collect();
+            drop(tasks_map);
+
+            for adopter in adopter_tasks {
+                match adopter.state() {
+                    TaskState::Completed | TaskState::Failed => continue,
+                    _ => {}
+                }
+                if let Some(exception) = source_exception {
+                    adopter.set_exception(exception);
+                    adopter.fail();
+                } else if let Some(result) = source_result {
+                    adopter.complete(result);
+                }
+                settled.push(adopter);
+            }
+        }
+    }
+
+    fn reject_task_handle_with_exception(&self, pending_task: &Arc<Task>, exception: Value) {
+        pending_task.set_exception(exception);
+        pending_task.fail();
+        self.propagate_task_settlement(pending_task);
+    }
+
+    fn mirror_task_settlement(&self, pending_task: &Arc<Task>, source_task: &Arc<Task>) {
+        match source_task.state() {
+            TaskState::Completed => {
+                pending_task.complete(source_task.result().unwrap_or(Value::undefined()));
+            }
+            TaskState::Failed => {
+                source_task.mark_rejection_observed();
+                pending_task.set_exception(source_task.current_exception().unwrap_or(Value::null()));
+                pending_task.fail();
+            }
+            _ => return,
+        }
+        self.propagate_task_settlement(pending_task);
+    }
+
+    fn settle_existing_task_handle(
+        &mut self,
+        task_handle: Value,
+        value: Result<Value, Value>,
+    ) -> Result<(), VmError> {
+        let Some(task_id_u64) = task_handle.as_u64() else {
+            return Err(VmError::TypeError(
+                "Promise resolver receiver is not a task handle".to_string(),
+            ));
+        };
+        let task_id = TaskId::from_u64(task_id_u64);
+        let Some(pending_task) = self.tasks.read().get(&task_id).cloned() else {
+            return Err(VmError::TypeError(
+                "Promise resolver target task does not exist".to_string(),
+            ));
+        };
+        match pending_task.state() {
+            TaskState::Completed | TaskState::Failed => return Ok(()),
+            _ => {}
+        }
+        match value {
+            Ok(result) => {
+                if let Some(source_task) = self.task_from_handle_value(result) {
+                    if source_task.id() == pending_task.id() {
+                        let error = VmError::TypeError(
+                            "Promise cannot be resolved with itself".to_string(),
+                        );
+                        self.ensure_task_exception_for_error(&pending_task, &error);
+                        pending_task.fail();
+                        self.propagate_task_settlement(&pending_task);
+                        return Ok(());
+                    }
+                    if source_task.add_adopter_if_incomplete(pending_task.id()) {
+                        return Ok(());
+                    }
+                    self.mirror_task_settlement(&pending_task, &source_task);
+                    return Ok(());
+                }
+                pending_task.complete(result);
+                self.propagate_task_settlement(&pending_task);
+            }
+            Err(exception) => self.reject_task_handle_with_exception(&pending_task, exception),
+        }
+        Ok(())
+    }
+
+    fn construct_builtin_promise(
+        &mut self,
+        args: &[Value],
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        let executor = args.first().copied().unwrap_or(Value::undefined());
+        if !self.js_call_target_supported(executor) {
+            return Err(VmError::TypeError(
+                "Promise constructor executor is not callable".to_string(),
+            ));
+        }
+
+        let promise_handle = self.pending_task_handle(caller_task);
+        let resolve = self.alloc_bound_native_value(
+            promise_handle,
+            crate::compiler::native_id::TASK_RESOLVE_PENDING,
+        );
+        let reject = self.alloc_bound_native_value(
+            promise_handle,
+            crate::compiler::native_id::TASK_REJECT_PENDING,
+        );
+
+        if let Err(error) = self.invoke_callable_sync_with_this(
+            executor,
+            Some(Value::undefined()),
+            &[resolve, reject],
+            caller_task,
+            caller_module,
+        ) {
+            if let Some(task_id_u64) = promise_handle.as_u64() {
+                let task_id = TaskId::from_u64(task_id_u64);
+                if let Some(pending_task) = self.tasks.read().get(&task_id).cloned() {
+                    self.ensure_task_exception_for_error(&pending_task, &error);
+                    pending_task.fail();
+                }
+            }
+        }
+
+        Ok(promise_handle)
+    }
+
     fn generator_return_signal_value(&self, value: Value) -> Option<Value> {
         let obj_ptr = checked_object_ptr(value)?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
@@ -1703,6 +1908,13 @@ impl<'a> Interpreter<'a> {
         }
 
         if self
+            .builtin_global_value("Promise")
+            .is_some_and(|builtin| builtin.raw() == constructor.raw())
+        {
+            return self.construct_builtin_promise(args, task, module);
+        }
+
+        if self
             .builtin_global_value("Object")
             .is_some_and(|builtin| builtin.raw() == constructor.raw())
         {
@@ -1813,9 +2025,19 @@ impl<'a> Interpreter<'a> {
             return self.construct_ordinary_callable(constructor, new_target, args, task, module);
         }
 
-        Err(VmError::TypeError(
-            "Value is not a supported constructor".to_string(),
-        ))
+        let constructor_name = self
+            .callable_function_info(constructor)
+            .map(|(name, _)| name)
+            .or_else(|| self.builtin_global_name_for_value(constructor))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let new_target_name = self
+            .callable_function_info(new_target)
+            .map(|(name, _)| name)
+            .or_else(|| self.builtin_global_name_for_value(new_target))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        Err(VmError::TypeError(format!(
+            "Value is not a supported constructor (ctor={constructor_name}, newTarget={new_target_name})"
+        )))
     }
 
     fn construct_value_with_existing_receiver_and_new_target(
@@ -15456,7 +15678,11 @@ impl<'a> Interpreter<'a> {
                         }
 
                         let mut result = false;
-                        if !self.is_js_object_value(args[0]) {
+                        let is_task_backed_promise = args[0]
+                            .as_u64()
+                            .map(TaskId::from_u64)
+                            .is_some_and(|task_id| self.tasks.read().contains_key(&task_id));
+                        if !self.is_js_object_value(args[0]) && !is_task_backed_promise {
                             if let Err(error) = stack.push(Value::bool(false)) {
                                 return OpcodeResult::Error(error);
                             }
@@ -18205,6 +18431,31 @@ impl<'a> Interpreter<'a> {
                             .map(|_| value)
                             .unwrap_or_else(|| self.settled_task_handle(task, Ok(value)));
                         if let Err(e) = stack.push(adopted) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0508u16 => {
+                        let task_handle = args.first().copied().unwrap_or(Value::undefined());
+                        let value = args.get(1).copied().unwrap_or(Value::undefined());
+                        if let Err(error) = self.settle_existing_task_handle(task_handle, Ok(value))
+                        {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(e) = stack.push(Value::undefined()) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0509u16 => {
+                        let task_handle = args.first().copied().unwrap_or(Value::undefined());
+                        let reason = args.get(1).copied().unwrap_or(Value::undefined());
+                        if let Err(error) =
+                            self.settle_existing_task_handle(task_handle, Err(reason))
+                        {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(e) = stack.push(Value::undefined()) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
