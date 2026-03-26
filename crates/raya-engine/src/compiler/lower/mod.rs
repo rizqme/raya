@@ -4398,17 +4398,23 @@ impl<'a> Lowerer<'a> {
             let Some(&global_idx) = self.module_var_globals.get(&name) else {
                 continue;
             };
-            let undefined = self.alloc_register(UNRESOLVED);
+            let prop_name = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
-                dest: undefined.clone(),
-                value: IrValue::Constant(IrConstant::Undefined),
+                dest: prop_name.clone(),
+                value: IrValue::Constant(IrConstant::String(self.interner.resolve(name).to_string())),
             });
-            self.global_type_map.insert(global_idx, undefined.ty);
+            let initial_value = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::NativeCall {
+                dest: Some(initial_value.clone()),
+                native_id: crate::compiler::native_id::TRY_GET_GLOBAL,
+                args: vec![prop_name],
+            });
+            self.global_type_map.insert(global_idx, initial_value.ty);
             self.emit(IrInstr::StoreGlobal {
                 index: global_idx,
-                value: undefined.clone(),
+                value: initial_value.clone(),
             });
-            self.emit_js_script_global_binding(name, undefined);
+            self.emit_js_script_global_binding(name, initial_value);
         }
     }
 

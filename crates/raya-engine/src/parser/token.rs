@@ -12,6 +12,7 @@ pub struct LexedToken {
     pub span: Span,
     pub line_break_before: bool,
     pub raw_string_literal: bool,
+    pub identifier_escape: bool,
 }
 
 impl LexedToken {
@@ -21,6 +22,7 @@ impl LexedToken {
             span,
             line_break_before,
             raw_string_literal: false,
+            identifier_escape: false,
         }
     }
 }

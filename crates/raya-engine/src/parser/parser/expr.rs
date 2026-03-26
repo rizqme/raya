@@ -284,6 +284,14 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
         // 2. async arrow function: async () => expr or async x => expr
         // 3. async block expression: async { statements }
         Token::Async => {
+            if parser.current_identifier_had_escape() {
+                let ident = parser.expect_identifier_like()?;
+                return Ok(Expression::Identifier(Identifier {
+                    name: ident.name,
+                    span: ident.span,
+                }));
+            }
+
             if matches!(parser.peek(), Some(Token::Function))
                 && !parser.has_line_terminator_before_peek()
             {

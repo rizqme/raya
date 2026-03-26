@@ -133,6 +133,14 @@ function __assert_compareArray(actual, expected, message) {
 const ASSERT_THROWS_HELPER_PRELUDE: &str = r#"
 
 function __assert_throws(expectedErrorConstructor, func, message) {
+    if (typeof func !== "function") {
+        if (message == null) {
+            $ERROR(
+                "assert.throws requires two arguments: the error constructor and a function to run"
+            );
+        }
+        $ERROR(String(message));
+    }
     try {
         func();
     } catch (thrown) {
@@ -181,6 +189,35 @@ globalThis.$DONE = function(error) {
 const HOST_262_PRELUDE: &str = r#"
 const __262_main_Reflect = Reflect;
 const __262_indirect_eval = eval;
+
+function __262_cloneErrorConstructor(name, Base) {
+    function RealmError() {
+        const args = [];
+        for (let i = 0; i < arguments.length; i = i + 1) {
+            args[i] = arguments[i];
+        }
+        const error = __262_main_Reflect.construct(Base, args, RealmError);
+        if (Object.getPrototypeOf(error) !== RealmError.prototype) {
+            Object.setPrototypeOf(error, RealmError.prototype);
+        }
+        return error;
+    }
+    Object.setPrototypeOf(RealmError, Base);
+    RealmError.prototype = Object.create(Base.prototype);
+    Object.defineProperty(RealmError.prototype, "constructor", {
+        value: RealmError,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+    });
+    Object.defineProperty(RealmError, "name", {
+        value: name,
+        writable: false,
+        enumerable: false,
+        configurable: true,
+    });
+    return RealmError;
+}
 
 function __262_runInRealm(realmGlobal, source) {
     if (typeof source !== "string") {
@@ -300,16 +337,16 @@ function __262_createRealm() {
         Object: Object,
         Array: Array,
         Function: Function,
-        Error: Error,
-        AggregateError: AggregateError,
-        EvalError: EvalError,
-        RangeError: RangeError,
-        ReferenceError: ReferenceError,
+        Error: __262_cloneErrorConstructor("Error", Error),
+        AggregateError: __262_cloneErrorConstructor("AggregateError", AggregateError),
+        EvalError: __262_cloneErrorConstructor("EvalError", EvalError),
+        RangeError: __262_cloneErrorConstructor("RangeError", RangeError),
+        ReferenceError: __262_cloneErrorConstructor("ReferenceError", ReferenceError),
         RegExp: RegExp,
-        SyntaxError: SyntaxError,
-        URIError: URIError,
+        SyntaxError: __262_cloneErrorConstructor("SyntaxError", SyntaxError),
+        URIError: __262_cloneErrorConstructor("URIError", URIError),
         Symbol: Symbol,
-        TypeError: TypeError,
+        TypeError: __262_cloneErrorConstructor("TypeError", TypeError),
         Reflect: __262_main_Reflect,
     };
     realmGlobal.globalThis = realmGlobal;

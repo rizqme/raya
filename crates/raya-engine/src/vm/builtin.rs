@@ -1164,6 +1164,8 @@ pub mod date {
     pub const GET_SECONDS: u16 = 0x0B09;
     /// `date.getMilliseconds()` - Get milliseconds (0-999)
     pub const GET_MILLISECONDS: u16 = 0x0B0A;
+    /// `date.getTimezoneOffset()` - Get local timezone offset in minutes
+    pub const GET_TIMEZONE_OFFSET: u16 = 0x0B0B;
     /// `date.setFullYear(year)` - Set year
     pub const SET_FULL_YEAR: u16 = 0x0B11;
     /// `date.setMonth(month)` - Set month
@@ -1178,6 +1180,8 @@ pub mod date {
     pub const SET_SECONDS: u16 = 0x0B16;
     /// `date.setMilliseconds(ms)` - Set milliseconds
     pub const SET_MILLISECONDS: u16 = 0x0B17;
+    /// `new Date(...args)` - Construct timestamp from JS Date arguments
+    pub const CONSTRUCT: u16 = 0x0B18;
     /// `date.toString()` - Convert to string
     pub const TO_STRING: u16 = 0x0B20;
     /// `date.toISOString()` - Convert to ISO string

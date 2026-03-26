@@ -3703,7 +3703,6 @@ impl<'a> Interpreter<'a> {
                 continue;
             };
             if binding_env.raw() == env.raw()
-                && self.direct_eval_binding_is_lexical(binding_env, name)
                 && !self.direct_eval_binding_is_outer_snapshot(binding_env, name)
             {
                 return Err(self.raise_task_builtin_error(
@@ -6693,18 +6692,10 @@ impl<'a> Interpreter<'a> {
             return Some(existing);
         }
 
-        // 4. Create: resolve class name and create prototype, or use generic fallback
-        let (visible_name, _) = self.callable_function_info(constructor)?;
-        let nominal_type_id = self
-            .classes
-            .read()
-            .get_class_by_name(&visible_name)
-            .map(|c| c.id);
-        if let Some(ntid) = nominal_type_id {
-            self.create_prototype_for_class(ntid, &visible_name, constructor)
-        } else {
-            self.generic_function_prototype_value(constructor)
-        }
+        // 4. Plain callable closures should always get a generic function
+        // prototype. Only nominal class constructors and actual builtin globals
+        // should hydrate class-specific prototypes by name.
+        self.generic_function_prototype_value(constructor)
     }
 
     fn constructed_object_prototype_from_constructor(&self, constructor: Value) -> Option<Value> {
@@ -18323,6 +18314,17 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    id if id == date::GET_TIME => {
+                        let timestamp = args[0]
+                            .as_f64()
+                            .or_else(|| args[0].as_i64().map(|v| v as f64))
+                            .or_else(|| args[0].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0);
+                        if let Err(e) = stack.push(Value::f64(timestamp)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
                     id if id == date::GET_FULL_YEAR => {
                         // args[0] is the timestamp in milliseconds (as f64 number)
                         let timestamp = args[0]
@@ -18420,6 +18422,77 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    id if id == date::GET_TIMEZONE_OFFSET => {
+                        if let Err(e) = stack.push(Value::i32(0)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::CONSTRUCT => {
+                        let mut parts = if let Some(arg_list) = args.first().copied() {
+                            match self.collect_apply_arguments(arg_list, task, module) {
+                                Ok(values) => values,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                        if !parts.is_empty() && self.js_value_supports_extensibility(parts[0]) {
+                            parts.remove(0);
+                        }
+                        let timestamp = if parts.is_empty() {
+                            DateObject::now().timestamp_ms as f64
+                        } else if parts.len() == 1 {
+                            let value = parts[0];
+                            if let Some(string_ptr) = unsafe { value.as_ptr::<RayaString>() } {
+                                let source = unsafe { &*string_ptr.as_ptr() }.data.clone();
+                                match DateObject::parse(&source) {
+                                    Some(timestamp) => timestamp as f64,
+                                    None => f64::NAN,
+                                }
+                            } else {
+                                match self.js_to_number_with_context(value, task, module) {
+                                    Ok(number) => number,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                }
+                            }
+                        } else {
+                            let mut numeric_parts = [0.0_f64; 7];
+                            numeric_parts[2] = 1.0;
+                            for (index, value) in parts.iter().take(7).copied().enumerate() {
+                                let number = match self.js_to_number_with_context(value, task, module) {
+                                    Ok(number) => number,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                if !number.is_finite() {
+                                    numeric_parts[index] = number;
+                                    continue;
+                                }
+                                numeric_parts[index] = number.trunc();
+                            }
+                            if numeric_parts.iter().any(|value| value.is_nan() || value.is_infinite()) {
+                                f64::NAN
+                            } else {
+                                let mut year = numeric_parts[0] as i32;
+                                if (0..=99).contains(&year) {
+                                    year += 1900;
+                                }
+                                DateObject::from_local_components(
+                                    year,
+                                    numeric_parts[1] as i32,
+                                    numeric_parts[2] as i32,
+                                    numeric_parts[3] as i32,
+                                    numeric_parts[4] as i32,
+                                    numeric_parts[5] as i32,
+                                    numeric_parts[6] as i32,
+                                ) as f64
+                            }
+                        };
+                        if let Err(e) = stack.push(Value::f64(timestamp)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
                     // Date setters: args[0]=timestamp, args[1]=new value, returns new timestamp as f64
                     id if id == date::SET_FULL_YEAR => {
                         let timestamp = args[0]
@@ -18427,7 +18500,11 @@ impl<'a> Interpreter<'a> {
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i64;
-                        let val = args[1].as_i32().unwrap_or(0);
+                        let val = args[1]
+                            .as_f64()
+                            .or_else(|| args[1].as_i64().map(|v| v as f64))
+                            .or_else(|| args[1].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_full_year(val) as f64)) {
                             return OpcodeResult::Error(e);
@@ -18440,7 +18517,11 @@ impl<'a> Interpreter<'a> {
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i64;
-                        let val = args[1].as_i32().unwrap_or(0);
+                        let val = args[1]
+                            .as_f64()
+                            .or_else(|| args[1].as_i64().map(|v| v as f64))
+                            .or_else(|| args[1].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_month(val) as f64)) {
                             return OpcodeResult::Error(e);
@@ -18453,7 +18534,11 @@ impl<'a> Interpreter<'a> {
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i64;
-                        let val = args[1].as_i32().unwrap_or(1);
+                        let val = args[1]
+                            .as_f64()
+                            .or_else(|| args[1].as_i64().map(|v| v as f64))
+                            .or_else(|| args[1].as_i32().map(|v| v as f64))
+                            .unwrap_or(1.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_date(val) as f64)) {
                             return OpcodeResult::Error(e);
@@ -18466,7 +18551,11 @@ impl<'a> Interpreter<'a> {
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i64;
-                        let val = args[1].as_i32().unwrap_or(0);
+                        let val = args[1]
+                            .as_f64()
+                            .or_else(|| args[1].as_i64().map(|v| v as f64))
+                            .or_else(|| args[1].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_hours(val) as f64)) {
                             return OpcodeResult::Error(e);
@@ -18479,7 +18568,11 @@ impl<'a> Interpreter<'a> {
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i64;
-                        let val = args[1].as_i32().unwrap_or(0);
+                        let val = args[1]
+                            .as_f64()
+                            .or_else(|| args[1].as_i64().map(|v| v as f64))
+                            .or_else(|| args[1].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_minutes(val) as f64)) {
                             return OpcodeResult::Error(e);
@@ -18492,7 +18585,11 @@ impl<'a> Interpreter<'a> {
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i64;
-                        let val = args[1].as_i32().unwrap_or(0);
+                        let val = args[1]
+                            .as_f64()
+                            .or_else(|| args[1].as_i64().map(|v| v as f64))
+                            .or_else(|| args[1].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_seconds(val) as f64)) {
                             return OpcodeResult::Error(e);
@@ -18505,7 +18602,11 @@ impl<'a> Interpreter<'a> {
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i64;
-                        let val = args[1].as_i32().unwrap_or(0);
+                        let val = args[1]
+                            .as_f64()
+                            .or_else(|| args[1].as_i64().map(|v| v as f64))
+                            .or_else(|| args[1].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_milliseconds(val) as f64)) {
                             return OpcodeResult::Error(e);

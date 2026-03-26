@@ -1255,8 +1255,9 @@ impl<'a> Lexer<'a> {
         let token = keyword_token_for_identifier(&decoded)
             .unwrap_or_else(|| Token::Identifier(self.interner.intern(&decoded)));
         let span = Span::new(pos, cursor, line, column);
-        self.tokens
-            .push(LexedToken::new(token, span, line_break_before));
+        let mut lexed = LexedToken::new(token, span, line_break_before);
+        lexed.identifier_escape = true;
+        self.tokens.push(lexed);
 
         let consumed_width = self.source[pos..cursor].chars().count() as u32;
         Some((cursor, line, column + consumed_width))

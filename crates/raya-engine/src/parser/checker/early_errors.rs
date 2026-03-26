@@ -482,6 +482,7 @@ impl<'a> EarlyErrorPass<'a> {
         span: crate::parser::Span,
         kind: ParameterListKind,
         await_reserved_in_arrow_defaults: bool,
+        binding_function_context: Option<FunctionContext>,
     ) {
         let simple = Self::is_simple_parameter_list(params);
         if body_has_use_strict && !simple {
@@ -503,6 +504,13 @@ impl<'a> EarlyErrorPass<'a> {
             let mut names = Vec::new();
             Self::collect_bound_identifiers(&param.pattern, &mut names);
             for ident in names {
+                if let Some(function_context) = binding_function_context {
+                    self.check_binding_name_in_context(
+                        ident,
+                        binding_strict,
+                        Some(function_context),
+                    );
+                }
                 if kind == ParameterListKind::Arrow && self.interner.resolve(ident.name) == "enum" {
                     self.error(
                         "Binding name 'enum' is reserved in arrow parameters",
@@ -1485,6 +1493,7 @@ impl<'a> EarlyErrorPass<'a> {
                         func.span,
                         ParameterListKind::OrdinaryFunction,
                         false,
+                        None,
                     );
                     for param in &func.params {
                         this.declare_pattern_with(&param.pattern, |pass, ident| {
@@ -1532,6 +1541,7 @@ impl<'a> EarlyErrorPass<'a> {
                     func.span,
                     ParameterListKind::OrdinaryFunction,
                     false,
+                    None,
                 );
                 for param in &func.params {
                     this.declare_pattern_with(&param.pattern, |pass, ident| {
@@ -1561,6 +1571,10 @@ impl<'a> EarlyErrorPass<'a> {
             arrow.span,
             ParameterListKind::Arrow,
             arrow.is_async || self.current_function().is_some_and(|ctx| ctx.is_async),
+            Some(FunctionContext {
+                is_async: arrow.is_async,
+                is_generator: false,
+            }),
         );
         self.push_function(
             arrow.is_async,
@@ -1634,6 +1648,7 @@ impl<'a> EarlyErrorPass<'a> {
                             method.span,
                             ParameterListKind::OrdinaryFunction,
                             false,
+                            None,
                         );
                         if let Some(body) = &method.body {
                             this.push_function(
@@ -1674,6 +1689,7 @@ impl<'a> EarlyErrorPass<'a> {
                             ctor.span,
                             ParameterListKind::OrdinaryFunction,
                             false,
+                            None,
                         );
                         this.push_function(
                             false,
@@ -2598,6 +2614,18 @@ mod tests {
             error
                 .message
                 .contains("Await is not allowed in arrow parameter defaults")
+        }));
+    }
+
+    #[test]
+    fn test_async_arrow_forbids_await_parameter_binding() {
+        let (module, interner) = parse_module("async (await) => {}");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("Binding name 'await' is not allowed in async functions")
         }));
     }
 

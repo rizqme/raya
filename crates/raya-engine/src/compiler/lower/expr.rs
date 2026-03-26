@@ -1250,7 +1250,7 @@ impl<'a> Lowerer<'a> {
                 native_id: crate::compiler::native_id::REFLECT_SET,
                 args: vec![env_object.clone(), key_reg, value],
             });
-            if self.direct_eval_binding_is_lexical(symbol) {
+            if self.direct_eval_binding_is_lexical(symbol) || is_parameter_binding {
                 self.emit_direct_eval_hidden_flag_set(
                     env_object.clone(),
                     format!("{DIRECT_EVAL_LEXICAL_MARKER_PREFIX}{name}"),

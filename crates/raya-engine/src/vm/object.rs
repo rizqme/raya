@@ -2132,6 +2132,28 @@ impl DateObject {
             + ms as i64
     }
 
+    /// Compose a local timestamp the same way `new Date(y, m, ...)` does.
+    pub fn from_local_components(
+        year: i32,
+        month: i32,
+        day: i32,
+        hours: i32,
+        minutes: i32,
+        seconds: i32,
+        milliseconds: i32,
+    ) -> i64 {
+        let total_months = year as i64 * 12 + month as i64;
+        let normalized_year = total_months.div_euclid(12) as i32;
+        let normalized_month = total_months.rem_euclid(12) as i32;
+        let base_days = Self::days_from_civil(normalized_year, normalized_month + 1, 1);
+        let total_days = base_days + (day as i64 - 1);
+        total_days * 86_400_000
+            + hours as i64 * 3_600_000
+            + minutes as i64 * 60_000
+            + seconds as i64 * 1000
+            + milliseconds as i64
+    }
+
     // ---- Getters ----
 
     /// Get year (4-digit)

@@ -3313,11 +3313,20 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_return(&mut self, ret: &ast::ReturnStatement) {
-        let value = ret
-            .value
-            .as_ref()
-            .map(|e| self.lower_expr(e))
-            .or_else(|| self.constructor_return_this.clone());
+        let value = if let Some(expr) = &ret.value {
+            Some(self.lower_expr(expr))
+        } else if let Some(this_reg) = &self.constructor_return_this {
+            Some(this_reg.clone())
+        } else if self.js_this_binding_compat {
+            let undefined = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Assign {
+                dest: undefined.clone(),
+                value: IrValue::Constant(IrConstant::Undefined),
+            });
+            Some(undefined)
+        } else {
+            None
+        };
 
         self.close_active_loop_iterators();
 

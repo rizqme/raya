@@ -238,6 +238,14 @@ impl Parser {
             .unwrap_or(false)
     }
 
+    #[inline(always)]
+    pub(crate) fn current_identifier_had_escape(&self) -> bool {
+        self.tokens
+            .get(self.pos)
+            .map(|token| token.identifier_escape)
+            .unwrap_or(false)
+    }
+
     /// Returns true when the current token is separated from the previous token by
     /// at least one line terminator in the original source.
     ///
@@ -826,6 +834,21 @@ mod tests {
                 "Expected second statement to be expression, got {:?}",
                 std::mem::discriminant(other)
             ),
+        }
+    }
+
+    #[test]
+    fn test_escaped_async_parses_as_identifier_not_contextual_keyword() {
+        use crate::parser::ast::Expression;
+
+        let mut parser = Parser::new("\\u0061sync").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        match expr {
+            Expression::Identifier(ident) => {
+                assert_eq!(parser.interner.resolve(ident.name), "async");
+            }
+            other => panic!("Expected identifier expression, got {:?}", other),
         }
     }
 

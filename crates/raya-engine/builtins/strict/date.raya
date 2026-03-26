@@ -4,6 +4,7 @@
 // Native call IDs (must match raya-core/src/builtin.rs)
 const DATE_NOW: number = 0x0B00;
 const DATE_PARSE: number = 0x0B01;
+const DATE_GET_TIME: number = 0x0B02;
 const DATE_GET_FULL_YEAR: number = 0x0B03;
 const DATE_GET_MONTH: number = 0x0B04;
 const DATE_GET_DATE: number = 0x0B05;
@@ -12,6 +13,7 @@ const DATE_GET_HOURS: number = 0x0B07;
 const DATE_GET_MINUTES: number = 0x0B08;
 const DATE_GET_SECONDS: number = 0x0B09;
 const DATE_GET_MILLISECONDS: number = 0x0B0A;
+const DATE_GET_TIMEZONE_OFFSET: number = 0x0B0B;
 const DATE_SET_FULL_YEAR: number = 0x0B11;
 const DATE_SET_MONTH: number = 0x0B12;
 const DATE_SET_DATE: number = 0x0B13;
@@ -19,6 +21,7 @@ const DATE_SET_HOURS: number = 0x0B14;
 const DATE_SET_MINUTES: number = 0x0B15;
 const DATE_SET_SECONDS: number = 0x0B16;
 const DATE_SET_MILLISECONDS: number = 0x0B17;
+const DATE_CONSTRUCT: number = 0x0B18;
 const DATE_TO_STRING: number = 0x0B20;
 const DATE_TO_ISO_STRING: number = 0x0B21;
 const DATE_TO_DATE_STRING: number = 0x0B22;
@@ -27,13 +30,21 @@ const DATE_TO_TIME_STRING: number = 0x0B23;
 class Date {
     private timestamp: number;
 
-    constructor() {
-        this.timestamp = __NATIVE_CALL<number>(DATE_NOW);
+    constructor(...parts: any[]) {
+        this.timestamp = __NATIVE_CALL<number>(DATE_CONSTRUCT, arguments);
     }
 
     // Get timestamp in milliseconds since Unix epoch
     getTime(): number {
-        return this.timestamp;
+        return __NATIVE_CALL<number>(DATE_GET_TIME, this.timestamp);
+    }
+
+    valueOf(): number {
+        return this.getTime();
+    }
+
+    getTimezoneOffset(): number {
+        return __NATIVE_CALL<number>(DATE_GET_TIMEZONE_OFFSET, this.timestamp);
     }
 
     // Get the four-digit year

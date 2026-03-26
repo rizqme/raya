@@ -253,6 +253,7 @@ impl TypeRegistry {
                     ("getMinutes", date::GET_MINUTES),
                     ("getSeconds", date::GET_SECONDS),
                     ("getMilliseconds", date::GET_MILLISECONDS),
+                    ("getTimezoneOffset", date::GET_TIMEZONE_OFFSET),
                     ("setFullYear", date::SET_FULL_YEAR),
                     ("setMonth", date::SET_MONTH),
                     ("setDate", date::SET_DATE),
