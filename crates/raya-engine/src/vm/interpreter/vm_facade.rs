@@ -597,6 +597,32 @@ impl Vm {
         self.scheduler.shared_state()
     }
 
+    /// Read an ambient builtin global value by name.
+    pub fn builtin_global_value(&self, name: &str) -> Option<Value> {
+        self.shared_state().get_builtin_global(name)
+    }
+
+    /// Read a named field/property from an ambient builtin global value.
+    pub fn builtin_global_named_field_value(
+        &self,
+        builtin_name: &str,
+        field_name: &str,
+    ) -> Option<Value> {
+        let value = self.builtin_global_value(builtin_name)?;
+        let ptr = unsafe { value.as_ptr::<u8>() }?;
+        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr()) };
+        if header.type_id() != TypeId::of::<Object>() {
+            return None;
+        }
+        let object = unsafe { &*ptr.cast::<Object>().as_ptr() };
+        Self::object_named_field_value(self.shared_state(), object, field_name)
+    }
+
+    /// Best-effort conversion of a VM value into a plain host string.
+    pub fn plain_string_value(&self, value: Value) -> Option<String> {
+        Self::value_to_plain_string(value)
+    }
+
     /// Load a .ryb file into this VM
     ///
     /// Reads the file and delegates to `load_rbin_bytes`.

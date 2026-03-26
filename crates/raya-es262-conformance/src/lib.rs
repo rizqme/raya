@@ -1208,15 +1208,12 @@ fn execute_async_case_program(
 }
 
 fn probe_async_state(
-    runtime: &Runtime,
+    _runtime: &Runtime,
     vm: &mut raya_engine::vm::Vm,
 ) -> std::result::Result<i32, String> {
-    let probe = runtime
-        .compile_program_source("return globalThis.__test262AsyncState__;")
-        .map_err(|error| format!("failed to compile async completion probe: {}", error))?;
-    let value = runtime
-        .execute_program_with_vm(&probe, vm)
-        .map_err(|error| format!("failed to execute async completion probe: {}", error))?;
+    let value = vm
+        .builtin_global_named_field_value("globalThis", "__test262AsyncState__")
+        .ok_or_else(|| "async completion state is not available on globalThis".to_string())?;
     if let Some(state) = value.as_i32() {
         return Ok(state);
     }
@@ -1242,26 +1239,11 @@ fn probe_async_state(
 }
 
 fn probe_async_failure(runtime: &Runtime, vm: &mut raya_engine::vm::Vm) -> String {
-    let probe = match runtime.compile_program_source(
-        r#"return String(globalThis.__test262AsyncFailure__);"#,
-    ) {
-        Ok(program) => program,
-        Err(error) => {
-            return format!(
-                "async test failed via $DONE (and failure probe compilation failed: {})",
-                error
-            );
-        }
-    };
-
-    match runtime.execute_program_with_vm(&probe, vm) {
-        Ok(value) => value
-            .as_string()
-            .map(|ptr| unsafe { &*ptr.as_ptr() }.data.clone())
-            .filter(|message| !message.is_empty())
-            .unwrap_or_else(|| format!("async test failed via $DONE (probe returned {:?})", value)),
-        Err(error) => format!("runtime failed: {}", error),
-    }
+    let _ = runtime;
+    vm.builtin_global_named_field_value("globalThis", "__test262AsyncFailure__")
+        .and_then(|value| vm.plain_string_value(value))
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| "async test failed via $DONE".to_string())
 }
 
 fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<String, String> {
