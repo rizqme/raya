@@ -765,6 +765,48 @@ impl<'a> Interpreter<'a> {
         unsafe { Value::from_ptr(NonNull::new(signal_ptr.as_ptr()).expect("signal ptr")) }
     }
 
+    fn settled_task_handle(&mut self, caller_task: &Arc<Task>, value: Result<Value, Value>) -> Value {
+        let settled_task = Arc::new(Task::with_args(
+            0,
+            caller_task.current_module(),
+            Some(caller_task.id()),
+            vec![],
+        ));
+        settled_task.replace_stack(self.stack_pool.acquire());
+        if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
+            let current_module = caller_task.current_module();
+            let current_func_id = caller_task.current_func_id();
+            let current_func_name = current_module
+                .functions
+                .get(current_func_id)
+                .map(|function| function.name.as_str())
+                .unwrap_or("<unknown>");
+            let detail = match &value {
+                Ok(result) => format!("resolve raw={:#x}", result.raw()),
+                Err(exception) => format!("reject raw={:#x}", exception.raw()),
+            };
+            eprintln!(
+                "[async-task] settled task={:?} parent={:?} from={}::{}#{} {}",
+                settled_task.id(),
+                caller_task.id(),
+                current_module.metadata.name,
+                current_func_name,
+                current_func_id,
+                detail
+            );
+        }
+        match value {
+            Ok(result) => settled_task.complete(result),
+            Err(exception) => {
+                settled_task.set_exception(exception);
+                settled_task.fail();
+            }
+        }
+        let task_id = settled_task.id();
+        self.tasks.write().insert(task_id, settled_task);
+        Value::u64(task_id.as_u64())
+    }
+
     fn generator_return_signal_value(&self, value: Value) -> Option<Value> {
         let obj_ptr = checked_object_ptr(value)?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
@@ -15202,39 +15244,6 @@ impl<'a> Interpreter<'a> {
                                                 task,
                                             );
                                         }
-                                        CallableKind::BoundMethod { func_id, .. } => {
-                                            let receiver = if self
-                                                .callable_uses_js_this_slot(target_callable)
-                                            {
-                                                match self.js_this_value_for_callable(
-                                                    target_callable,
-                                                    Some(this_arg),
-                                                ) {
-                                                    Ok(value) => value,
-                                                    Err(error) => {
-                                                        return OpcodeResult::Error(error)
-                                                    }
-                                                }
-                                            } else {
-                                                this_arg
-                                            };
-                                            if let Err(e) = stack.push(receiver) {
-                                                return OpcodeResult::Error(e);
-                                            }
-                                            for arg in &rest_args {
-                                                if let Err(e) = stack.push(*arg) {
-                                                    return OpcodeResult::Error(e);
-                                                }
-                                            }
-                                            return OpcodeResult::PushFrame {
-                                                func_id: *func_id,
-                                                arg_count: rest_args.len() + 1,
-                                                is_closure: false,
-                                                closure_val: None,
-                                                module: cd.module.clone(),
-                                                return_action: ReturnAction::PushReturnValue,
-                                            };
-                                        }
                                         _ => {}
                                     }
                                 }
@@ -15290,39 +15299,6 @@ impl<'a> Interpreter<'a> {
                                                 stack, this_arg, *native_id, apply_args, module,
                                                 task,
                                             );
-                                        }
-                                        CallableKind::BoundMethod { func_id, .. } => {
-                                            let receiver = if self
-                                                .callable_uses_js_this_slot(target_callable)
-                                            {
-                                                match self.js_this_value_for_callable(
-                                                    target_callable,
-                                                    Some(this_arg),
-                                                ) {
-                                                    Ok(value) => value,
-                                                    Err(error) => {
-                                                        return OpcodeResult::Error(error)
-                                                    }
-                                                }
-                                            } else {
-                                                this_arg
-                                            };
-                                            if let Err(e) = stack.push(receiver) {
-                                                return OpcodeResult::Error(e);
-                                            }
-                                            for arg in &apply_args {
-                                                if let Err(e) = stack.push(*arg) {
-                                                    return OpcodeResult::Error(e);
-                                                }
-                                            }
-                                            return OpcodeResult::PushFrame {
-                                                func_id: *func_id,
-                                                arg_count: apply_args.len() + 1,
-                                                is_closure: false,
-                                                closure_val: None,
-                                                module: cd.module.clone(),
-                                                return_action: ReturnAction::PushReturnValue,
-                                            };
                                         }
                                         _ => {}
                                     }
@@ -17581,7 +17557,7 @@ impl<'a> Interpreter<'a> {
                                 "Generator next receiver must be an object".to_string(),
                             ));
                         };
-                        let (task_id, resume_value, was_started) = {
+                        let (task_id, resume_value, was_started, is_async) = {
                             let obj = unsafe { &mut *obj_ptr.as_ptr() };
                             let Some(generator) = obj.generator_state.as_deref_mut() else {
                                 return OpcodeResult::Error(VmError::TypeError(
@@ -17596,6 +17572,11 @@ impl<'a> Interpreter<'a> {
                                     generator.completion
                                 };
                                 let result = self.generator_result_object(value, true);
+                                let result = if generator.is_async {
+                                    self.settled_task_handle(task, Ok(result))
+                                } else {
+                                    result
+                                };
                                 if let Err(error) = stack.push(result) {
                                     return OpcodeResult::Error(error);
                                 }
@@ -17614,7 +17595,7 @@ impl<'a> Interpreter<'a> {
                             if !generator.started {
                                 generator.started = true;
                             }
-                            (task_id, resume_value, was_started)
+                            (task_id, resume_value, was_started, generator.is_async)
                         };
 
                         let Some(generator_task) = self.tasks.read().get(&task_id).cloned() else {
@@ -17698,16 +17679,29 @@ impl<'a> Interpreter<'a> {
                                     generator.completion = Value::undefined();
                                     generator.completion_emitted = true;
                                     generator_task.fail();
-                                    if !task.has_exception() {
-                                        if let Some(exception) =
-                                            generator_task.current_exception()
-                                        {
-                                            task.set_exception(exception);
+                                    if is_async {
+                                        self.ensure_task_exception_for_error(&generator_task, &error);
+                                        let exception = generator_task
+                                            .current_exception()
+                                            .unwrap_or(Value::undefined());
+                                        self.settled_task_handle(task, Err(exception))
+                                    } else {
+                                        if !task.has_exception() {
+                                            if let Some(exception) =
+                                                generator_task.current_exception()
+                                            {
+                                                task.set_exception(exception);
+                                            }
                                         }
+                                        return OpcodeResult::Error(error);
                                     }
-                                    return OpcodeResult::Error(error);
                                 }
                             }
+                        };
+                        let result = if is_async {
+                            self.settled_task_handle(task, Ok(result))
+                        } else {
+                            result
                         };
                         if let Err(error) = stack.push(result) {
                             return OpcodeResult::Error(error);
@@ -17723,7 +17717,7 @@ impl<'a> Interpreter<'a> {
                                 "Generator return receiver must be an object".to_string(),
                             ));
                         };
-                        let (task_id, already_closed_or_unstarted) = {
+                        let (task_id, already_closed_or_unstarted, is_async) = {
                             let obj = unsafe { &mut *obj_ptr.as_ptr() };
                             let Some(generator) = obj.generator_state.as_deref_mut() else {
                                 return OpcodeResult::Error(VmError::TypeError(
@@ -17735,14 +17729,19 @@ impl<'a> Interpreter<'a> {
                                 generator.pending_return_completion = None;
                                 generator.completion = completion_override;
                                 generator.completion_emitted = true;
-                                (generator.task_id, true)
+                                (generator.task_id, true, generator.is_async)
                             } else {
                                 generator.pending_return_completion = None;
-                                (generator.task_id, false)
+                                (generator.task_id, false, generator.is_async)
                             }
                         };
                         if already_closed_or_unstarted {
                             let result = self.generator_result_object(completion_override, true);
+                            let result = if is_async {
+                                self.settled_task_handle(task, Ok(result))
+                            } else {
+                                result
+                            };
                             if let Err(error) = stack.push(result) {
                                 return OpcodeResult::Error(error);
                             }
@@ -17822,16 +17821,29 @@ impl<'a> Interpreter<'a> {
                                     generator.completion = Value::undefined();
                                     generator.completion_emitted = true;
                                     generator_task.fail();
-                                    if !task.has_exception() {
-                                        if let Some(exception) =
-                                            generator_task.current_exception()
-                                        {
-                                            task.set_exception(exception);
+                                    if is_async {
+                                        self.ensure_task_exception_for_error(&generator_task, &error);
+                                        let exception = generator_task
+                                            .current_exception()
+                                            .unwrap_or(Value::undefined());
+                                        self.settled_task_handle(task, Err(exception))
+                                    } else {
+                                        if !task.has_exception() {
+                                            if let Some(exception) =
+                                                generator_task.current_exception()
+                                            {
+                                                task.set_exception(exception);
+                                            }
                                         }
+                                        return OpcodeResult::Error(error);
                                     }
-                                    return OpcodeResult::Error(error);
                                 }
                             }
+                        };
+                        let result = if is_async {
+                            self.settled_task_handle(task, Ok(result))
+                        } else {
+                            result
                         };
                         if let Err(error) = stack.push(result) {
                             return OpcodeResult::Error(error);
@@ -18155,6 +18167,37 @@ impl<'a> Interpreter<'a> {
                             task.mark_rejection_observed();
                         }
                         if let Err(e) = stack.push(Value::null()) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0505u16 => {
+                        // TASK_RESOLVE_NOW: create an already-fulfilled task handle.
+                        let value = args.first().copied().unwrap_or(Value::undefined());
+                        if let Err(e) = stack.push(self.settled_task_handle(task, Ok(value))) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0506u16 => {
+                        // TASK_REJECT_NOW: create an already-rejected task handle.
+                        let reason = args.first().copied().unwrap_or(Value::undefined());
+                        if let Err(e) = stack.push(self.settled_task_handle(task, Err(reason))) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0507u16 => {
+                        // TASK_ADOPT: preserve an existing task-backed promise; otherwise
+                        // wrap the value in an already-fulfilled task handle.
+                        let value = args.first().copied().unwrap_or(Value::undefined());
+                        let adopted = value
+                            .as_u64()
+                            .map(TaskId::from_u64)
+                            .filter(|task_id| self.tasks.read().contains_key(task_id))
+                            .map(|_| value)
+                            .unwrap_or_else(|| self.settled_task_handle(task, Ok(value)));
+                        if let Err(e) = stack.push(adopted) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

@@ -8,6 +8,8 @@ const PROMISE_IS_DONE: number = 0x0500;
 const PROMISE_IS_CANCELLED: number = 0x0501;
 const PROMISE_IS_FAILED: number = 0x0502;
 const PROMISE_GET_ERROR: number = 0x0503;
+const PROMISE_REJECT_NOW: number = 0x0506;
+const PROMISE_ADOPT: number = 0x0507;
 
 type PromiseRejectionReason = Object | string | number | boolean | null;
 
@@ -40,12 +42,14 @@ class Promise<T> {
         if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
             let reason = __NATIVE_CALL<PromiseRejectionReason>(PROMISE_GET_ERROR, this);
             if (onRejected != null) {
-                return Promise.resolve(onRejected(reason));
+                let handled = onRejected(reason);
+                return __NATIVE_CALL<Promise<U>>(PROMISE_ADOPT, handled);
             }
             throw reason;
         }
         let value: T = __OPCODE_AWAIT(this);
-        return Promise.resolve(onFulfilled(value));
+        let handled = onFulfilled(value);
+        return __NATIVE_CALL<Promise<U>>(PROMISE_ADOPT, handled);
     }
 
     //@@class_method
@@ -55,10 +59,11 @@ class Promise<T> {
         }
         if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
             let reason = __NATIVE_CALL<PromiseRejectionReason>(PROMISE_GET_ERROR, this);
-            return Promise.resolve(onRejected(reason));
+            let handled = onRejected(reason);
+            return __NATIVE_CALL<Promise<T | U>>(PROMISE_ADOPT, handled);
         }
         let value: T = __OPCODE_AWAIT(this);
-        return Promise.resolve(value);
+        return __NATIVE_CALL<Promise<T | U>>(PROMISE_ADOPT, value);
     }
 
     //@@class_method
@@ -77,17 +82,11 @@ class Promise<T> {
     }
 
     static resolve<U>(value: U): Promise<U> {
-        let wrapped = async (): Promise<U> => {
-            return value;
-        };
-        return wrapped();
+        return __NATIVE_CALL<Promise<U>>(PROMISE_ADOPT, value);
     }
 
     static reject<U>(reason: PromiseRejectionReason): Promise<U> {
-        let wrapped = async (): Promise<U> => {
-            throw reason;
-        };
-        return wrapped();
+        return __NATIVE_CALL<Promise<U>>(PROMISE_REJECT_NOW, reason);
     }
 
     static all<U>(values: Promise<U>[]): Promise<U[]> {

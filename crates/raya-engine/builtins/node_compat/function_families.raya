@@ -75,11 +75,11 @@ class Generator {
 class AsyncGenerator {
     constructor() {}
 
-    async next(value: any = undefined): Promise<any> {
+    next(value: any = undefined): Promise<any> {
         return __NATIVE_CALL<any>(OBJECT_GENERATOR_NEXT, this, value);
     }
 
-    async return(value: any = undefined): Promise<any> {
+    return(value: any = undefined): Promise<any> {
         return __NATIVE_CALL<any>(OBJECT_GENERATOR_RETURN, this, value);
     }
 

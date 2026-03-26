@@ -50,6 +50,23 @@ impl<'a> Interpreter<'a> {
                 ));
                 new_task.replace_stack(self.stack_pool.acquire());
 
+                if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
+                    let module_ref = task.current_module();
+                    let func_name = module_ref
+                        .functions
+                        .get(func_index)
+                        .map(|function| function.name.as_str())
+                        .unwrap_or("<unknown>");
+                    eprintln!(
+                        "[async-task] spawn-op task={:?} parent={:?} module={} func={}#{}",
+                        new_task.id(),
+                        task.id(),
+                        module_ref.metadata.name,
+                        func_name,
+                        func_index
+                    );
+                }
+
                 let task_id = new_task.id();
                 self.tasks.write().insert(task_id, new_task.clone());
                 self.injector.push(new_task);
@@ -141,6 +158,24 @@ impl<'a> Interpreter<'a> {
                 };
 
                 new_task.replace_stack(self.stack_pool.acquire());
+
+                if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
+                    let module_ref = new_task.current_module();
+                    let func_id = new_task.current_func_id();
+                    let func_name = module_ref
+                        .functions
+                        .get(func_id)
+                        .map(|function| function.name.as_str())
+                        .unwrap_or("<unknown>");
+                    eprintln!(
+                        "[async-task] spawn-closure task={:?} parent={:?} module={} func={}#{}",
+                        new_task.id(),
+                        task.id(),
+                        module_ref.metadata.name,
+                        func_name,
+                        func_id
+                    );
+                }
 
                 let task_id = new_task.id();
                 self.tasks.write().insert(task_id, new_task.clone());

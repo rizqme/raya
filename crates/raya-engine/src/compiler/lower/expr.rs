@@ -13466,9 +13466,7 @@ impl<'a> Lowerer<'a> {
         }
 
         match self.type_ctx.get(ty_id) {
-            Some(Type::Function(func)) => {
-                func.is_async || self.type_id_is_promise_like(func.return_type)
-            }
+            Some(Type::Function(func)) => func.is_async,
             Some(Type::Object(obj)) => obj
                 .call_signatures
                 .iter()

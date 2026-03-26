@@ -22,6 +22,62 @@ use std::sync::Arc;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
+    fn spawn_async_callable_task(
+        &mut self,
+        stack: &mut Stack,
+        func_id: usize,
+        target_module: Arc<Module>,
+        args: Vec<Value>,
+        closure_val: Option<Value>,
+        parent_task: &Arc<Task>,
+    ) -> Result<OpcodeResult, VmError> {
+        let debug_async_tasks = std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok();
+        let arg_len = args.len();
+        let debug_func_name = if debug_async_tasks {
+            target_module
+                .functions
+                .get(func_id)
+                .map(|function| function.name.clone())
+                .unwrap_or_else(|| "<unknown>".to_string())
+        } else {
+            String::new()
+        };
+        let debug_module_name = if debug_async_tasks {
+            target_module.metadata.name.clone()
+        } else {
+            String::new()
+        };
+        let new_task = Arc::new(Task::with_args(
+            func_id,
+            target_module,
+            Some(parent_task.id()),
+            args,
+        ));
+        if let Some(closure) = closure_val {
+            new_task.push_closure(closure);
+        }
+        new_task.replace_stack(self.stack_pool.acquire());
+
+        if debug_async_tasks {
+            eprintln!(
+                "[async-task] spawn task={:?} parent={:?} module={} func={}#{} argc={}",
+                new_task.id(),
+                parent_task.id(),
+                debug_module_name,
+                debug_func_name,
+                func_id,
+                arg_len
+            );
+        }
+
+        let task_id = new_task.id();
+        self.tasks.write().insert(task_id, new_task.clone());
+        self.injector.push(new_task);
+
+        stack.push(Value::u64(task_id.as_u64()))?;
+        Ok(OpcodeResult::Continue)
+    }
+
     pub(in crate::vm::interpreter) fn attach_bound_method_home_object(
         &self,
         callable: &mut Object,
@@ -216,9 +272,50 @@ impl<'a> Interpreter<'a> {
                             stack.push(iterator)?;
                             return Ok(Some(OpcodeResult::Continue));
                         }
+                        if callable_data
+                            .module
+                            .as_ref()
+                            .and_then(|module| module.functions.get(*func_id))
+                            .is_some_and(|function| function.is_async)
+                        {
+                            let mut frame_args = Vec::with_capacity(args.len() + 1);
+                            frame_args.push(receiver_final);
+                            frame_args.extend_from_slice(args);
+                            let target_module = callable_data
+                                .module
+                                .clone()
+                                .unwrap_or_else(|| task.current_module());
+                            return Ok(Some(self.spawn_async_callable_task(
+                                stack,
+                                *func_id,
+                                target_module,
+                                frame_args,
+                                None,
+                                task,
+                            )?));
+                        }
                         stack.push(receiver_final)?;
                         for arg in args {
                             stack.push(*arg)?;
+                        }
+                        if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
+                            let target_module = callable_data
+                                .module
+                                .clone()
+                                .unwrap_or_else(|| task.current_module());
+                            let func_name = target_module
+                                .functions
+                                .get(*func_id)
+                                .map(|function| function.name.as_str())
+                                .unwrap_or("<unknown>");
+                            eprintln!(
+                                "[call-sync] task={:?} module={} func={}#{} argc={}",
+                                task.id(),
+                                target_module.metadata.name,
+                                func_name,
+                                func_id,
+                                args.len() + 1
+                            );
                         }
                         return Ok(Some(OpcodeResult::PushFrame {
                             func_id: *func_id,
@@ -318,6 +415,28 @@ impl<'a> Interpreter<'a> {
                             stack.push(iterator)?;
                             return Ok(Some(OpcodeResult::Continue));
                         }
+                        if closure_module
+                            .as_ref()
+                            .and_then(|module| module.functions.get(*func_id))
+                            .is_some_and(|function| function.is_async)
+                        {
+                            let mut frame_args =
+                                Vec::with_capacity(args.len() + usize::from(this_arg.is_some()));
+                            if let Some(this_arg) = this_arg {
+                                frame_args.push(this_arg);
+                            }
+                            frame_args.extend_from_slice(args);
+                            let target_module =
+                                closure_module.unwrap_or_else(|| task.current_module());
+                            return Ok(Some(self.spawn_async_callable_task(
+                                stack,
+                                *func_id,
+                                target_module,
+                                frame_args,
+                                Some(callable),
+                                task,
+                            )?));
+                        }
                         let mut arg_count = args.len();
                         if let Some(this_arg) = this_arg {
                             stack.push(this_arg)?;
@@ -325,6 +444,23 @@ impl<'a> Interpreter<'a> {
                         }
                         for arg in args {
                             stack.push(*arg)?;
+                        }
+                        if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
+                            let target_module =
+                                closure_module.clone().unwrap_or_else(|| task.current_module());
+                            let func_name = target_module
+                                .functions
+                                .get(*func_id)
+                                .map(|function| function.name.as_str())
+                                .unwrap_or("<unknown>");
+                            eprintln!(
+                                "[call-sync] task={:?} module={} func={}#{} argc={}",
+                                task.id(),
+                                target_module.metadata.name,
+                                func_name,
+                                func_id,
+                                arg_count
+                            );
                         }
                         return Ok(Some(OpcodeResult::PushFrame {
                             func_id: *func_id,

@@ -1176,6 +1176,21 @@ impl<'a> Interpreter<'a> {
                     Some(caller_task.id()),
                     frame_args,
                 ));
+                let debug_async_tasks = std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok();
+                let debug_func_name = if debug_async_tasks {
+                    callee_module
+                        .functions
+                        .get(func_id)
+                        .map(|function| function.name.clone())
+                        .unwrap_or_else(|| "<unknown>".to_string())
+                } else {
+                    String::new()
+                };
+                let debug_module_name = if debug_async_tasks {
+                    callee_module.metadata.name.clone()
+                } else {
+                    String::new()
+                };
                 if let Some(closure) = closure_val {
                     callee_task.push_closure(closure);
                 }
@@ -1199,6 +1214,17 @@ impl<'a> Interpreter<'a> {
                 self.tasks
                     .write()
                     .insert(callee_task.id(), callee_task.clone());
+                if debug_async_tasks {
+                    eprintln!(
+                        "[async-task] sync-call task={:?} parent={:?} module={} func={}#{} argc={}",
+                        callee_task.id(),
+                        caller_task.id(),
+                        debug_module_name,
+                        debug_func_name,
+                        func_id,
+                        arg_count
+                    );
+                }
 
                 match self.run(&callee_task) {
                     ExecutionResult::Completed(value) => {
@@ -1212,6 +1238,17 @@ impl<'a> Interpreter<'a> {
                         ))
                     }
                     ExecutionResult::Failed(error) => {
+                        if debug_async_tasks {
+                            eprintln!(
+                                "[async-task] sync-call-failed task={:?} parent={:?} module={} func={}#{} error={}",
+                                callee_task.id(),
+                                caller_task.id(),
+                                debug_module_name,
+                                debug_func_name,
+                                func_id,
+                                error
+                            );
+                        }
                         callee_task.fail();
                         self.ensure_task_exception_for_error(&callee_task, &error);
                         if !caller_task.has_exception() {

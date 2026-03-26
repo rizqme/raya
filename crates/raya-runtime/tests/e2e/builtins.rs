@@ -433,6 +433,25 @@ fn test_promise_then_instance() {
 }
 
 #[test]
+fn test_promise_then_resolved_promise_calls_only_fulfilled_handler() {
+    expect_string_with_builtins(
+        r#"
+        let calls: string[] = [];
+        Promise.resolve(null).then(
+            (): void => {
+                calls.push("fulfilled");
+            },
+            (_reason: Object | string | number | boolean | null): void => {
+                calls.push("rejected");
+            }
+        );
+        return JSON.stringify(calls);
+    "#,
+        r#"["fulfilled"]"#,
+    );
+}
+
+#[test]
 fn test_promise_then_rejection_passthrough_to_catch() {
     expect_i32_with_builtins(
         r#"
