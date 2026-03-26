@@ -58,6 +58,16 @@ enum ClosureInvokeMode {
     Spawn,
 }
 
+enum ResolvedIdentifierClosure {
+    DirectEval { closure: Register },
+    Local {
+        local_idx: u16,
+        closure: Register,
+        callee_ty: TypeId,
+        async_func_id: Option<FunctionId>,
+    },
+}
+
 #[derive(Clone)]
 enum PreparedDestructuringTarget {
     Identifier(Symbol),
@@ -181,6 +191,58 @@ impl<'a> Lowerer<'a> {
             }
         };
         self.emit_closure_invoke(dest, closure, args, mode);
+    }
+
+    fn resolve_identifier_closure_source(
+        &mut self,
+        ident: &ast::Identifier,
+        callee_expr: &Expression,
+        missing_local_context: &str,
+    ) -> Result<Option<ResolvedIdentifierClosure>, ()> {
+        if self.should_resolve_from_direct_eval_env(ident) {
+            let closure =
+                self.emit_direct_eval_binding_get(self.interner.resolve(ident.name), false);
+            return Ok(Some(ResolvedIdentifierClosure::DirectEval { closure }));
+        }
+
+        let Some(&local_idx) = self.local_map.get(&ident.name) else {
+            return Ok(None);
+        };
+
+        let closure_ty = if let Some(reg) = self.local_registers.get(&local_idx) {
+            reg.ty
+        } else {
+            self.errors
+                .push(crate::compiler::CompileError::InternalError {
+                    message: format!(
+                        "internal error: missing local register metadata for {} '{}'",
+                        missing_local_context,
+                        self.interner.resolve(ident.name)
+                    ),
+                });
+            return Err(());
+        };
+
+        let mut closure = self.alloc_register(closure_ty);
+        self.emit(IrInstr::LoadLocal {
+            dest: closure.clone(),
+            index: local_idx,
+        });
+        if self.refcell_registers.contains_key(&local_idx) {
+            let value = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+            self.emit(IrInstr::LoadRefCell {
+                dest: value.clone(),
+                refcell: closure,
+            });
+            closure = value;
+        }
+
+        Ok(Some(ResolvedIdentifierClosure::Local {
+            local_idx,
+            closure,
+            callee_ty: self.get_expr_type(callee_expr),
+            async_func_id: self.closure_locals.get(&local_idx).copied(),
+        }))
     }
 
     fn member_write_uses_dynamic_property_path(
@@ -3593,21 +3655,135 @@ impl<'a> Lowerer<'a> {
                 .as_ref()
                 .is_some_and(|m| m.contains_key(&ident.name));
 
-            if self.should_resolve_from_direct_eval_env(ident) {
-                let closure = self.emit_direct_eval_binding_get(name, false);
-                if call.has_spread_arguments() {
-                    let receiver = self.lower_undefined_literal();
-                    let args_array = self.lower_call_argument_array(&call.arguments);
-                    self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
-                } else {
-                    self.emit(IrInstr::CallClosure {
-                        dest: Some(dest.clone()),
+            match self.resolve_identifier_closure_source(
+                ident,
+                &call.callee,
+                "callable",
+            ) {
+                Ok(Some(ResolvedIdentifierClosure::DirectEval { closure })) => {
+                    if call.has_spread_arguments() {
+                        let receiver = self.lower_undefined_literal();
+                        let args_array = self.lower_call_argument_array(&call.arguments);
+                        self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+                    } else {
+                        self.emit_closure_invoke(
+                            dest.clone(),
+                            closure,
+                            args,
+                            ClosureInvokeMode::Sync { result_ty: call_ty },
+                        );
+                    }
+                    self.propagate_type_projection_to_register(call_ty, &dest);
+                    return dest;
+                }
+                Ok(Some(ResolvedIdentifierClosure::Local {
+                    local_idx,
+                    closure,
+                    callee_ty,
+                    async_func_id,
+                })) => {
+                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        eprintln!(
+                            "[lower] closure call '{}' via local idx={}",
+                            self.interner.resolve(ident.name),
+                            local_idx
+                        );
+                    }
+                    let callee_ty_raw = callee_ty.as_u32();
+                    let known_callable = self.closure_locals.contains_key(&local_idx)
+                        || self.callable_local_hints.contains(&local_idx)
+                        || self.callable_symbol_hints.contains(&ident.name)
+                        || self.bound_method_vars.contains_key(&ident.name);
+                    if !known_callable
+                        && !self.type_is_callable(callee_ty)
+                        && !self.runtime_call_may_be_callable(callee_ty)
+                    {
+                        if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
+                            let receiver = self.lower_undefined_literal();
+                            if call.has_spread_arguments() {
+                                let args_array = self.lower_call_argument_array(&call.arguments);
+                                self.emit_js_apply_helper(
+                                    dest.clone(),
+                                    receiver,
+                                    closure,
+                                    args_array,
+                                );
+                            } else {
+                                self.emit_js_member_call_helper(
+                                    dest.clone(),
+                                    receiver,
+                                    closure,
+                                    args,
+                                );
+                            }
+                            self.propagate_type_projection_to_register(call_ty, &dest);
+                            return dest;
+                        }
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: format!(
+                                    "unresolved call target '{}': local value is not callable (type id {})",
+                                    self.interner.resolve(ident.name),
+                                    callee_ty_raw
+                                ),
+                            });
+                        self.poison_register(&dest);
+                        return dest;
+                    }
+
+                    if let Some(func_id) = async_func_id {
+                        if self.async_closures.contains(&func_id) {
+                            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                eprintln!(
+                                    "[lower] SpawnClosure[local-async] '{}' local_idx={} func_id={}",
+                                    self.interner.resolve(ident.name),
+                                    local_idx,
+                                    func_id.as_u32()
+                                );
+                            }
+                            self.emit_closure_invoke(
+                                dest.clone(),
+                                closure,
+                                args,
+                                ClosureInvokeMode::Spawn,
+                            );
+                            return dest;
+                        }
+                    }
+
+                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        eprintln!(
+                            "[lower] CallClosure[local] '{}'",
+                            self.interner.resolve(ident.name)
+                        );
+                    }
+                    self.emit_closure_invoke(
+                        dest.clone(),
                         closure,
                         args,
-                    });
+                        ClosureInvokeMode::SyncNoPropagate,
+                    );
+
+                    if let Some(&(nominal_type_id, method_name)) =
+                        self.bound_method_vars.get(&ident.name)
+                    {
+                        if let Some(&ret_ty) = self
+                            .method_return_type_map
+                            .get(&(nominal_type_id, method_name))
+                        {
+                            if ret_ty != UNRESOLVED {
+                                dest.ty = ret_ty;
+                            }
+                        }
+                    }
+                    self.propagate_type_projection_to_register(dest.ty, &dest);
+                    return dest;
                 }
-                self.propagate_type_projection_to_register(call_ty, &dest);
-                return dest;
+                Ok(None) => {}
+                Err(()) => {
+                    self.poison_register(&dest);
+                    return dest;
+                }
             }
 
             // Check if it's a direct function call. Prefer closure/capture paths when
@@ -3676,149 +3852,6 @@ impl<'a> Lowerer<'a> {
                     }
                     return dest;
                 }
-            }
-
-            // Otherwise, it might be a closure stored in a variable
-            if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!(
-                        "[lower] closure call '{}' via local idx={}",
-                        self.interner.resolve(ident.name),
-                        local_idx
-                    );
-                }
-                // Load the closure from the local variable.
-                // Do not silently coerce missing local type metadata to number; fail loudly.
-                let closure_ty = if let Some(reg) = self.local_registers.get(&local_idx) {
-                    reg.ty
-                } else {
-                    self.errors
-                        .push(crate::compiler::CompileError::InternalError {
-                            message: format!(
-                                "internal error: missing local register metadata for callable '{}'",
-                                self.interner.resolve(ident.name)
-                            ),
-                        });
-                    self.poison_register(&dest);
-                    return dest;
-                };
-                let callee_ty = self.get_expr_type(&call.callee);
-                let callee_ty_raw = callee_ty.as_u32();
-                let known_callable = self.closure_locals.contains_key(&local_idx)
-                    || self.callable_local_hints.contains(&local_idx)
-                    || self.callable_symbol_hints.contains(&ident.name)
-                    || self.bound_method_vars.contains_key(&ident.name);
-                if !known_callable
-                    && !self.type_is_callable(callee_ty)
-                    && !self.runtime_call_may_be_callable(callee_ty)
-                {
-                    if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
-                        let closure_raw = self.alloc_register(closure_ty);
-                        self.emit(IrInstr::LoadLocal {
-                            dest: closure_raw.clone(),
-                            index: local_idx,
-                        });
-                        let closure = if self.refcell_registers.contains_key(&local_idx) {
-                            let val = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                            self.emit(IrInstr::LoadRefCell {
-                                dest: val.clone(),
-                                refcell: closure_raw,
-                            });
-                            val
-                        } else {
-                            closure_raw
-                        };
-                        let receiver = self.lower_undefined_literal();
-                        if call.has_spread_arguments() {
-                            let args_array = self.lower_call_argument_array(&call.arguments);
-                            self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
-                        } else {
-                            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                        }
-                        self.propagate_type_projection_to_register(call_ty, &dest);
-                        return dest;
-                    }
-                    self.errors
-                        .push(crate::compiler::CompileError::InternalError {
-                            message: format!(
-                            "unresolved call target '{}': local value is not callable (type id {})",
-                            self.interner.resolve(ident.name),
-                            callee_ty_raw
-                        ),
-                        });
-                    self.poison_register(&dest);
-                    return dest;
-                }
-                let closure_raw = self.alloc_register(closure_ty);
-                self.emit(IrInstr::LoadLocal {
-                    dest: closure_raw.clone(),
-                    index: local_idx,
-                });
-
-                // Unwrap RefCell if the variable is captured and externally modified
-                let closure = if self.refcell_registers.contains_key(&local_idx) {
-                    let val = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                    self.emit(IrInstr::LoadRefCell {
-                        dest: val.clone(),
-                        refcell: closure_raw,
-                    });
-                    val
-                } else {
-                    closure_raw
-                };
-
-                // Check if this is an async closure (spawns a Task)
-                if let Some(&func_id) = self.closure_locals.get(&local_idx) {
-                    if self.async_closures.contains(&func_id) {
-                        // Emit SpawnClosure instead of CallClosure for async closures
-                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                            eprintln!(
-                                "[lower] SpawnClosure[local-async] '{}' local_idx={} func_id={}",
-                                self.interner.resolve(ident.name),
-                                local_idx,
-                                func_id.as_u32()
-                            );
-                        }
-                        self.emit_closure_invoke(
-                            dest.clone(),
-                            closure,
-                            args,
-                            ClosureInvokeMode::Spawn,
-                        );
-                        return dest;
-                    }
-                }
-
-                // Regular closure call
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!(
-                        "[lower] CallClosure[local] '{}'",
-                        self.interner.resolve(ident.name)
-                    );
-                }
-                self.emit_closure_invoke(
-                    dest.clone(),
-                    closure,
-                    args,
-                    ClosureInvokeMode::SyncNoPropagate,
-                );
-
-                // Propagate return type for bound method calls
-                if let Some(&(nominal_type_id, method_name)) =
-                    self.bound_method_vars.get(&ident.name)
-                {
-                    if let Some(&ret_ty) = self
-                        .method_return_type_map
-                        .get(&(nominal_type_id, method_name))
-                    {
-                        if ret_ty != UNRESOLVED {
-                            dest.ty = ret_ty;
-                        }
-                    }
-                }
-                self.propagate_type_projection_to_register(dest.ty, &dest);
-
-                return dest;
             }
 
             // Check for closure stored in a module-level global variable
@@ -11615,16 +11648,65 @@ impl<'a> Lowerer<'a> {
 
         // Handle different callee types
         if let Expression::Identifier(ident) = &*async_call.callee {
-            if self.should_resolve_from_direct_eval_env(ident) {
-                let closure =
-                    self.emit_direct_eval_binding_get(self.interner.resolve(ident.name), false);
-                self.emit_closure_invoke(
-                    dest.clone(),
+            match self.resolve_identifier_closure_source(
+                ident,
+                &async_call.callee,
+                "async callable",
+            ) {
+                Ok(Some(ResolvedIdentifierClosure::DirectEval { closure })) => {
+                    self.emit_closure_invoke(
+                        dest.clone(),
+                        closure,
+                        args,
+                        ClosureInvokeMode::Spawn,
+                    );
+                    return dest;
+                }
+                Ok(Some(ResolvedIdentifierClosure::Local {
+                    local_idx,
                     closure,
-                    args,
-                    ClosureInvokeMode::Spawn,
-                );
-                return dest;
+                    callee_ty,
+                    ..
+                })) => {
+                    let callee_ty_raw = callee_ty.as_u32();
+                    let known_callable = self.closure_locals.contains_key(&local_idx)
+                        || self.callable_local_hints.contains(&local_idx)
+                        || self.callable_symbol_hints.contains(&ident.name);
+                    if !known_callable
+                        && !self.type_is_callable(callee_ty)
+                        && !self.runtime_call_may_be_callable(callee_ty)
+                    {
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: format!(
+                                    "unresolved async call target '{}': local value is not callable (type id {})",
+                                    self.interner.resolve(ident.name),
+                                    callee_ty_raw
+                                ),
+                            });
+                        self.poison_register(&dest);
+                        return dest;
+                    }
+                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        eprintln!(
+                            "[lower] SpawnClosure[lower_async_call-local] '{}' local_idx={}",
+                            self.interner.resolve(ident.name),
+                            local_idx
+                        );
+                    }
+                    self.emit_closure_invoke(
+                        dest.clone(),
+                        closure,
+                        args,
+                        ClosureInvokeMode::Spawn,
+                    );
+                    return dest;
+                }
+                Ok(None) => {}
+                Err(()) => {
+                    self.poison_register(&dest);
+                    return dest;
+                }
             }
 
             // Direct function call: async myFn()
@@ -11637,62 +11719,6 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            // Closure call: async closureVar()
-            if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                let closure_ty = if let Some(reg) = self.local_registers.get(&local_idx) {
-                    reg.ty
-                } else {
-                    self.errors
-                        .push(crate::compiler::CompileError::InternalError {
-                            message: format!(
-                                    "internal error: missing local register metadata for async callable '{}'",
-                                    self.interner.resolve(ident.name)
-                            ),
-                        });
-                    self.poison_register(&dest);
-                    return dest;
-                };
-                let callee_ty = self.get_expr_type(&async_call.callee);
-                let callee_ty_raw = callee_ty.as_u32();
-                let known_callable = self.closure_locals.contains_key(&local_idx)
-                    || self.callable_local_hints.contains(&local_idx)
-                    || self.callable_symbol_hints.contains(&ident.name);
-                if !known_callable
-                    && !self.type_is_callable(callee_ty)
-                    && !self.runtime_call_may_be_callable(callee_ty)
-                {
-                    self.errors
-                        .push(crate::compiler::CompileError::InternalError {
-                            message: format!(
-                                "unresolved async call target '{}': local value is not callable (type id {})",
-                                self.interner.resolve(ident.name),
-                                callee_ty_raw
-                            ),
-                        });
-                    self.poison_register(&dest);
-                    return dest;
-                }
-                let closure = self.alloc_register(closure_ty);
-                self.emit(IrInstr::LoadLocal {
-                    dest: closure.clone(),
-                    index: local_idx,
-                });
-
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!(
-                        "[lower] SpawnClosure[lower_async_call-local] '{}' local_idx={}",
-                        self.interner.resolve(ident.name),
-                        local_idx
-                    );
-                }
-                self.emit_closure_invoke(
-                    dest.clone(),
-                    closure,
-                    args,
-                    ClosureInvokeMode::Spawn,
-                );
-                return dest;
-            }
         }
 
         // Handle member access: async obj.method()
