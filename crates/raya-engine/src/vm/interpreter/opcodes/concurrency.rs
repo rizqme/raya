@@ -1,10 +1,10 @@
 //! Concurrency opcode handlers: Spawn, SpawnClosure, Await, WaitAll, Sleep, MutexLock, MutexUnlock, Yield, TaskCancel
 
 use crate::compiler::{Module, Opcode};
-use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{ExecutionResult, OpcodeResult};
+use crate::vm::interpreter::opcodes::objects::CallableInvocationPlan;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, CallableKind, Object};
+use crate::vm::object::Array;
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexId, SemaphoreId};
@@ -185,64 +185,33 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                let header = unsafe {
-                    &*header_ptr_from_value_ptr(closure_val.as_ptr::<u8>().unwrap().as_ptr())
-                };
-
-                let (target_module, closure_to_push, spawn_args, func_id) =
-                    if header.type_id() == std::any::TypeId::of::<Object>() {
-                    let obj = unsafe { &*closure_val.as_ptr::<Object>().unwrap().as_ptr() };
-                    let Some(ref callable) = obj.callable else {
-                        return OpcodeResult::Error(VmError::TypeError(
-                            "Expected closure or bound method".to_string(),
-                        ));
-                    };
-                    match &callable.kind {
-                        CallableKind::BoundMethod { func_id, receiver } => {
-                            let mut method_args = Vec::with_capacity(args.len() + 1);
-                            let receiver_final = if self.callable_uses_js_this_slot(closure_val) {
-                                match self.js_this_value_for_callable(closure_val, Some(*receiver)) {
-                                    Ok(value) => value,
-                                    Err(error) => return OpcodeResult::Error(error),
-                                }
-                            } else {
-                                *receiver
-                            };
-                            method_args.push(receiver_final);
-                            method_args.extend(args);
-                            let target_module = obj
-                                .callable_module()
-                                .unwrap_or_else(|| task.current_module());
-                            (target_module, None, method_args, *func_id)
-                        }
-                        CallableKind::Closure { func_id } => {
-                            let mut frame_args =
-                                Vec::with_capacity(args.len() + 1);
-                            if self.callable_uses_js_this_slot(closure_val) {
-                                let this_arg =
-                                    match self.js_this_value_for_callable(closure_val, None) {
-                                        Ok(value) => value,
-                                        Err(error) => return OpcodeResult::Error(error),
-                                    };
-                                frame_args.push(this_arg);
-                            }
-                            frame_args.extend(args);
-                            let target_module = obj
-                                .callable_module()
-                                .unwrap_or_else(|| task.current_module());
-                            (target_module, Some(closure_val), frame_args, *func_id)
-                        }
-                        _ => {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected closure or bound method".to_string(),
-                            ));
-                        }
-                    }
-                } else {
+                let Some(plan) = (match self.prepare_callable_invocation(closure_val, &args, None, task)
+                {
+                    Ok(plan) => plan,
+                    Err(error) => return OpcodeResult::Error(error),
+                }) else {
                     return OpcodeResult::Error(VmError::TypeError(
                         "Expected closure or bound method".to_string(),
                     ));
                 };
+                let CallableInvocationPlan::Function {
+                    func_id,
+                    module: target_module,
+                    closure_val: closure_to_push,
+                    args: spawn_args,
+                    is_async,
+                    is_generator,
+                } = plan
+                else {
+                    return OpcodeResult::Error(VmError::TypeError(
+                        "Expected closure or bound method".to_string(),
+                    ));
+                };
+                if is_generator || !is_async {
+                    return OpcodeResult::Error(VmError::TypeError(
+                        "Expected async closure or bound method".to_string(),
+                    ));
+                }
 
                 let handle = match self.spawn_async_task_handle(
                     func_id,

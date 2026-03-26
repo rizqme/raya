@@ -21,6 +21,22 @@ use std::sync::Arc;
 // Old metadata key retained only for callable_virtual_property fallback paths.
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
+pub(in crate::vm::interpreter) enum CallableInvocationPlan {
+    Native {
+        receiver: Value,
+        native_id: u16,
+        args: Vec<Value>,
+    },
+    Function {
+        func_id: usize,
+        module: Arc<Module>,
+        closure_val: Option<Value>,
+        args: Vec<Value>,
+        is_async: bool,
+        is_generator: bool,
+    },
+}
+
 impl<'a> Interpreter<'a> {
     fn spawn_async_callable_task(
         &mut self,
@@ -51,6 +67,129 @@ impl<'a> Interpreter<'a> {
         };
         if let Some(home_object) = home_object {
             let _ = callable.set_callable_home_object(home_object);
+        }
+    }
+
+    pub(in crate::vm::interpreter) fn prepare_callable_invocation(
+        &mut self,
+        callable: Value,
+        args: &[Value],
+        explicit_this: Option<Value>,
+        task: &Arc<Task>,
+    ) -> Result<Option<CallableInvocationPlan>, VmError> {
+        if !callable.is_ptr() {
+            return Ok(None);
+        }
+        let header =
+            unsafe { &*header_ptr_from_value_ptr(callable.as_ptr::<u8>().unwrap().as_ptr()) };
+        if header.type_id() != std::any::TypeId::of::<Object>() {
+            return Ok(None);
+        }
+
+        let co = unsafe { &*callable.as_ptr::<Object>().unwrap().as_ptr() };
+        let Some(ref callable_data) = co.callable else {
+            return Ok(None);
+        };
+
+        match &callable_data.kind {
+            CallableKind::BoundMethod { func_id, receiver } => {
+                let target_module = callable_data
+                    .module
+                    .clone()
+                    .unwrap_or_else(|| task.current_module());
+                let receiver_value = *receiver;
+                let receiver_final = if self.callable_uses_js_this_slot(callable) {
+                    self.js_this_value_for_callable(callable, Some(receiver_value))?
+                } else {
+                    receiver_value
+                };
+                let mut final_args = Vec::with_capacity(args.len() + 1);
+                final_args.push(receiver_final);
+                final_args.extend_from_slice(args);
+                let (is_async, is_generator) = target_module
+                    .functions
+                    .get(*func_id)
+                    .map(|function| (function.is_async, function.is_generator))
+                    .unwrap_or((false, false));
+                Ok(Some(CallableInvocationPlan::Function {
+                    func_id: *func_id,
+                    module: target_module,
+                    closure_val: None,
+                    args: final_args,
+                    is_async,
+                    is_generator,
+                }))
+            }
+            CallableKind::BoundNative {
+                native_id,
+                receiver,
+            } => Ok(Some(CallableInvocationPlan::Native {
+                receiver: *receiver,
+                native_id: *native_id,
+                args: args.to_vec(),
+            })),
+            CallableKind::Bound {
+                target,
+                this_arg,
+                bound_args,
+                rebind_call_helper,
+                ..
+            } => {
+                let mut combined_args = bound_args.clone();
+                combined_args.extend_from_slice(args);
+
+                if *rebind_call_helper {
+                    let rebound_target = *this_arg;
+                    let rebound_this =
+                        combined_args.first().copied().unwrap_or(Value::undefined());
+                    let rebound_rest = if combined_args.len() > 1 {
+                        combined_args[1..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    self.prepare_callable_invocation(
+                        rebound_target,
+                        &rebound_rest,
+                        Some(rebound_this),
+                        task,
+                    )
+                } else {
+                    self.prepare_callable_invocation(*target, &combined_args, Some(*this_arg), task)
+                }
+            }
+            CallableKind::Closure { func_id } => {
+                let target_module = co.callable_module().unwrap_or_else(|| task.current_module());
+                let (is_async, is_generator, uses_explicit_js_this) = target_module
+                    .functions
+                    .get(*func_id)
+                    .map(|function| {
+                        (
+                            function.is_async,
+                            function.is_generator,
+                            explicit_this.is_some() && !function.name.starts_with("__arrow_"),
+                        )
+                    })
+                    .unwrap_or((false, false, false));
+                let this_arg = if self.callable_uses_js_this_slot(callable) || uses_explicit_js_this
+                {
+                    Some(self.js_this_value_for_callable(callable, explicit_this)?)
+                } else {
+                    None
+                };
+                let mut final_args = Vec::with_capacity(args.len() + usize::from(this_arg.is_some()));
+                if let Some(this_arg) = this_arg {
+                    final_args.push(this_arg);
+                }
+                final_args.extend_from_slice(args);
+                Ok(Some(CallableInvocationPlan::Function {
+                    func_id: *func_id,
+                    module: target_module,
+                    closure_val: Some(callable),
+                    args: final_args,
+                    is_async,
+                    is_generator,
+                }))
+            }
         }
     }
 
@@ -193,243 +332,72 @@ impl<'a> Interpreter<'a> {
         module: &Module,
         task: &Arc<Task>,
     ) -> Result<Option<OpcodeResult>, VmError> {
-        if !callable.is_ptr() {
-            return Ok(None);
-        }
-        let header =
-            unsafe { &*header_ptr_from_value_ptr(callable.as_ptr::<u8>().unwrap().as_ptr()) };
-        if header.type_id() == std::any::TypeId::of::<Object>() {
-            let co = unsafe { &*callable.as_ptr::<Object>().unwrap().as_ptr() };
-            if let Some(ref callable_data) = co.callable {
-                match &callable_data.kind {
-                    CallableKind::BoundMethod { func_id, receiver } => {
-                        let receiver_value = *receiver;
-                        let receiver_final = if self.callable_uses_js_this_slot(callable) {
-                            self.js_this_value_for_callable(callable, Some(receiver_value))?
-                        } else {
-                            receiver_value
-                        };
-                        if callable_data
-                            .module
-                            .as_ref()
-                            .and_then(|module| module.functions.get(*func_id))
-                            .is_some_and(|function| function.is_generator)
-                        {
-                            let mut frame_args = Vec::with_capacity(args.len() + 1);
-                            frame_args.push(receiver_final);
-                            frame_args.extend_from_slice(args);
-                            let iterator = self.create_generator_task_object(
-                                *func_id,
-                                callable_data
-                                    .module
-                                    .clone()
-                                    .unwrap_or_else(|| task.current_module()),
-                                frame_args,
-                                None,
-                                task,
-                            )?;
-                            stack.push(iterator)?;
-                            return Ok(Some(OpcodeResult::Continue));
-                        }
-                        if callable_data
-                            .module
-                            .as_ref()
-                            .and_then(|module| module.functions.get(*func_id))
-                            .is_some_and(|function| function.is_async)
-                        {
-                            let mut frame_args = Vec::with_capacity(args.len() + 1);
-                            frame_args.push(receiver_final);
-                            frame_args.extend_from_slice(args);
-                            let target_module = callable_data
-                                .module
-                                .clone()
-                                .unwrap_or_else(|| task.current_module());
-                            return Ok(Some(self.spawn_async_callable_task(
-                                stack,
-                                *func_id,
-                                target_module,
-                                frame_args,
-                                None,
-                                task,
-                            )?));
-                        }
-                        stack.push(receiver_final)?;
-                        for arg in args {
-                            stack.push(*arg)?;
-                        }
-                        if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
-                            let target_module = callable_data
-                                .module
-                                .clone()
-                                .unwrap_or_else(|| task.current_module());
-                            let func_name = target_module
-                                .functions
-                                .get(*func_id)
-                                .map(|function| function.name.as_str())
-                                .unwrap_or("<unknown>");
-                            eprintln!(
-                                "[call-sync] task={:?} module={} func={}#{} argc={}",
-                                task.id(),
-                                target_module.metadata.name,
-                                func_name,
-                                func_id,
-                                args.len() + 1
-                            );
-                        }
-                        return Ok(Some(OpcodeResult::PushFrame {
-                            func_id: *func_id,
-                            arg_count: args.len() + 1,
-                            is_closure: false,
-                            closure_val: None,
-                            module: callable_data.module.clone(),
-                            return_action,
-                        }));
-                    }
-                    CallableKind::BoundNative {
-                        native_id,
-                        receiver,
-                    } => {
-                        let recv = *receiver;
-                        return Ok(Some(self.exec_bound_native_method_call(
-                            stack,
-                            recv,
-                            *native_id,
-                            args.to_vec(),
-                            module,
+        if let Some(plan) = self.prepare_callable_invocation(callable, args, explicit_this, task)? {
+            match plan {
+                CallableInvocationPlan::Native {
+                    receiver,
+                    native_id,
+                    args,
+                } => {
+                    return Ok(Some(self.exec_bound_native_method_call(
+                        stack, receiver, native_id, args, module, task,
+                    )));
+                }
+                CallableInvocationPlan::Function {
+                    func_id,
+                    module: target_module,
+                    closure_val,
+                    args,
+                    is_async,
+                    is_generator,
+                } => {
+                    if is_generator {
+                        let iterator = self.create_generator_task_object(
+                            func_id,
+                            target_module,
+                            args,
+                            closure_val,
                             task,
-                        )));
+                        )?;
+                        stack.push(iterator)?;
+                        return Ok(Some(OpcodeResult::Continue));
                     }
-                    CallableKind::Bound {
-                        target,
-                        this_arg,
-                        bound_args,
-                        rebind_call_helper,
-                        ..
-                    } => {
-                        let mut combined_args = bound_args.clone();
-                        combined_args.extend_from_slice(args);
-
-                        if *rebind_call_helper {
-                            let target_callable = *this_arg;
-                            let this_a =
-                                combined_args.first().copied().unwrap_or(Value::undefined());
-                            let rest_args = if combined_args.len() > 1 {
-                                combined_args[1..].to_vec()
-                            } else {
-                                Vec::new()
-                            };
-                            return self.callable_frame_for_value(
-                                target_callable,
-                                stack,
-                                &rest_args,
-                                Some(this_a),
-                                return_action,
-                                module,
-                                task,
-                            );
-                        }
-
-                        return self.callable_frame_for_value(
-                            *target,
+                    if is_async {
+                        return Ok(Some(self.spawn_async_callable_task(
                             stack,
-                            &combined_args,
-                            Some(*this_arg),
-                            return_action,
-                            module,
+                            func_id,
+                            target_module,
+                            args,
+                            closure_val,
                             task,
+                        )?));
+                    }
+                    for arg in &args {
+                        stack.push(*arg)?;
+                    }
+                    if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
+                        let func_name = target_module
+                            .functions
+                            .get(func_id)
+                            .map(|function| function.name.as_str())
+                            .unwrap_or("<unknown>");
+                        eprintln!(
+                            "[call-sync] task={:?} module={} func={}#{} argc={}",
+                            task.id(),
+                            target_module.metadata.name,
+                            func_name,
+                            func_id,
+                            args.len()
                         );
                     }
-                    CallableKind::Closure { func_id } => {
-                        let closure_module = co.callable_module();
-                        let should_use_explicit_js_this = explicit_this.is_some()
-                            && closure_module
-                                .as_ref()
-                                .and_then(|module| module.functions.get(*func_id))
-                                .is_some_and(|function| !function.name.starts_with("__arrow_"));
-                        let this_arg = if self.callable_uses_js_this_slot(callable)
-                            || should_use_explicit_js_this
-                        {
-                            Some(self.js_this_value_for_callable(callable, explicit_this)?)
-                        } else {
-                            None
-                        };
-                        if closure_module
-                            .as_ref()
-                            .and_then(|module| module.functions.get(*func_id))
-                            .is_some_and(|function| function.is_generator)
-                        {
-                            let mut frame_args =
-                                Vec::with_capacity(args.len() + usize::from(this_arg.is_some()));
-                            if let Some(this_arg) = this_arg {
-                                frame_args.push(this_arg);
-                            }
-                            frame_args.extend_from_slice(args);
-                            let iterator = self.create_generator_task_object(
-                                *func_id,
-                                closure_module.unwrap_or_else(|| task.current_module()),
-                                frame_args,
-                                Some(callable),
-                                task,
-                            )?;
-                            stack.push(iterator)?;
-                            return Ok(Some(OpcodeResult::Continue));
-                        }
-                        if closure_module
-                            .as_ref()
-                            .and_then(|module| module.functions.get(*func_id))
-                            .is_some_and(|function| function.is_async)
-                        {
-                            let mut frame_args =
-                                Vec::with_capacity(args.len() + usize::from(this_arg.is_some()));
-                            if let Some(this_arg) = this_arg {
-                                frame_args.push(this_arg);
-                            }
-                            frame_args.extend_from_slice(args);
-                            let target_module =
-                                closure_module.unwrap_or_else(|| task.current_module());
-                            return Ok(Some(self.spawn_async_callable_task(
-                                stack,
-                                *func_id,
-                                target_module,
-                                frame_args,
-                                Some(callable),
-                                task,
-                            )?));
-                        }
-                        let mut arg_count = args.len();
-                        if let Some(this_arg) = this_arg {
-                            stack.push(this_arg)?;
-                            arg_count += 1;
-                        }
-                        for arg in args {
-                            stack.push(*arg)?;
-                        }
-                        if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
-                            let target_module =
-                                closure_module.clone().unwrap_or_else(|| task.current_module());
-                            let func_name = target_module
-                                .functions
-                                .get(*func_id)
-                                .map(|function| function.name.as_str())
-                                .unwrap_or("<unknown>");
-                            eprintln!(
-                                "[call-sync] task={:?} module={} func={}#{} argc={}",
-                                task.id(),
-                                target_module.metadata.name,
-                                func_name,
-                                func_id,
-                                arg_count
-                            );
-                        }
-                        return Ok(Some(OpcodeResult::PushFrame {
-                            func_id: *func_id,
-                            arg_count,
-                            is_closure: true,
-                            closure_val: Some(callable),
-                            module: closure_module,
-                            return_action,
-                        }));
-                    }
+                    return Ok(Some(OpcodeResult::PushFrame {
+                        func_id,
+                        arg_count: args.len(),
+                        is_closure: closure_val.is_some(),
+                        closure_val,
+                        module: Some(target_module),
+                        return_action,
+                    }));
                 }
             }
         }
