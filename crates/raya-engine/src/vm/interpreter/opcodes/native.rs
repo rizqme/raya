@@ -932,6 +932,167 @@ impl<'a> Interpreter<'a> {
         target_handle
     }
 
+    fn promise_all_state_value(&mut self, count: usize) -> Result<Value, VmError> {
+        let remaining = i32::try_from(count)
+            .map_err(|_| VmError::RuntimeError("Promise.all input is too large".to_string()))?;
+        let results_ptr = self.gc.lock().allocate(Array::new(0, count));
+        let results = unsafe {
+            Value::from_ptr(
+                std::ptr::NonNull::new(results_ptr.as_ptr()).expect("promise all results array"),
+            )
+        };
+        let mut state = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
+        if let Some(dyn_props) = state.dyn_props.as_mut() {
+            dyn_props.insert(
+                self.intern_prop_key("__promiseAllResults"),
+                DynProp::data_with_attrs(results, false, false, false),
+            );
+            dyn_props.insert(
+                self.intern_prop_key("__promiseAllRemaining"),
+                DynProp::data_with_attrs(Value::i32(remaining), false, false, false),
+            );
+        }
+        let state_ptr = self.gc.lock().allocate(state);
+        Ok(unsafe {
+            Value::from_ptr(
+                std::ptr::NonNull::new(state_ptr.as_ptr()).expect("promise all state object"),
+            )
+        })
+    }
+
+    fn promise_all_state_store_result(
+        &mut self,
+        state: Value,
+        index: usize,
+        value: Value,
+    ) -> Result<Option<Value>, VmError> {
+        let results_key = self.intern_prop_key("__promiseAllResults");
+        let remaining_key = self.intern_prop_key("__promiseAllRemaining");
+        let Some(state_ptr) = checked_object_ptr(state) else {
+            return Err(VmError::RuntimeError(
+                "Promise.all aggregate state is not an object".to_string(),
+            ));
+        };
+        let state = unsafe { &mut *state_ptr.as_ptr() };
+        let Some(dyn_props) = state.dyn_props.as_mut() else {
+            return Err(VmError::RuntimeError(
+                "Promise.all aggregate state has no dynamic properties".to_string(),
+            ));
+        };
+        let results = dyn_props
+            .get(results_key)
+            .map(|prop| prop.value)
+            .ok_or_else(|| {
+                VmError::RuntimeError("Promise.all aggregate results are missing".to_string())
+            })?;
+        let remaining = dyn_props
+            .get(remaining_key)
+            .and_then(|prop| prop.value.as_i32())
+            .ok_or_else(|| {
+                VmError::RuntimeError("Promise.all aggregate remaining count is missing".to_string())
+            })?;
+        let Some(results_ptr) = checked_array_ptr(results) else {
+            return Err(VmError::RuntimeError(
+                "Promise.all aggregate results are not an array".to_string(),
+            ));
+        };
+        let results_array = unsafe { &mut *results_ptr.as_ptr() };
+        results_array.set(index, value).map_err(VmError::RuntimeError)?;
+        let next_remaining = remaining - 1;
+        dyn_props.insert(
+            remaining_key,
+            DynProp::data_with_attrs(Value::i32(next_remaining), false, false, false),
+        );
+        Ok((next_remaining == 0).then_some(results))
+    }
+
+    fn promise_all_handle(
+        &mut self,
+        values: Value,
+        caller_task: &Arc<Task>,
+    ) -> Result<Value, VmError> {
+        let Some(array_ptr) = checked_array_ptr(values) else {
+            return Err(VmError::TypeError(
+                "Promise.all expects an array of values".to_string(),
+            ));
+        };
+        let array = unsafe { &*array_ptr.as_ptr() };
+        if array.is_empty() {
+            let empty_ptr = self.gc.lock().allocate(Array::new(0, 0));
+            let empty = unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(empty_ptr.as_ptr()).expect("empty array"))
+            };
+            return Ok(self.settled_task_handle(caller_task, Ok(empty)));
+        }
+
+        let state = self.promise_all_state_value(array.len())?;
+        let target_handle = self.pending_task_handle(caller_task);
+        let target_task_id = self
+            .promise_handle_from_value(target_handle)
+            .expect("pending_task_handle must produce a valid PromiseHandle")
+            .task_id();
+
+        for index in 0..array.len() {
+            let source = array.get(index).unwrap_or(Value::undefined());
+            let source_task = self.normalize_promise_source_task(source, caller_task);
+            self.queue_or_attach_promise_reaction(
+                &source_task,
+                PromiseReaction {
+                    target_task_id,
+                    kind: PromiseReactionKind::All {
+                        state,
+                        index: index as u32,
+                    },
+                    on_fulfilled: Value::undefined(),
+                    on_rejected: Value::undefined(),
+                },
+            );
+        }
+
+        Ok(target_handle)
+    }
+
+    fn promise_race_handle(
+        &mut self,
+        values: Value,
+        caller_task: &Arc<Task>,
+    ) -> Result<Value, VmError> {
+        let Some(array_ptr) = checked_array_ptr(values) else {
+            return Err(VmError::TypeError(
+                "Promise.race expects an array of values".to_string(),
+            ));
+        };
+        let array = unsafe { &*array_ptr.as_ptr() };
+        if array.is_empty() {
+            return Ok(self.settled_task_handle(
+                caller_task,
+                Err(self.alloc_string_value("Promise.race requires at least one promise")),
+            ));
+        }
+
+        let target_handle = self.pending_task_handle(caller_task);
+        let target_task_id = self
+            .promise_handle_from_value(target_handle)
+            .expect("pending_task_handle must produce a valid PromiseHandle")
+            .task_id();
+
+        for index in 0..array.len() {
+            let source = array.get(index).unwrap_or(Value::undefined());
+            let source_task = self.normalize_promise_source_task(source, caller_task);
+            self.queue_or_attach_promise_reaction(
+                &source_task,
+                PromiseReaction {
+                    target_task_id,
+                    kind: PromiseReactionKind::Race,
+                    on_fulfilled: Value::undefined(),
+                    on_rejected: Value::undefined(),
+                },
+            );
+        }
+
+        Ok(target_handle)
+    }
+
     pub(crate) fn run_promise_reaction(
         &mut self,
         source_task: &Arc<Task>,
@@ -1042,6 +1203,33 @@ impl<'a> Interpreter<'a> {
                         if failed { Err(original) } else { Ok(original) },
                     );
                 }
+            }
+            PromiseReactionKind::All { state, index } => {
+                if source_failed {
+                    let _ = self.settle_existing_task_handle(target_handle, Err(source_reason));
+                    return;
+                }
+                match self.promise_all_state_store_result(state, index as usize, source_result) {
+                    Ok(Some(results)) => {
+                        let _ = self.settle_existing_task_handle(target_handle, Ok(results));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.ensure_task_exception_for_error(&target_task, &error);
+                        let reason = target_task.current_exception().unwrap_or(Value::undefined());
+                        let _ = self.settle_existing_task_handle(target_handle, Err(reason));
+                    }
+                }
+            }
+            PromiseReactionKind::Race => {
+                let _ = self.settle_existing_task_handle(
+                    target_handle,
+                    if source_failed {
+                        Err(source_reason)
+                    } else {
+                        Ok(source_result)
+                    },
+                );
             }
         }
     }
@@ -18795,6 +18983,30 @@ impl<'a> Interpreter<'a> {
                             stack.push(self.promise_finally_handle(source, on_finally, task))
                         {
                             return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x050Cu16 => {
+                        let values = args.first().copied().unwrap_or(Value::undefined());
+                        match self.promise_all_handle(values, task) {
+                            Ok(value) => {
+                                if let Err(error) = stack.push(value) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            Err(error) => return OpcodeResult::Error(error),
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x050Du16 => {
+                        let values = args.first().copied().unwrap_or(Value::undefined());
+                        match self.promise_race_handle(values, task) {
+                            Ok(value) => {
+                                if let Err(error) = stack.push(value) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            Err(error) => return OpcodeResult::Error(error),
                         }
                         OpcodeResult::Continue
                     }

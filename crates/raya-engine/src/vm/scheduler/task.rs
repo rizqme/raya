@@ -154,6 +154,8 @@ pub enum PromiseReactionKind {
     Chain,
     Finally,
     FinallyResume { original: Value, failed: bool },
+    All { state: Value, index: u32 },
+    Race,
 }
 
 #[derive(Debug, Clone, Copy)]

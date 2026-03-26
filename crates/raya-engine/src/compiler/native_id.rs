@@ -273,6 +273,8 @@ pub const TASK_RESOLVE_PENDING: u16 = 0x0508;
 pub const TASK_REJECT_PENDING: u16 = 0x0509;
 pub const TASK_CHAIN: u16 = 0x050A;
 pub const TASK_FINALLY: u16 = 0x050B;
+pub const TASK_ALL: u16 = 0x050C;
+pub const TASK_RACE: u16 = 0x050D;
 
 // ============================================================================
 // Error (0x06xx)
@@ -825,6 +827,10 @@ pub fn native_name(id: u16) -> &'static str {
         TASK_GET_RESULT => "Task.getResult",
         TASK_RESOLVE_PENDING => "Task.resolvePending",
         TASK_REJECT_PENDING => "Task.rejectPending",
+        TASK_CHAIN => "Task.chain",
+        TASK_FINALLY => "Task.finally",
+        TASK_ALL => "Task.all",
+        TASK_RACE => "Task.race",
 
         // Reflect - Metadata
         REFLECT_DEFINE_METADATA => "Reflect.defineMetadata",

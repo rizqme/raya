@@ -13,6 +13,8 @@ const PROMISE_REJECT_NOW: number = 0x0506;
 const PROMISE_ADOPT: number = 0x0507;
 const PROMISE_CHAIN: number = 0x050A;
 const PROMISE_FINALLY: number = 0x050B;
+const PROMISE_ALL: number = 0x050C;
+const PROMISE_RACE: number = 0x050D;
 
 type PromiseRejectionReason = Object | string | number | boolean | null;
 
@@ -66,36 +68,11 @@ class Promise<T> {
     }
 
     static all<U>(values: Promise<U>[]): Promise<U[]> {
-        let wrapped = async (): Promise<U[]> => {
-            let results: U[] = [];
-            let i = 0;
-            while (i < values.length) {
-                results.push(await values[i]);
-                i = i + 1;
-            }
-            return results;
-        };
-        return wrapped();
+        return __NATIVE_CALL<Promise<U[]>>(PROMISE_ALL, values);
     }
 
     static race<U>(values: Promise<U>[]): Promise<U> {
-        let wrapped = async (): Promise<U> => {
-            if (values.length === 0) {
-                throw "Promise.race requires at least one promise";
-            }
-            while (true) {
-                let i = 0;
-                while (i < values.length) {
-                    const candidate = values[i];
-                    if (__NATIVE_CALL<boolean>(PROMISE_IS_DONE, candidate)) {
-                        return await candidate;
-                    }
-                    i = i + 1;
-                }
-                sleep(0);
-            }
-        };
-        return wrapped();
+        return __NATIVE_CALL<Promise<U>>(PROMISE_RACE, values);
     }
 }
 

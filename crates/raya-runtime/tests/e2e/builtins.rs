@@ -421,6 +421,26 @@ fn test_promise_race_static() {
 }
 
 #[test]
+fn test_promise_all_rejects_static() {
+    expect_string_with_builtins(
+        r#"
+        return await Promise.all([Promise.resolve("ok"), Promise.reject("boom")]).catch((e: string): string => e);
+    "#,
+        "boom",
+    );
+}
+
+#[test]
+fn test_promise_race_empty_rejects_static() {
+    expect_string_with_builtins(
+        r#"
+        return await Promise.race([]).catch((e: string): string => e);
+    "#,
+        "Promise.race requires at least one promise",
+    );
+}
+
+#[test]
 fn test_promise_then_instance() {
     expect_i32_with_builtins(
         r#"
