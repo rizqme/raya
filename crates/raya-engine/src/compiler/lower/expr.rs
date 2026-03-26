@@ -193,6 +193,50 @@ impl<'a> Lowerer<'a> {
         self.emit_closure_invoke(dest, closure, args, mode);
     }
 
+    fn emit_member_spawn_call(
+        &mut self,
+        dest: Register,
+        member: &ast::MemberExpression,
+        args: Vec<Register>,
+    ) {
+        let method_name_symbol = member.property.name;
+
+        if let Expression::Identifier(ident) = &*member.object {
+            if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
+                if let Some(&func_id) = self
+                    .static_method_map
+                    .get(&(nominal_type_id, method_name_symbol))
+                {
+                    if !self.js_this_binding_compat {
+                        self.emit(IrInstr::Spawn {
+                            dest,
+                            func: func_id,
+                            args,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+
+        if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
+            if let Some(func_id) = self.find_method(nominal_type_id, method_name_symbol) {
+                let object = self.lower_expr(&member.object);
+                let mut method_args = vec![object];
+                method_args.extend(args);
+                self.emit(IrInstr::Spawn {
+                    dest,
+                    func: func_id,
+                    args: method_args,
+                });
+                return;
+            }
+        }
+
+        let closure = self.lower_member(member);
+        self.emit_closure_invoke(dest, closure, args, ClosureInvokeMode::Spawn);
+    }
+
     fn resolve_identifier_closure_source(
         &mut self,
         ident: &ast::Identifier,
@@ -11723,52 +11767,7 @@ impl<'a> Lowerer<'a> {
 
         // Handle member access: async obj.method()
         if let Expression::Member(member) = &*async_call.callee {
-            let method_name_symbol = member.property.name;
-
-            // Check if it's a static method call
-            if let Expression::Identifier(ident) = &*member.object {
-                if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-                    if let Some(&func_id) = self
-                        .static_method_map
-                        .get(&(nominal_type_id, method_name_symbol))
-                    {
-                        if !self.js_this_binding_compat {
-                            self.emit(IrInstr::Spawn {
-                                dest: dest.clone(),
-                                func: func_id,
-                                args,
-                            });
-                            return dest;
-                        }
-                    }
-                }
-            }
-
-            // Instance method - find the method and spawn with 'this'
-            let nominal_type_id = self.infer_nominal_type_id(&member.object);
-            if let Some(nominal_type_id) = nominal_type_id {
-                if let Some(func_id) = self.find_method(nominal_type_id, method_name_symbol) {
-                    let object = self.lower_expr(&member.object);
-                    let mut method_args = vec![object];
-                    method_args.extend(args);
-                    self.emit(IrInstr::Spawn {
-                        dest: dest.clone(),
-                        func: func_id,
-                        args: method_args,
-                    });
-                    return dest;
-                }
-            }
-
-            // Dynamic/late-bound member fallback:
-            // lower member access and spawn the resulting callable.
-            let closure = self.lower_member(member);
-            self.emit_closure_invoke(
-                dest.clone(),
-                closure,
-                args,
-                ClosureInvokeMode::Spawn,
-            );
+            self.emit_member_spawn_call(dest.clone(), member, args);
             return dest;
         }
 
