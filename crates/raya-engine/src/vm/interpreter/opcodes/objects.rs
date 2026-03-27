@@ -140,8 +140,7 @@ impl<'a> Interpreter<'a> {
 
                 if *rebind_call_helper {
                     let rebound_target = *this_arg;
-                    let rebound_this =
-                        combined_args.first().copied().unwrap_or(Value::undefined());
+                    let rebound_this = combined_args.first().copied().unwrap_or(Value::undefined());
                     let rebound_rest = if combined_args.len() > 1 {
                         combined_args[1..].to_vec()
                     } else {
@@ -158,7 +157,9 @@ impl<'a> Interpreter<'a> {
                 }
             }
             CallableKind::Closure { func_id } => {
-                let target_module = co.callable_module().unwrap_or_else(|| task.current_module());
+                let target_module = co
+                    .callable_module()
+                    .unwrap_or_else(|| task.current_module());
                 let (is_async, is_generator, uses_explicit_js_this) = target_module
                     .functions
                     .get(*func_id)
@@ -176,7 +177,8 @@ impl<'a> Interpreter<'a> {
                 } else {
                     None
                 };
-                let mut final_args = Vec::with_capacity(args.len() + usize::from(this_arg.is_some()));
+                let mut final_args =
+                    Vec::with_capacity(args.len() + usize::from(this_arg.is_some()));
                 if let Some(this_arg) = this_arg {
                     final_args.push(this_arg);
                 }
@@ -228,8 +230,8 @@ impl<'a> Interpreter<'a> {
                         receiver,
                         &member_name,
                     )
-                        .map(|native_id| bound_native(self, native_id))
-                        .or(Some(Value::null()))
+                    .map(|native_id| bound_native(self, native_id))
+                    .or(Some(Value::null()))
                 }
             }
             JSView::Str(ptr) => {
@@ -242,8 +244,8 @@ impl<'a> Interpreter<'a> {
                         receiver,
                         &member_name,
                     )
-                        .map(|native_id| bound_native(self, native_id))
-                        .or(Some(Value::null()))
+                    .map(|native_id| bound_native(self, native_id))
+                    .or(Some(Value::null()))
                 }
             }
             _ => None,

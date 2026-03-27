@@ -3240,7 +3240,9 @@ impl<'a> Lowerer<'a> {
             .current_function
             .as_ref()
             .is_some_and(|f| is_module_wrapper_function_name(&f.name));
-        let preassigned_func_id = in_module_wrapper.then(|| self.function_id_for_decl(func_decl)).flatten();
+        let preassigned_func_id = in_module_wrapper
+            .then(|| self.function_id_for_decl(func_decl))
+            .flatten();
         let closure_reg =
             self.lower_function_expression_with_preassigned_id(&function_expr, preassigned_func_id);
         if let Some(func_id) = preassigned_func_id.or(self.last_arrow_func_id) {

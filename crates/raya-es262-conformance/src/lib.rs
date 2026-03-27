@@ -8,8 +8,8 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -1280,7 +1280,8 @@ fn run_case(
     let outcome = match negative_phase {
         Some("parse") | Some("resolution") => {
             let compile_started = Instant::now();
-            let compiled = runtime.compile_program_source_at_path(&prepared.full_source, &temp_path);
+            let compiled =
+                runtime.compile_program_source_at_path(&prepared.full_source, &temp_path);
             case_timings.compile += compile_started.elapsed();
             match compiled {
                 Ok(_) => TestOutcome::Failed("expected compilation to fail".to_string()),
@@ -1293,32 +1294,26 @@ fn run_case(
                 }
             }
         }
-        Some("runtime") => match execute_case_program(
-            runtime,
-            &temp_path,
-            &prepared,
-            is_async,
-            &mut case_timings,
-        ) {
-            Ok(()) => TestOutcome::Failed("expected runtime failure".to_string()),
-            Err(error) => {
-                if matches_expected_error(&error, expected_error) {
-                    TestOutcome::Passed
-                } else {
-                    TestOutcome::Failed(format!("unexpected runtime error: {}", error))
+        Some("runtime") => {
+            match execute_case_program(runtime, &temp_path, &prepared, is_async, &mut case_timings)
+            {
+                Ok(()) => TestOutcome::Failed("expected runtime failure".to_string()),
+                Err(error) => {
+                    if matches_expected_error(&error, expected_error) {
+                        TestOutcome::Passed
+                    } else {
+                        TestOutcome::Failed(format!("unexpected runtime error: {}", error))
+                    }
                 }
             }
-        },
-        _ => match execute_case_program(
-            runtime,
-            &temp_path,
-            &prepared,
-            is_async,
-            &mut case_timings,
-        ) {
-            Ok(()) => TestOutcome::Passed,
-            Err(error) => TestOutcome::Failed(error),
-        },
+        }
+        _ => {
+            match execute_case_program(runtime, &temp_path, &prepared, is_async, &mut case_timings)
+            {
+                Ok(()) => TestOutcome::Passed,
+                Err(error) => TestOutcome::Failed(error),
+            }
+        }
     };
 
     let outcome = match outcome {
@@ -1500,9 +1495,9 @@ fn execute_async_case_program(
         Ok(_) => match vm.test262_async_callback_status() {
             Ok(AsyncCallbackStatus::Succeeded) => Ok(()),
             Ok(AsyncCallbackStatus::Failed(message)) => Err(message),
-            Ok(AsyncCallbackStatus::Pending) if !settled || !drained => Err(
-                "async test did not settle before the completion timeout".to_string(),
-            ),
+            Ok(AsyncCallbackStatus::Pending) if !settled || !drained => {
+                Err("async test did not settle before the completion timeout".to_string())
+            }
             Ok(AsyncCallbackStatus::Pending) => Err("async test did not call $DONE".to_string()),
             Err(error) => Err(error),
         },
@@ -1542,7 +1537,10 @@ fn create_conformance_vm(runtime: &Runtime) -> raya_engine::vm::Vm {
     vm
 }
 
-fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<PreparedCaseSource, String> {
+fn prepare_case_source(
+    root: &Path,
+    case: &LoadedCase,
+) -> std::result::Result<PreparedCaseSource, String> {
     let is_raw = case.metadata.flags.iter().any(|flag| flag == "raw");
     let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
     for flag in &case.metadata.flags {

@@ -404,7 +404,8 @@ impl<'a> EarlyErrorPass<'a> {
 
         let name = self.interner.resolve(ident.name);
         if name == "yield"
-            && (self.current_strict() || self.current_function().is_some_and(|ctx| ctx.is_generator))
+            && (self.current_strict()
+                || self.current_function().is_some_and(|ctx| ctx.is_generator))
         {
             self.error(
                 "Identifier 'yield' is not allowed in this context",
@@ -2069,32 +2070,31 @@ impl<'a> EarlyErrorPass<'a> {
                 .find_await_expression_span(&cond.test)
                 .or_else(|| self.find_await_expression_span(&cond.consequent))
                 .or_else(|| self.find_await_expression_span(&cond.alternate)),
-            Expression::Call(call) => self
-                .find_await_expression_span(&call.callee)
-                .or_else(|| {
+            Expression::Call(call) => self.find_await_expression_span(&call.callee).or_else(|| {
+                call.arguments
+                    .iter()
+                    .find_map(|arg| self.find_await_expression_span(arg.expression()))
+            }),
+            Expression::AsyncCall(call) => {
+                self.find_await_expression_span(&call.callee).or_else(|| {
                     call.arguments
                         .iter()
                         .find_map(|arg| self.find_await_expression_span(arg.expression()))
-                }),
-            Expression::AsyncCall(call) => self
-                .find_await_expression_span(&call.callee)
-                .or_else(|| {
-                    call.arguments
-                        .iter()
-                        .find_map(|arg| self.find_await_expression_span(arg.expression()))
-                }),
+                })
+            }
             Expression::Member(member) => self.find_await_expression_span(&member.object),
             Expression::Index(index) => self
                 .find_await_expression_span(&index.object)
                 .or_else(|| self.find_await_expression_span(&index.index)),
-            Expression::New(new_expr) => self
-                .find_await_expression_span(&new_expr.callee)
-                .or_else(|| {
-                    new_expr
-                        .arguments
-                        .iter()
-                        .find_map(|arg| self.find_await_expression_span(arg.expression()))
-                }),
+            Expression::New(new_expr) => {
+                self.find_await_expression_span(&new_expr.callee)
+                    .or_else(|| {
+                        new_expr
+                            .arguments
+                            .iter()
+                            .find_map(|arg| self.find_await_expression_span(arg.expression()))
+                    })
+            }
             Expression::Await(await_expr) => Some(await_expr.span),
             Expression::Yield(yield_expr) => yield_expr
                 .value
@@ -2138,14 +2138,14 @@ impl<'a> EarlyErrorPass<'a> {
                 .find_await_expression_span(&in_expr.property)
                 .or_else(|| self.find_await_expression_span(&in_expr.object)),
             Expression::TypeCast(cast) => self.find_await_expression_span(&cast.object),
-            Expression::TaggedTemplate(tagged) => self
-                .find_await_expression_span(&tagged.tag)
-                .or_else(|| {
+            Expression::TaggedTemplate(tagged) => {
+                self.find_await_expression_span(&tagged.tag).or_else(|| {
                     tagged.template.parts.iter().find_map(|part| match part {
                         TemplatePart::Expression(expr) => self.find_await_expression_span(expr),
                         TemplatePart::String(_) => None,
                     })
-                }),
+                })
+            }
             Expression::Arrow(arrow) => arrow
                 .params
                 .iter()
@@ -2170,7 +2170,8 @@ impl<'a> EarlyErrorPass<'a> {
 
     fn find_parameter_await_span(&self, param: &Parameter) -> Option<crate::parser::Span> {
         self.find_pattern_await_span(&param.pattern).or_else(|| {
-            param.default_value
+            param
+                .default_value
                 .as_ref()
                 .and_then(|expr| self.find_await_expression_span(expr))
         })
@@ -2208,10 +2209,9 @@ impl<'a> EarlyErrorPass<'a> {
                         }
                     }
                 }
-                object
-                    .rest
-                    .as_ref()
-                    .and_then(|rest| (self.interner.resolve(rest.name) == "await").then_some(rest.span))
+                object.rest.as_ref().and_then(|rest| {
+                    (self.interner.resolve(rest.name) == "await").then_some(rest.span)
+                })
             }
             Pattern::Rest(rest) => self.find_pattern_await_span(&rest.argument),
         }

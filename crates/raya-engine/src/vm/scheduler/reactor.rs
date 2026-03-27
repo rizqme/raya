@@ -972,7 +972,11 @@ impl Reactor {
                 task.complete(source_task.result().unwrap_or(Value::undefined()));
             }
             TaskState::Failed => {
-                task.set_exception(source_task.observe_rejection_reason().unwrap_or(Value::null()));
+                task.set_exception(
+                    source_task
+                        .observe_rejection_reason()
+                        .unwrap_or(Value::null()),
+                );
                 task.fail();
             }
             TaskState::Created | TaskState::Running | TaskState::Suspended | TaskState::Resumed => {

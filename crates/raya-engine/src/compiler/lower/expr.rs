@@ -72,7 +72,10 @@ enum InvokePlanArgs {
 
 #[derive(Clone, Copy)]
 pub(super) enum InvokePlanCompletion {
-    Sync { result_ty: TypeId, propagate_type: bool },
+    Sync {
+        result_ty: TypeId,
+        propagate_type: bool,
+    },
     Task,
 }
 
@@ -85,7 +88,9 @@ pub(super) struct InvokePlan {
 }
 
 enum ResolvedIdentifierClosure {
-    DirectEval { closure: Register },
+    DirectEval {
+        closure: Register,
+    },
     Local {
         local_idx: u16,
         closure: Register,
@@ -181,7 +186,11 @@ impl<'a> Lowerer<'a> {
     ) {
         match mode {
             ClosureInvokeMode::Spawn => {
-                self.emit(IrInstr::SpawnClosure { dest, closure, args });
+                self.emit(IrInstr::SpawnClosure {
+                    dest,
+                    closure,
+                    args,
+                });
             }
             ClosureInvokeMode::Sync { result_ty } => {
                 self.emit(IrInstr::CallClosure {
@@ -212,9 +221,7 @@ impl<'a> Lowerer<'a> {
         let mode = if self.type_id_is_async_callable(callee_ty) {
             ClosureInvokeMode::Spawn
         } else {
-            ClosureInvokeMode::Sync {
-                result_ty,
-            }
+            ClosureInvokeMode::Sync { result_ty }
         };
         self.emit_closure_invoke(dest, closure, args, mode);
     }
@@ -235,14 +242,14 @@ impl<'a> Lowerer<'a> {
 
     fn invoke_plan_completion_for_callable(
         &self,
-        callee_ty: TypeId,
+        _callee_ty: TypeId,
         result_ty: TypeId,
     ) -> InvokePlanCompletion {
-        if self.type_id_is_async_callable(callee_ty) {
-            InvokePlanCompletion::Task
-        } else {
-            Self::invoke_plan_sync(result_ty)
-        }
+        // Plain closure calls should go through CallClosure so the VM can decide
+        // at runtime whether the target is sync, async, generator, or async
+        // generator. Lowering only has type-level `is_async` today, which is not
+        // enough to distinguish `async function` from `async function*`.
+        Self::invoke_plan_sync(result_ty)
     }
 
     pub(super) fn plan_direct_function_invoke(
@@ -312,11 +319,7 @@ impl<'a> Lowerer<'a> {
                 ..
             } => match completion {
                 InvokePlanCompletion::Task => {
-                    self.emit(IrInstr::Spawn {
-                        dest,
-                        func,
-                        args,
-                    });
+                    self.emit(IrInstr::Spawn { dest, func, args });
                 }
                 InvokePlanCompletion::Sync {
                     result_ty,
@@ -505,11 +508,15 @@ impl<'a> Lowerer<'a> {
             return Some(self.lower_member(member));
         }
         let static_native_id = match (class_name, method_name) {
-            ("Object", "defineProperty") => Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY),
+            ("Object", "defineProperty") => {
+                Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY)
+            }
             ("Object", "getOwnPropertyDescriptor") => {
                 Some(crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR)
             }
-            ("Object", "defineProperties") => Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES),
+            ("Object", "defineProperties") => {
+                Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES)
+            }
             ("Reflect", "get") => Some(crate::compiler::native_id::REFLECT_GET),
             ("Reflect", "set") => Some(crate::compiler::native_id::REFLECT_SET),
             ("Reflect", "has") => Some(crate::compiler::native_id::REFLECT_HAS),
@@ -792,11 +799,15 @@ impl<'a> Lowerer<'a> {
     ) -> Option<Register> {
         match self.checker_validated_member_call_kind(checker_member_ty, method_name) {
             Some(CheckerValidatedMemberCallKind::Method) => {
-                if let Some((shape_id, slot)) = self.structural_shape_id_from_type(checker_member_ty).zip(
-                    self.structural_slot_index_from_type(checker_member_ty, method_name),
-                ) {
+                if let Some((shape_id, slot)) = self
+                    .structural_shape_id_from_type(checker_member_ty)
+                    .zip(self.structural_slot_index_from_type(checker_member_ty, method_name))
+                {
                     let object = self.lower_expr(&member.object);
-                    self.emit_structural_slot_registration_for_type(object.clone(), checker_member_ty);
+                    self.emit_structural_slot_registration_for_type(
+                        object.clone(),
+                        checker_member_ty,
+                    );
                     self.emit(IrInstr::CallMethodShape {
                         dest: Some(dest.clone()),
                         object,
@@ -872,10 +883,12 @@ impl<'a> Lowerer<'a> {
         }
 
         let checker_validated = if let Expression::Identifier(obj_ident) = &*member.object {
-            self.constructor_value_ctor_map.contains_key(&obj_ident.name) || {
-                let obj_ty = self.get_expr_type(&member.object);
-                self.type_has_checker_validated_class_members(obj_ty)
-            }
+            self.constructor_value_ctor_map
+                .contains_key(&obj_ident.name)
+                || {
+                    let obj_ty = self.get_expr_type(&member.object);
+                    self.type_has_checker_validated_class_members(obj_ty)
+                }
         } else {
             let obj_ty = self.get_expr_type(&member.object);
             self.type_has_checker_validated_class_members(obj_ty)
@@ -883,17 +896,17 @@ impl<'a> Lowerer<'a> {
         if !self.allow_unresolved_runtime_fallback && !checker_validated {
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
-                    message: format!(
-                        "strict mode forbids runtime late-bound fallback for member call '{}.{}(...)'",
-                        match &*member.object {
-                            Expression::Identifier(obj_ident) => {
-                                self.interner.resolve(obj_ident.name).to_string()
-                            }
-                            _ => "<expr>".to_string(),
-                        },
-                        method_name
-                    ),
-                });
+                message: format!(
+                    "strict mode forbids runtime late-bound fallback for member call '{}.{}(...)'",
+                    match &*member.object {
+                        Expression::Identifier(obj_ident) => {
+                            self.interner.resolve(obj_ident.name).to_string()
+                        }
+                        _ => "<expr>".to_string(),
+                    },
+                    method_name
+                ),
+            });
             self.poison_register(&dest);
             return Some(dest);
         }
@@ -1018,7 +1031,11 @@ impl<'a> Lowerer<'a> {
             self.late_bound_object_ctor_map
                 .get(&obj_ident.name)
                 .copied()
-                .or_else(|| self.constructor_value_ctor_map.get(&obj_ident.name).copied())
+                .or_else(|| {
+                    self.constructor_value_ctor_map
+                        .get(&obj_ident.name)
+                        .copied()
+                })
                 .and_then(|ctor_symbol| {
                     let ctor_name = self.interner.resolve(ctor_symbol);
                     self.type_registry
@@ -1031,7 +1048,9 @@ impl<'a> Lowerer<'a> {
             None
         };
         let late_bound_ctor_has_dispatch = late_bound_ctor_dispatch_id.is_some_and(|type_id| {
-            self.type_registry.lookup_method(type_id, method_name).is_some()
+            self.type_registry
+                .lookup_method(type_id, method_name)
+                .is_some()
                 || (args.is_empty()
                     && self
                         .type_registry
@@ -1096,7 +1115,9 @@ impl<'a> Lowerer<'a> {
                     let reg_ty = self.normalize_type_for_dispatch(args[0].ty.as_u32());
                     let checker_ty = call
                         .argument_expression(0)
-                        .map(|arg| self.normalize_type_for_dispatch(self.get_expr_type(arg).as_u32()))
+                        .map(|arg| {
+                            self.normalize_type_for_dispatch(self.get_expr_type(arg).as_u32())
+                        })
                         .unwrap_or(reg_ty);
                     reg_ty == REGEXP_TYPE_ID || checker_ty == REGEXP_TYPE_ID
                 } else {
@@ -1181,12 +1202,7 @@ impl<'a> Lowerer<'a> {
                     });
                 } else {
                     let receiver = object;
-                    self.emit_js_member_call_helper(
-                        dest.clone(),
-                        receiver,
-                        closure,
-                        args.to_vec(),
-                    );
+                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
                 }
                 return Some(dest);
             }
@@ -4700,17 +4716,10 @@ impl<'a> Lowerer<'a> {
                 .as_ref()
                 .is_some_and(|m| m.contains_key(&ident.name));
 
-            match self.resolve_identifier_closure_source(
-                ident,
-                &call.callee,
-                "callable",
-            ) {
+            match self.resolve_identifier_closure_source(ident, &call.callee, "callable") {
                 Ok(Some(ResolvedIdentifierClosure::DirectEval { closure })) => {
-                    let plan = self.plan_closure_invoke(
-                        closure,
-                        args,
-                        Self::invoke_plan_sync(call_ty),
-                    );
+                    let plan =
+                        self.plan_closure_invoke(closure, args, Self::invoke_plan_sync(call_ty));
                     self.emit_invoke_plan(dest.clone(), plan);
                     return dest;
                 }
@@ -4769,11 +4778,8 @@ impl<'a> Lowerer<'a> {
                                     func_id.as_u32()
                                 );
                             }
-                            let plan = self.plan_closure_invoke(
-                                closure,
-                                args,
-                                InvokePlanCompletion::Task,
-                            );
+                            let plan =
+                                self.plan_closure_invoke(closure, args, InvokePlanCompletion::Task);
                             self.emit_invoke_plan(dest.clone(), plan);
                             return dest;
                         }
@@ -4933,11 +4939,8 @@ impl<'a> Lowerer<'a> {
                                 func_id.as_u32()
                             );
                         }
-                        let plan = self.plan_closure_invoke(
-                            closure,
-                            args,
-                            InvokePlanCompletion::Task,
-                        );
+                        let plan =
+                            self.plan_closure_invoke(closure, args, InvokePlanCompletion::Task);
                         self.emit_invoke_plan(dest.clone(), plan);
                     } else {
                         let plan = self.plan_closure_invoke(
@@ -5023,18 +5026,14 @@ impl<'a> Lowerer<'a> {
                     if self.async_closures.contains(&func_id)
                         || self.async_functions.contains(&func_id)
                     {
-                        let plan = self.plan_closure_invoke(
-                            closure,
-                            args,
-                            InvokePlanCompletion::Task,
-                        );
+                        let plan =
+                            self.plan_closure_invoke(closure, args, InvokePlanCompletion::Task);
                         self.emit_invoke_plan(dest.clone(), plan);
                         return dest;
                     }
                 }
 
-                let plan =
-                    self.plan_closure_invoke(closure, args, Self::invoke_plan_sync(call_ty));
+                let plan = self.plan_closure_invoke(closure, args, Self::invoke_plan_sync(call_ty));
                 self.emit_invoke_plan(dest.clone(), plan);
                 return dest;
             }
@@ -5078,17 +5077,13 @@ impl<'a> Lowerer<'a> {
                                 is_ancestor
                             );
                         }
-                        let plan = self.plan_closure_invoke(
-                            closure,
-                            args,
-                            InvokePlanCompletion::Task,
-                        );
+                        let plan =
+                            self.plan_closure_invoke(closure, args, InvokePlanCompletion::Task);
                         self.emit_invoke_plan(dest.clone(), plan);
                         return dest;
                     }
                 }
-                let plan =
-                    self.plan_closure_invoke(closure, args, Self::invoke_plan_sync(call_ty));
+                let plan = self.plan_closure_invoke(closure, args, Self::invoke_plan_sync(call_ty));
                 self.emit_invoke_plan(dest.clone(), plan);
                 return dest;
             }
@@ -5506,8 +5501,8 @@ impl<'a> Lowerer<'a> {
             // Fall back to registry-based dispatch
             let object = self.lower_expr(&member.object);
 
-            let (obj_type_id, late_bound_ctor_has_dispatch) =
-                self.resolve_registry_member_dispatch_type(
+            let (obj_type_id, late_bound_ctor_has_dispatch) = self
+                .resolve_registry_member_dispatch_type(
                     &member.object,
                     &object,
                     member_field_metadata,
@@ -5919,12 +5914,8 @@ impl<'a> Lowerer<'a> {
         let call_result = self.alloc_register(dest.ty);
         if call.has_spread_arguments() {
             let args_array = self.lower_call_argument_array(&call.arguments);
-            let plan = self.plan_apply_invoke(
-                None,
-                callee,
-                args_array,
-                Self::invoke_plan_sync(call_ty),
-            );
+            let plan =
+                self.plan_apply_invoke(None, callee, args_array, Self::invoke_plan_sync(call_ty));
             self.emit_invoke_plan(call_result.clone(), plan);
         } else {
             let args = self.lower_call_argument_values(&call.arguments);
@@ -10156,7 +10147,7 @@ impl<'a> Lowerer<'a> {
             func_id
         };
 
-        if func.is_async {
+        if func.is_async && !func.is_generator {
             self.async_closures.insert(func_id);
         }
 
@@ -11859,7 +11850,11 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        fn value_awaitability(type_ctx: &TC, ty: TypeId, promise_ty: Option<TypeId>) -> Awaitability {
+        fn value_awaitability(
+            type_ctx: &TC,
+            ty: TypeId,
+            promise_ty: Option<TypeId>,
+        ) -> Awaitability {
             match type_ctx.get(ty) {
                 Some(Type::Task(_)) => Awaitability::Definite,
                 Some(Type::Class(class)) if class.name == "Promise" => Awaitability::Definite,
@@ -11867,7 +11862,9 @@ impl<'a> Lowerer<'a> {
                     .and_then(|promise_ty| {
                         let mut subtype_ctx =
                             crate::parser::types::subtyping::SubtypingContext::new(type_ctx);
-                        subtype_ctx.is_subtype(ty, promise_ty).then_some(Awaitability::Definite)
+                        subtype_ctx
+                            .is_subtype(ty, promise_ty)
+                            .then_some(Awaitability::Definite)
                     })
                     .unwrap_or(Awaitability::None),
                 Some(Type::Reference(reference)) if reference.name == "Promise" => {
@@ -11877,19 +11874,26 @@ impl<'a> Lowerer<'a> {
                     .lookup_named_type(&reference.name)
                     .map(|named| value_awaitability(type_ctx, named, promise_ty))
                     .unwrap_or(Awaitability::Maybe),
-                Some(Type::Union(union)) => union
-                    .members
-                    .iter()
-                    .copied()
-                    .fold(Awaitability::None, |acc, member| {
-                        merge_awaitability(acc, value_awaitability(type_ctx, member, promise_ty))
-                    }),
+                Some(Type::Union(union)) => {
+                    union
+                        .members
+                        .iter()
+                        .copied()
+                        .fold(Awaitability::None, |acc, member| {
+                            merge_awaitability(
+                                acc,
+                                value_awaitability(type_ctx, member, promise_ty),
+                            )
+                        })
+                }
                 Some(Type::TypeVar(tv)) => {
                     tv.constraint.map_or(Awaitability::Maybe, |constraint| {
                         value_awaitability(type_ctx, constraint, promise_ty)
                     })
                 }
-                Some(Type::Generic(generic)) => value_awaitability(type_ctx, generic.base, promise_ty),
+                Some(Type::Generic(generic)) => {
+                    value_awaitability(type_ctx, generic.base, promise_ty)
+                }
                 Some(Type::Any) | Some(Type::Unknown) | Some(Type::JSObject) => Awaitability::Maybe,
                 None => Awaitability::Maybe,
                 _ => Awaitability::None,
@@ -11905,18 +11909,12 @@ impl<'a> Lowerer<'a> {
                 Some(Type::Array(arr)) => {
                     Some(value_awaitability(type_ctx, arr.element, promise_ty))
                 }
-                Some(Type::Tuple(tuple)) => Some(
-                    tuple
-                        .elements
-                        .iter()
-                        .copied()
-                        .fold(Awaitability::None, |acc, elem| {
-                            merge_awaitability(
-                                acc,
-                                value_awaitability(type_ctx, elem, promise_ty),
-                            )
-                        }),
-                ),
+                Some(Type::Tuple(tuple)) => Some(tuple.elements.iter().copied().fold(
+                    Awaitability::None,
+                    |acc, elem| {
+                        merge_awaitability(acc, value_awaitability(type_ctx, elem, promise_ty))
+                    },
+                )),
                 _ => None,
             }
         }
@@ -11930,8 +11928,10 @@ impl<'a> Lowerer<'a> {
         let checker_arg_ty = self.get_expr_type(&await_expr.argument);
         let lowered_arg_ty = awaited_value.ty;
 
-        let checker_array_awaitability = array_awaitability(self.type_ctx, checker_arg_ty, promise_ty);
-        let lowered_array_awaitability = array_awaitability(self.type_ctx, lowered_arg_ty, promise_ty);
+        let checker_array_awaitability =
+            array_awaitability(self.type_ctx, checker_arg_ty, promise_ty);
+        let lowered_array_awaitability =
+            array_awaitability(self.type_ctx, lowered_arg_ty, promise_ty);
 
         let checker_needs_waitall = matches!(
             checker_array_awaitability,
@@ -12063,7 +12063,6 @@ impl<'a> Lowerer<'a> {
                 self.emit_invoke_plan(dest.clone(), plan);
                 return dest;
             }
-
         }
 
         // Handle member access: async obj.method()
@@ -12794,7 +12793,7 @@ impl<'a> Lowerer<'a> {
         self.next_function_id += 1;
 
         // Preserve async marker from original function
-        if func_ast.is_async {
+        if func_ast.is_async && !func_ast.is_generator {
             self.async_functions.insert(specialized_id);
         }
 

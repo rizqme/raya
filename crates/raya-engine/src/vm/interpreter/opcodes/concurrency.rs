@@ -185,11 +185,12 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                let Some(plan) = (match self.prepare_callable_invocation(closure_val, &args, None, task)
-                {
-                    Ok(plan) => plan,
-                    Err(error) => return OpcodeResult::Error(error),
-                }) else {
+                let Some(plan) =
+                    (match self.prepare_callable_invocation(closure_val, &args, None, task) {
+                        Ok(plan) => plan,
+                        Err(error) => return OpcodeResult::Error(error),
+                    })
+                else {
                     return OpcodeResult::Error(VmError::TypeError(
                         "Expected closure or bound method".to_string(),
                     ));

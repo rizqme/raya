@@ -359,7 +359,9 @@ impl<'a> Interpreter<'a> {
         let promise_proto = self.constructor_prototype_value(promise_ctor)?;
         let method = self
             .property_value_with_protocol_alias(promise_proto, key)
-            .or_else(|| self.prototype_chain_property_value_with_protocol_alias(promise_proto, key))?;
+            .or_else(|| {
+                self.prototype_chain_property_value_with_protocol_alias(promise_proto, key)
+            })?;
         if !Self::is_callable_value(method) {
             return None;
         }
@@ -374,7 +376,9 @@ impl<'a> Interpreter<'a> {
         );
         let bound_ptr = self.gc.lock().allocate(bound);
         Some(unsafe {
-            Value::from_ptr(std::ptr::NonNull::new(bound_ptr.as_ptr()).expect("bound promise method"))
+            Value::from_ptr(
+                std::ptr::NonNull::new(bound_ptr.as_ptr()).expect("bound promise method"),
+            )
         })
     }
 
@@ -431,8 +435,7 @@ impl<'a> Interpreter<'a> {
             return Some(value);
         }
         // Check builtin native methods
-        if let Some(native_id) = builtin_handle_native_method_id(self.pinned_handles, target, key)
-        {
+        if let Some(native_id) = builtin_handle_native_method_id(self.pinned_handles, target, key) {
             let method = Object::new_bound_native(target, native_id);
             let method_ptr = self.gc.lock().allocate(method);
             let val =
@@ -1291,19 +1294,17 @@ impl<'a> Interpreter<'a> {
                                 key_str,
                             )
                             .or_else(|| {
-                                    for alias in protocol_alias_names(key_str) {
-                                        if let Some(native_id) = builtin_handle_native_method_id(
-                                            self.pinned_handles,
-                                            obj_val,
-                                            alias,
-                                        )
-                                        {
-                                            return Some(native_id);
-                                        }
+                                for alias in protocol_alias_names(key_str) {
+                                    if let Some(native_id) = builtin_handle_native_method_id(
+                                        self.pinned_handles,
+                                        obj_val,
+                                        alias,
+                                    ) {
+                                        return Some(native_id);
                                     }
-                                    None
-                                })
-                            {
+                                }
+                                None
+                            }) {
                                 let method = Object::new_bound_native(obj_val, native_id);
                                 let method_ptr = self.gc.lock().allocate(method);
                                 unsafe {
@@ -1354,19 +1355,17 @@ impl<'a> Interpreter<'a> {
                                 key_str,
                             )
                             .or_else(|| {
-                                    for alias in protocol_alias_names(key_str) {
-                                        if let Some(native_id) = builtin_handle_native_method_id(
-                                            self.pinned_handles,
-                                            obj_val,
-                                            alias,
-                                        )
-                                        {
-                                            return Some(native_id);
-                                        }
+                                for alias in protocol_alias_names(key_str) {
+                                    if let Some(native_id) = builtin_handle_native_method_id(
+                                        self.pinned_handles,
+                                        obj_val,
+                                        alias,
+                                    ) {
+                                        return Some(native_id);
                                     }
-                                    None
-                                })
-                            {
+                                }
+                                None
+                            }) {
                                 let method = Object::new_bound_native(obj_val, native_id);
                                 let method_ptr = self.gc.lock().allocate(method);
                                 unsafe {
@@ -1430,8 +1429,7 @@ impl<'a> Interpreter<'a> {
                                             self.pinned_handles,
                                             obj_val,
                                             key_str,
-                                        )
-                                        {
+                                        ) {
                                             let method =
                                                 Object::new_bound_native(obj_val, native_id);
                                             let method_ptr = self.gc.lock().allocate(method);
@@ -1879,10 +1877,7 @@ impl<'a> Interpreter<'a> {
                     "boolean"
                 } else if js_numeric_semantics && checked_bigint_ptr(value).is_some() {
                     "bigint"
-                } else if value
-                    .is_u64()
-                    && self.promise_handle_from_value(value).is_some()
-                {
+                } else if value.is_u64() && self.promise_handle_from_value(value).is_some() {
                     // Async JS promises are represented by task handles internally, but
                     // observable JS semantics still require `typeof promise === "object"`.
                     "object"

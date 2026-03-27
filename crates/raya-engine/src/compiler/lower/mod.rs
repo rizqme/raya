@@ -729,13 +729,15 @@ pub struct Lowerer<'a> {
     /// Block nesting depth at module scope.
     /// `0` means true module top-level statement context.
     block_depth: u32,
-    /// Set of function IDs that are async closures (should be spawned as Tasks)
+    /// Set of function IDs that are plain async closures (non-generators) which
+    /// should be spawned as Tasks when lowering explicit async/task call paths.
     async_closures: FxHashSet<FunctionId>,
     /// Map from local variable index to function ID for closures stored in variables
-    /// Used to track async closures for SpawnClosure emission
+    /// Used to track plain async (non-generator) closures for SpawnClosure emission
     closure_locals: FxHashMap<u16, FunctionId>,
     /// Map from module-global variable index to function ID for closures stored in globals.
-    /// Used to track async closures for SpawnClosure emission from global variables.
+    /// Used to track plain async (non-generator) closures for SpawnClosure emission
+    /// from global variables.
     closure_globals: FxHashMap<u16, FunctionId>,
     /// Stable global slots for top-level JS function declarations.
     /// Stored in source order so later declarations overwrite earlier ones.
@@ -1411,7 +1413,7 @@ impl<'a> Lowerer<'a> {
         self.function_decl_ids.insert(func.span.start, func_id);
         self.function_map.insert(func.name.name, func_id);
 
-        if func.is_async {
+        if func.is_async && !func.is_generator {
             self.async_functions.insert(func_id);
         }
 
@@ -3570,7 +3572,7 @@ impl<'a> Lowerer<'a> {
                     let func_id = FunctionId::new(self.next_function_id);
                     self.next_function_id += 1;
 
-                    if method.is_async {
+                    if method.is_async && !method.is_generator {
                         self.async_functions.insert(func_id);
                     }
 
@@ -4469,7 +4471,9 @@ impl<'a> Lowerer<'a> {
             let prop_name = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
                 dest: prop_name.clone(),
-                value: IrValue::Constant(IrConstant::String(self.interner.resolve(name).to_string())),
+                value: IrValue::Constant(IrConstant::String(
+                    self.interner.resolve(name).to_string(),
+                )),
             });
             let initial_value = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::NativeCall {

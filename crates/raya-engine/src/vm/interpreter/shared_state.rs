@@ -757,9 +757,9 @@ impl SharedVmState {
     }
 
     pub fn complete_test262_async_callback_success(&self) {
-        let _ = self
-            .test262_async_state
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
+        let _ =
+            self.test262_async_state
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
     }
 
     pub fn complete_test262_async_callback_failure(&self, message: String) {

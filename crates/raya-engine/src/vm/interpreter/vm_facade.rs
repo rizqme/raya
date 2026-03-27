@@ -627,9 +627,11 @@ impl Vm {
         match self.shared_state().test262_async_callback_status() {
             Test262AsyncStatusSnapshot::Pending => Ok(AsyncCallbackStatus::Pending),
             Test262AsyncStatusSnapshot::Succeeded => Ok(AsyncCallbackStatus::Succeeded),
-            Test262AsyncStatusSnapshot::Failed(message) => Ok(AsyncCallbackStatus::Failed(
-                message.unwrap_or_else(|| "async test failed via $DONE".to_string()),
-            )),
+            Test262AsyncStatusSnapshot::Failed(message) => {
+                Ok(AsyncCallbackStatus::Failed(message.unwrap_or_else(|| {
+                    "async test failed via $DONE".to_string()
+                })))
+            }
         }
     }
 
@@ -658,7 +660,6 @@ impl Vm {
     pub fn plain_string_value(&self, value: Value) -> Option<String> {
         Self::value_to_plain_string(value)
     }
-
 
     /// Load a .ryb file into this VM
     ///

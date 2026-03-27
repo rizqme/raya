@@ -85,9 +85,12 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
 
                     let span = parser.combine_spans(&start_span, expression.span());
 
-                    Ok(Statement::Expression(ExpressionStatement { expression, span }))
+                    Ok(Statement::Expression(ExpressionStatement {
+                        expression,
+                        span,
+                    }))
                 } else {
-                // async function declaration
+                    // async function declaration
                     parse_function_declaration(parser)
                 }
             } else {

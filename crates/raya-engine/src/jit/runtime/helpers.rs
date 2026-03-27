@@ -70,8 +70,9 @@ pub struct JitRuntimeBridgeContext {
     pub pinned_handles: *const parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     pub tasks: *const Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     pub injector: *const Arc<Injector<Arc<Task>>>,
-    pub promise_microtasks:
-        *const parking_lot::Mutex<std::collections::VecDeque<crate::vm::interpreter::PromiseMicrotask>>,
+    pub promise_microtasks: *const parking_lot::Mutex<
+        std::collections::VecDeque<crate::vm::interpreter::PromiseMicrotask>,
+    >,
     pub test262_async_state: *const std::sync::atomic::AtomicU8,
     pub test262_async_failure: *const parking_lot::Mutex<Option<String>>,
     pub module_layouts: *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
@@ -116,8 +117,9 @@ pub fn build_runtime_bridge_context(
     pinned_handles: &parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     tasks: &Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     injector: &Arc<Injector<Arc<Task>>>,
-    promise_microtasks:
-        &parking_lot::Mutex<std::collections::VecDeque<crate::vm::interpreter::PromiseMicrotask>>,
+    promise_microtasks: &parking_lot::Mutex<
+        std::collections::VecDeque<crate::vm::interpreter::PromiseMicrotask>,
+    >,
     test262_async_state: &std::sync::atomic::AtomicU8,
     test262_async_failure: &parking_lot::Mutex<Option<String>>,
     module_layouts: &parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,

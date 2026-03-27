@@ -21,8 +21,8 @@ use crate::parser::{Parser, TypeContext};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{ExecutionResult, OpcodeResult, ReturnAction};
-use crate::vm::interpreter::{PromiseHandle, PromiseMicrotask};
 use crate::vm::interpreter::Interpreter;
+use crate::vm::interpreter::{PromiseHandle, PromiseMicrotask};
 use crate::vm::object::{
     layout_id_from_ordered_names, ArgumentsDataProperty, ArgumentsIndexedProperty,
     ArgumentsObjectData, Array, Buffer, CallableKind, ChannelObject, Class, DateObject, DynProp,
@@ -772,20 +772,20 @@ impl<'a> Interpreter<'a> {
 
         if !is_async {
             if let Some(obj_ptr) = checked_object_ptr(iterator_value) {
-            let iterator = unsafe { &mut *obj_ptr.as_ptr() };
-            if let Some(dyn_props) = iterator.dyn_props_mut() {
-                for key in ["next", "return", "Symbol.iterator"] {
-                    if let Some(prop) = dyn_props.get_mut(self.intern_prop_key(key)) {
-                        let native_id = match key {
-                            "next" => crate::compiler::native_id::OBJECT_GENERATOR_NEXT,
-                            "return" => crate::compiler::native_id::OBJECT_GENERATOR_RETURN,
-                            _ => crate::compiler::native_id::OBJECT_GENERATOR_ITERATOR,
-                        };
-                        prop.value = self.alloc_bound_native_value(iterator_value, native_id);
+                let iterator = unsafe { &mut *obj_ptr.as_ptr() };
+                if let Some(dyn_props) = iterator.dyn_props_mut() {
+                    for key in ["next", "return", "Symbol.iterator"] {
+                        if let Some(prop) = dyn_props.get_mut(self.intern_prop_key(key)) {
+                            let native_id = match key {
+                                "next" => crate::compiler::native_id::OBJECT_GENERATOR_NEXT,
+                                "return" => crate::compiler::native_id::OBJECT_GENERATOR_RETURN,
+                                _ => crate::compiler::native_id::OBJECT_GENERATOR_ITERATOR,
+                            };
+                            prop.value = self.alloc_bound_native_value(iterator_value, native_id);
+                        }
                     }
                 }
             }
-        }
         }
 
         iterator_value
@@ -902,7 +902,11 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    fn normalize_promise_source_task(&mut self, value: Value, caller_task: &Arc<Task>) -> Arc<Task> {
+    fn normalize_promise_source_task(
+        &mut self,
+        value: Value,
+        caller_task: &Arc<Task>,
+    ) -> Arc<Task> {
         if let Some(task) = self.task_from_handle_value(value) {
             return task;
         }
@@ -911,11 +915,7 @@ impl<'a> Interpreter<'a> {
             .expect("settled_task_handle must create a valid PromiseHandle")
     }
 
-    fn queue_or_attach_promise_reaction(
-        &self,
-        source_task: &Arc<Task>,
-        reaction: PromiseReaction,
-    ) {
+    fn queue_or_attach_promise_reaction(&self, source_task: &Arc<Task>, reaction: PromiseReaction) {
         source_task.mark_rejection_observed();
         if !source_task.add_reaction_if_incomplete(reaction) {
             self.enqueue_promise_microtask(PromiseMicrotask::RunReaction {
@@ -1025,7 +1025,9 @@ impl<'a> Interpreter<'a> {
             .get(remaining_key)
             .and_then(|prop| prop.value.as_i32())
             .ok_or_else(|| {
-                VmError::RuntimeError("Promise.all aggregate remaining count is missing".to_string())
+                VmError::RuntimeError(
+                    "Promise.all aggregate remaining count is missing".to_string(),
+                )
             })?;
         let Some(results_ptr) = checked_array_ptr(results) else {
             return Err(VmError::RuntimeError(
@@ -1033,7 +1035,9 @@ impl<'a> Interpreter<'a> {
             ));
         };
         let results_array = unsafe { &mut *results_ptr.as_ptr() };
-        results_array.set(index, value).map_err(VmError::RuntimeError)?;
+        results_array
+            .set(index, value)
+            .map_err(VmError::RuntimeError)?;
         let next_remaining = remaining - 1;
         dyn_props.insert(
             remaining_key,
@@ -1058,7 +1062,9 @@ impl<'a> Interpreter<'a> {
             let empty = unsafe {
                 Value::from_ptr(std::ptr::NonNull::new(empty_ptr.as_ptr()).expect("empty array"))
             };
-            return Ok(self.settled_task_handle(caller_task, Ok(empty)).into_value());
+            return Ok(self
+                .settled_task_handle(caller_task, Ok(empty))
+                .into_value());
         }
 
         let state = self.promise_all_state_value(array.len())?;
@@ -1097,13 +1103,12 @@ impl<'a> Interpreter<'a> {
         };
         let array = unsafe { &*array_ptr.as_ptr() };
         if array.is_empty() {
-            return Ok(
-                self.settled_task_handle(
+            return Ok(self
+                .settled_task_handle(
                     caller_task,
                     Err(self.alloc_string_value("Promise.race requires at least one promise")),
                 )
-                .into_value(),
-            );
+                .into_value());
         }
 
         let target_handle = self.pending_task_handle(caller_task);
@@ -1135,7 +1140,10 @@ impl<'a> Interpreter<'a> {
         let Some(target_task) = self.tasks.read().get(&reaction.target_task_id).cloned() else {
             return;
         };
-        if matches!(target_task.state(), TaskState::Completed | TaskState::Failed) {
+        if matches!(
+            target_task.state(),
+            TaskState::Completed | TaskState::Failed
+        ) {
             return;
         }
 
@@ -1153,7 +1161,11 @@ impl<'a> Interpreter<'a> {
                 } else {
                     reaction.on_fulfilled
                 };
-                let input = if source_failed { source_reason } else { source_result };
+                let input = if source_failed {
+                    source_reason
+                } else {
+                    source_result
+                };
                 if !self.js_call_target_supported(callback) {
                     let _ = self.settle_existing_task_handle(
                         target_handle,
@@ -1174,7 +1186,9 @@ impl<'a> Interpreter<'a> {
                     }
                     Err(error) => {
                         self.ensure_task_exception_for_error(&target_task, &error);
-                        let reason = target_task.current_exception().unwrap_or(Value::undefined());
+                        let reason = target_task
+                            .current_exception()
+                            .unwrap_or(Value::undefined());
                         let _ = self.settle_existing_task_handle(target_handle, Err(reason));
                     }
                 }
@@ -1222,7 +1236,9 @@ impl<'a> Interpreter<'a> {
                     }
                     Err(error) => {
                         self.ensure_task_exception_for_error(&target_task, &error);
-                        let reason = target_task.current_exception().unwrap_or(Value::undefined());
+                        let reason = target_task
+                            .current_exception()
+                            .unwrap_or(Value::undefined());
                         let _ = self.settle_existing_task_handle(target_handle, Err(reason));
                     }
                 }
@@ -1249,7 +1265,9 @@ impl<'a> Interpreter<'a> {
                     Ok(None) => {}
                     Err(error) => {
                         self.ensure_task_exception_for_error(&target_task, &error);
-                        let reason = target_task.current_exception().unwrap_or(Value::undefined());
+                        let reason = target_task
+                            .current_exception()
+                            .unwrap_or(Value::undefined());
                         let _ = self.settle_existing_task_handle(target_handle, Err(reason));
                     }
                 }
@@ -1364,7 +1382,8 @@ impl<'a> Interpreter<'a> {
             }
             TaskState::Failed => {
                 source_task.mark_rejection_observed();
-                pending_task.set_exception(source_task.current_exception().unwrap_or(Value::null()));
+                pending_task
+                    .set_exception(source_task.current_exception().unwrap_or(Value::null()));
                 pending_task.fail();
             }
             _ => return,
@@ -1636,11 +1655,7 @@ impl<'a> Interpreter<'a> {
             generator_task.current_module().as_ref(),
             caller_task,
         )?;
-        Ok(self.generator_iterator_object(
-            generator_task.id(),
-            iterator_prototype,
-            is_async,
-        ))
+        Ok(self.generator_iterator_object(generator_task.id(), iterator_prototype, is_async))
     }
 }
 
@@ -12711,7 +12726,7 @@ impl<'a> Interpreter<'a> {
                             target,
                             key,
                         )
-                            .is_some()
+                        .is_some()
                         || self.has_constructor_static_method(target, key)
                         || self.has_class_vtable_method(target, key));
                 if !runtime_placeholder {

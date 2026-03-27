@@ -1594,7 +1594,9 @@ impl<'a> Interpreter<'a> {
         pinned_handles: &'a RwLock<FxHashSet<u64>>,
         tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
         injector: &'a Arc<Injector<Arc<Task>>>,
-        promise_microtasks: &'a parking_lot::Mutex<std::collections::VecDeque<super::PromiseMicrotask>>,
+        promise_microtasks: &'a parking_lot::Mutex<
+            std::collections::VecDeque<super::PromiseMicrotask>,
+        >,
         test262_async_state: &'a std::sync::atomic::AtomicU8,
         test262_async_failure: &'a parking_lot::Mutex<Option<String>>,
         metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
