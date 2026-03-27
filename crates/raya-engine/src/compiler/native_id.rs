@@ -168,6 +168,8 @@ pub const OBJECT_SET_PROPERTY: u16 = 0x004F;
 pub const OBJECT_SET_PROPERTY_STRICT: u16 = 0x0050;
 /// JS `super[key] = value` assignment using [[Set]] semantics on the home object's prototype.
 pub const OBJECT_SET_SUPER_PROPERTY: u16 = 0x0051;
+/// Host-provided Test262 async completion callback.
+pub const HOST_TEST262_ASYNC_DONE: u16 = 0x0052;
 /// Strict-mode JS `super[key] = value` assignment.
 pub const OBJECT_SET_SUPER_PROPERTY_STRICT: u16 = 0x0052;
 /// Invoke iterator `return()` when preserving an existing throw completion.
@@ -725,6 +727,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_SET_PROPERTY => "Object.setProperty",
         OBJECT_SET_PROPERTY_STRICT => "Object.setPropertyStrict",
         OBJECT_SET_SUPER_PROPERTY => "Object.setSuperProperty",
+        HOST_TEST262_ASYNC_DONE => "Host.test262AsyncDone",
         OBJECT_SET_SUPER_PROPERTY_STRICT => "Object.setSuperPropertyStrict",
         OBJECT_STRING_FROM_CHAR_CODE => "Object.stringFromCharCode",
         OBJECT_GENERATOR_SNAPSHOT_NEW => "Object.generatorSnapshotNew",

@@ -338,6 +338,10 @@ pub struct Interpreter<'a> {
     pub(in crate::vm::interpreter) promise_microtasks:
         &'a parking_lot::Mutex<std::collections::VecDeque<super::PromiseMicrotask>>,
 
+    /// Host-owned async callback completion state used by Test262.
+    pub(in crate::vm::interpreter) test262_async_state: &'a std::sync::atomic::AtomicU8,
+    pub(in crate::vm::interpreter) test262_async_failure: &'a parking_lot::Mutex<Option<String>>,
+
     /// Metadata store for Reflect API
     pub(in crate::vm::interpreter) metadata:
         &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
@@ -1591,6 +1595,8 @@ impl<'a> Interpreter<'a> {
         tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
         injector: &'a Arc<Injector<Arc<Task>>>,
         promise_microtasks: &'a parking_lot::Mutex<std::collections::VecDeque<super::PromiseMicrotask>>,
+        test262_async_state: &'a std::sync::atomic::AtomicU8,
+        test262_async_failure: &'a parking_lot::Mutex<Option<String>>,
         metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
         class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
         native_handler: &'a Arc<dyn NativeHandler>,
@@ -1631,6 +1637,8 @@ impl<'a> Interpreter<'a> {
             tasks,
             injector,
             promise_microtasks,
+            test262_async_state,
+            test262_async_failure,
             metadata,
             class_metadata,
             native_handler,
@@ -1968,6 +1976,8 @@ impl<'a> Interpreter<'a> {
                         self.tasks,
                         self.injector,
                         self.promise_microtasks,
+                        self.test262_async_state,
+                        self.test262_async_failure,
                         self.module_layouts,
                         self.module_registry,
                         self.metadata,
@@ -2493,6 +2503,8 @@ impl<'a> Interpreter<'a> {
                                         self.tasks,
                                         self.injector,
                                         self.promise_microtasks,
+                                        self.test262_async_state,
+                                        self.test262_async_failure,
                                         self.module_layouts,
                                         self.module_registry,
                                         self.metadata,

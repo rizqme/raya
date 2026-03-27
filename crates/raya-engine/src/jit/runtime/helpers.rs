@@ -72,6 +72,8 @@ pub struct JitRuntimeBridgeContext {
     pub injector: *const Arc<Injector<Arc<Task>>>,
     pub promise_microtasks:
         *const parking_lot::Mutex<std::collections::VecDeque<crate::vm::interpreter::PromiseMicrotask>>,
+    pub test262_async_state: *const std::sync::atomic::AtomicU8,
+    pub test262_async_failure: *const parking_lot::Mutex<Option<String>>,
     pub module_layouts: *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
     pub module_registry: *const parking_lot::RwLock<crate::vm::interpreter::ModuleRegistry>,
     pub metadata: *const parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
@@ -116,6 +118,8 @@ pub fn build_runtime_bridge_context(
     injector: &Arc<Injector<Arc<Task>>>,
     promise_microtasks:
         &parking_lot::Mutex<std::collections::VecDeque<crate::vm::interpreter::PromiseMicrotask>>,
+    test262_async_state: &std::sync::atomic::AtomicU8,
+    test262_async_failure: &parking_lot::Mutex<Option<String>>,
     module_layouts: &parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
     module_registry: &parking_lot::RwLock<crate::vm::interpreter::ModuleRegistry>,
     metadata: &parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
@@ -157,6 +161,8 @@ pub fn build_runtime_bridge_context(
         tasks: tasks as *const _,
         injector: injector as *const _,
         promise_microtasks: promise_microtasks as *const _,
+        test262_async_state: test262_async_state as *const _,
+        test262_async_failure: test262_async_failure as *const _,
         module_layouts: module_layouts as *const _,
         module_registry: module_registry as *const _,
         metadata: metadata as *const _,
@@ -476,6 +482,8 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         || bridge.tasks.is_null()
         || bridge.injector.is_null()
         || bridge.promise_microtasks.is_null()
+        || bridge.test262_async_state.is_null()
+        || bridge.test262_async_failure.is_null()
         || bridge.metadata.is_null()
         || bridge.class_metadata.is_null()
         || bridge.native_handler.is_null()
@@ -510,6 +518,8 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         unsafe { &*bridge.tasks },
         unsafe { &*bridge.injector },
         unsafe { &*bridge.promise_microtasks },
+        unsafe { &*bridge.test262_async_state },
+        unsafe { &*bridge.test262_async_failure },
         unsafe { &*bridge.metadata },
         unsafe { &*bridge.class_metadata },
         unsafe { &*bridge.native_handler },
@@ -1693,6 +1703,8 @@ mod tests {
             &shared.tasks,
             &shared.injector,
             &shared.promise_microtasks,
+            &shared.test262_async_state,
+            &shared.test262_async_failure,
             &shared.module_layouts,
             &shared.module_registry,
             &shared.metadata,
@@ -1765,6 +1777,8 @@ mod tests {
             &shared.tasks,
             &shared.injector,
             &shared.promise_microtasks,
+            &shared.test262_async_state,
+            &shared.test262_async_failure,
             &shared.module_layouts,
             &shared.module_registry,
             &shared.metadata,
@@ -1870,6 +1884,8 @@ mod tests {
             &shared.tasks,
             &shared.injector,
             &shared.promise_microtasks,
+            &shared.test262_async_state,
+            &shared.test262_async_failure,
             &shared.module_layouts,
             &shared.module_registry,
             &shared.metadata,

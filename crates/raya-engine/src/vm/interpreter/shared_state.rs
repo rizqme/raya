@@ -21,7 +21,7 @@ use crossbeam::channel::Sender;
 use crossbeam_deque::Injector;
 use parking_lot::{Mutex, RwLock};
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 /// Promise-related microtasks processed by scheduler checkpoints.
@@ -59,6 +59,13 @@ impl PromiseHandle {
     pub fn into_value(self) -> Value {
         Value::u64(self.0.as_u64())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Test262AsyncStatusSnapshot {
+    Pending,
+    Succeeded,
+    Failed(Option<String>),
 }
 
 /// Runtime layout assigned to a registered module.
@@ -409,6 +416,10 @@ pub struct SharedVmState {
     /// Whether unhandled Promise rejections should be reported to the host log.
     pub report_unhandled_promise_rejections: AtomicBool,
 
+    /// Host-owned async callback completion state used by the Test262 runner.
+    pub test262_async_state: AtomicU8,
+    pub test262_async_failure: Mutex<Option<String>>,
+
     /// Whether the reactor has reached a quiescent checkpoint with no
     /// internally queued work.
     pub reactor_is_quiescent: AtomicBool,
@@ -666,6 +677,8 @@ impl SharedVmState {
             tasks,
             promise_microtasks: Mutex::new(std::collections::VecDeque::new()),
             report_unhandled_promise_rejections: AtomicBool::new(true),
+            test262_async_state: AtomicU8::new(0),
+            test262_async_failure: Mutex::new(None),
             reactor_is_quiescent: AtomicBool::new(false),
             reactor_quiescent_epoch: AtomicU64::new(0),
             injector,
@@ -736,6 +749,35 @@ impl SharedVmState {
     pub fn set_unhandled_promise_rejection_reporting_enabled(&self, enabled: bool) {
         self.report_unhandled_promise_rejections
             .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn reset_test262_async_callback(&self) {
+        self.test262_async_state.store(0, Ordering::Relaxed);
+        *self.test262_async_failure.lock() = None;
+    }
+
+    pub fn complete_test262_async_callback_success(&self) {
+        let _ = self
+            .test262_async_state
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    pub fn complete_test262_async_callback_failure(&self, message: String) {
+        if self
+            .test262_async_state
+            .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            *self.test262_async_failure.lock() = Some(message);
+        }
+    }
+
+    pub fn test262_async_callback_status(&self) -> Test262AsyncStatusSnapshot {
+        match self.test262_async_state.load(Ordering::Acquire) {
+            1 => Test262AsyncStatusSnapshot::Succeeded,
+            2 => Test262AsyncStatusSnapshot::Failed(self.test262_async_failure.lock().clone()),
+            _ => Test262AsyncStatusSnapshot::Pending,
+        }
     }
 
     pub fn unhandled_promise_rejection_reporting_enabled(&self) -> bool {

@@ -163,30 +163,6 @@ function __assert_throws(expectedErrorConstructor, func, message) {
 }
 "#;
 
-const ASYNC_DONE_PRELUDE: &str = r#"
-globalThis.__test262AsyncState__ = 0;
-globalThis.__test262AsyncFailure__ = "";
-globalThis.$DONE = function(error) {
-    if (globalThis.__test262AsyncState__ !== 0) {
-        return;
-    }
-    if (error == null) {
-        globalThis.__test262AsyncState__ = 1;
-        return;
-    }
-
-    globalThis.__test262AsyncState__ = 2;
-    if (typeof error === "object" && error !== null) {
-        let name = "name" in error ? String(error.name) : "Error";
-        let message = "message" in error ? String(error.message) : String(error);
-        globalThis.__test262AsyncFailure__ = name + ": " + message;
-        return;
-    }
-
-    globalThis.__test262AsyncFailure__ = "Test262Error: " + String(error);
-};
-"#;
-
 const HOST_262_PRELUDE: &str = r#"
 const __262_main_Reflect = Reflect;
 const __262_indirect_eval = eval;
@@ -1173,6 +1149,7 @@ fn execute_async_case_program(
         .map_err(|error| format!("compilation failed: {}", error))?;
     let mut vm = runtime.create_vm();
     vm.set_unhandled_promise_rejection_reporting_enabled(false);
+    vm.install_test262_async_done_callback();
     let result = runtime
         .execute_program_with_vm(&program, &mut vm)
         .map_err(|error| format!("runtime failed: {}", error));
@@ -1274,10 +1251,6 @@ fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<St
     } else {
         final_source.push_str(strict_prefix);
         final_source.push_str(&required_harness_prelude(&transformed, &include_sources));
-        if is_async {
-            final_source.push_str(ASYNC_DONE_PRELUDE);
-            final_source.push('\n');
-        }
         if matches!(supported_host_hooks, Some(true)) {
             final_source.push_str(HOST_262_PRELUDE);
             final_source.push('\n');

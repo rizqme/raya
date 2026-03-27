@@ -33,6 +33,6 @@ pub use shared_state::{JitTelemetry, JitTelemetrySnapshot};
 pub use shared_state::{
     JsGlobalBindingRecord, ModuleRuntimeLayout, PromiseHandle, PromiseMicrotask, PropertyKeyRegistry,
     RuntimeTypeHandleRegistry, ShapeAdapter, SharedVmState, StructuralAdapterKey,
-    StructuralSlotBinding,
+    StructuralSlotBinding, Test262AsyncStatusSnapshot,
 };
 pub use vm_facade::{AsyncCallbackStatus, Vm, VmStats};

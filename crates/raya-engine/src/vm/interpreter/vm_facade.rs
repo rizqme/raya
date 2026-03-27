@@ -1,6 +1,6 @@
 //! Synchronous VM facade for testing and simple execution
 
-use super::{SafepointCoordinator, SharedVmState};
+use super::{SafepointCoordinator, SharedVmState, Test262AsyncStatusSnapshot};
 use crate::compiler::bytecode::verify::operand_size as bytecode_operand_size;
 use crate::compiler::bytecode::Opcode;
 use crate::compiler::Module;
@@ -610,21 +610,26 @@ impl Vm {
             .set_unhandled_promise_rejection_reporting_enabled(enabled);
     }
 
+    pub fn install_test262_async_done_callback(&self) {
+        self.shared_state().reset_test262_async_callback();
+        let method = Object::new_bound_native(
+            Value::undefined(),
+            crate::compiler::native_id::HOST_TEST262_ASYNC_DONE,
+        );
+        let method_ptr = self.shared_state().gc.lock().allocate(method);
+        let value = unsafe {
+            Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("test262 async callback ptr"))
+        };
+        self.shared_state().set_builtin_global("$DONE", value);
+    }
+
     pub fn test262_async_callback_status(&self) -> Result<AsyncCallbackStatus, String> {
-        let state = self
-            .builtin_global_named_field_value("globalThis", "__test262AsyncState__")
-            .ok_or_else(|| "async completion state is not available on globalThis".to_string())
-            .and_then(Self::value_to_i32ish)?;
-        match state {
-            0 => Ok(AsyncCallbackStatus::Pending),
-            1 => Ok(AsyncCallbackStatus::Succeeded),
-            2 => Ok(AsyncCallbackStatus::Failed(
-                self.builtin_global_named_field_value("globalThis", "__test262AsyncFailure__")
-                    .and_then(|value| self.plain_string_value(value))
-                    .filter(|message| !message.is_empty())
-                    .unwrap_or_else(|| "async test failed via $DONE".to_string()),
+        match self.shared_state().test262_async_callback_status() {
+            Test262AsyncStatusSnapshot::Pending => Ok(AsyncCallbackStatus::Pending),
+            Test262AsyncStatusSnapshot::Succeeded => Ok(AsyncCallbackStatus::Succeeded),
+            Test262AsyncStatusSnapshot::Failed(message) => Ok(AsyncCallbackStatus::Failed(
+                message.unwrap_or_else(|| "async test failed via $DONE".to_string()),
             )),
-            other => Err(format!("unexpected async completion state: {}", other)),
         }
     }
 
@@ -654,30 +659,6 @@ impl Vm {
         Self::value_to_plain_string(value)
     }
 
-    fn value_to_i32ish(value: Value) -> Result<i32, String> {
-        if let Some(state) = value.as_i32() {
-            return Ok(state);
-        }
-        if let Some(state) = value.as_i64() {
-            return i32::try_from(state)
-                .map_err(|_| format!("async completion probe returned out-of-range i64 state: {state}"));
-        }
-        if let Some(state) = value.as_u64() {
-            return i32::try_from(state)
-                .map_err(|_| format!("async completion probe returned out-of-range u64 state: {state}"));
-        }
-        if let Some(state) = value.as_f64() {
-            if state.is_finite() && state.fract() == 0.0 {
-                return i32::try_from(state as i64).map_err(|_| {
-                    format!("async completion probe returned out-of-range f64 state: {state}")
-                });
-            }
-        }
-        Err(format!(
-            "async completion probe returned a non-integer state: {:?}",
-            value
-        ))
-    }
 
     /// Load a .ryb file into this VM
     ///

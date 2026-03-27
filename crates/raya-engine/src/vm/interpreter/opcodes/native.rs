@@ -567,6 +567,48 @@ impl<'a> Interpreter<'a> {
         unsafe { Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("bound native ptr")) }
     }
 
+    fn record_test262_async_callback_success(&self) {
+        let _ = self.test262_async_state.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    fn record_test262_async_callback_failure(&self, message: String) {
+        if self
+            .test262_async_state
+            .compare_exchange(
+                0,
+                2,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            *self.test262_async_failure.lock() = Some(message);
+        }
+    }
+
+    fn format_test262_async_failure_message(&self, error: Value) -> String {
+        if let Some(obj_ptr) = checked_object_ptr(error) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            let name = self
+                .get_object_named_field_value(obj, "name")
+                .and_then(primitive_to_js_string)
+                .unwrap_or_else(|| "Error".to_string());
+            let message = self
+                .get_object_named_field_value(obj, "message")
+                .and_then(primitive_to_js_string)
+                .unwrap_or_else(|| "[object Object]".to_string());
+            return format!("{name}: {message}");
+        }
+
+        let rendered = primitive_to_js_string(error).unwrap_or_else(|| "undefined".to_string());
+        format!("Test262Error: {rendered}")
+    }
+
     fn generator_result_object(&self, value: Value, done: bool) -> Value {
         let mut result = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
         {
@@ -18927,6 +18969,20 @@ impl<'a> Interpreter<'a> {
                                 self.settled_task_handle(task, Ok(value)).into_value()
                             });
                         if let Err(e) = stack.push(adopted) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::HOST_TEST262_ASYNC_DONE => {
+                        let error = args.get(1).copied().unwrap_or(Value::undefined());
+                        if error.is_null() || error.is_undefined() {
+                            self.record_test262_async_callback_success();
+                        } else {
+                            self.record_test262_async_callback_failure(
+                                self.format_test262_async_failure_message(error),
+                            );
+                        }
+                        if let Err(e) = stack.push(Value::undefined()) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
