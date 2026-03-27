@@ -146,6 +146,24 @@ function Number(value: PrimitiveCoercible): number {
     return __jsToNumber(value);
 }
 
+Object.defineProperty(Number, "isNaN", {
+    value: function(value: any): boolean {
+        return typeof value == "number" && value != value;
+    },
+    writable: true,
+    enumerable: false,
+    configurable: true,
+});
+
+Object.defineProperty(Number, "isFinite", {
+    value: function(value: any): boolean {
+        return typeof value == "number" && value == value && value != Infinity && value != -Infinity;
+    },
+    writable: true,
+    enumerable: false,
+    configurable: true,
+});
+
 // Pragmatic JS-compat subset until bigint is represented as a first-class runtime primitive.
 function BigInt(value: PrimitiveCoercible): int {
     return __jsToIntegerOrInfinity(value) as int;

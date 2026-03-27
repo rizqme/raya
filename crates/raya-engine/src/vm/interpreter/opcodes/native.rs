@@ -1462,8 +1462,14 @@ impl<'a> Interpreter<'a> {
             caller_module,
         ) {
             if let Some(pending_task) = self.task_from_promise_handle(promise_handle) {
-                self.ensure_task_exception_for_error(&pending_task, &error);
+                if let Some(exception) = caller_task.current_exception() {
+                    pending_task.set_exception(exception);
+                    caller_task.clear_exception();
+                } else {
+                    self.ensure_task_exception_for_error(&pending_task, &error);
+                }
                 pending_task.fail();
+                self.propagate_task_settlement(&pending_task);
             }
         }
 
@@ -1869,8 +1875,8 @@ fn value_same_value(a: Value, b: Value) -> bool {
         if let (Some(a_ptr), Some(b_ptr)) = (checked_bigint_ptr(a), checked_bigint_ptr(b)) {
             return unsafe { &*a_ptr.as_ptr() }.data == unsafe { &*b_ptr.as_ptr() }.data;
         }
-        let a_str = unsafe { a.as_ptr::<RayaString>() };
-        let b_str = unsafe { b.as_ptr::<RayaString>() };
+        let a_str = checked_string_ptr(a);
+        let b_str = checked_string_ptr(b);
         if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {
             let a_ref = unsafe { &*a_ptr.as_ptr() };
             let b_ref = unsafe { &*b_ptr.as_ptr() };

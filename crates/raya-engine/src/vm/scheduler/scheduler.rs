@@ -272,6 +272,27 @@ impl Scheduler {
         }
     }
 
+    /// Cheap snapshot: whether the scheduler currently appears quiescent.
+    ///
+    /// Unlike `wait_quiescent`, this does not sleep to confirm stability. It is
+    /// intended as a fast path for callers that want to skip teardown waits when
+    /// there is obviously no pending work.
+    pub fn is_quiescent_now(&self) -> bool {
+        let all_done = {
+            let tasks = self.shared_state.tasks.read();
+            tasks.values().all(|task| {
+                let state = task.state();
+                state == TaskState::Completed || state == TaskState::Failed
+            })
+        };
+        let microtasks_empty = self.shared_state.promise_microtasks.lock().is_empty();
+        let reactor_quiescent = self
+            .shared_state
+            .reactor_is_quiescent
+            .load(std::sync::atomic::Ordering::Acquire);
+        all_done && microtasks_empty && reactor_quiescent
+    }
+
     /// Wait for the scheduler/reactor to reach a stable quiescent point.
     ///
     /// This is stronger than `wait_all()`: all tasks must be terminal and

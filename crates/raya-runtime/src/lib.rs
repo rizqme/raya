@@ -362,6 +362,43 @@ impl Runtime {
         self.compile_program_source_with_virtual_entry(source, virtual_entry)
     }
 
+    /// Compile already-linked single-module source into a program graph.
+    ///
+    /// This avoids the binary module-graph compiler and is intended for callers
+    /// that already flattened includes/imports into one source string.
+    pub fn compile_linked_program_source_at_path(
+        &self,
+        source: &str,
+        virtual_entry: &Path,
+    ) -> Result<CompiledProgram, RuntimeError> {
+        let type_mode = self
+            .options
+            .type_mode
+            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
+        let ts_options = self.resolve_ts_options_for_inline()?;
+        let (mut module, interner) = compile::compile_graph_source_with_modes_and_ts_options(
+            source,
+            self.options.builtin_mode,
+            type_mode,
+            ts_options.as_ref(),
+        )?;
+        let entry_name = virtual_entry.to_string_lossy().to_string();
+        if !entry_name.is_empty() {
+            module.metadata.name = entry_name;
+        }
+        Ok(CompiledProgram {
+            entry_path: virtual_entry.to_path_buf(),
+            module_order: vec![virtual_entry.to_path_buf()],
+            merged_source: String::new(),
+            entry: CompiledModule {
+                module,
+                interner: Some(interner),
+            },
+            dependencies: Vec::new(),
+            late_link_requirements: Vec::new(),
+        })
+    }
+
     /// Compile a source file to a bytecode module.
     pub fn compile_file(&self, path: &Path) -> Result<CompiledModule, RuntimeError> {
         Ok(self.compile_program_file(path)?.entry)

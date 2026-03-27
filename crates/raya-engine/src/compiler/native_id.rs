@@ -979,3 +979,55 @@ pub fn native_name(id: u16) -> &'static str {
         _ => "unknown",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn native_u16_ids_are_unique() {
+        let source = include_str!("native_id.rs");
+        let mut seen: BTreeMap<u16, Vec<&str>> = BTreeMap::new();
+
+        for line in source.lines() {
+            let line = line.trim();
+            if !line.starts_with("pub const ") || !line.contains(": u16 = ") {
+                continue;
+            }
+
+            let Some(name) = line
+                .strip_prefix("pub const ")
+                .and_then(|rest| rest.split(": u16 = ").next())
+            else {
+                continue;
+            };
+            let Some(value_str) = line
+                .split(": u16 = ")
+                .nth(1)
+                .and_then(|rest| rest.strip_suffix(';'))
+            else {
+                continue;
+            };
+
+            let value = if let Some(hex) = value_str.strip_prefix("0x") {
+                u16::from_str_radix(hex, 16).expect("hex native id")
+            } else {
+                value_str.parse::<u16>().expect("decimal native id")
+            };
+            seen.entry(value).or_default().push(name);
+        }
+
+        let duplicates: Vec<String> = seen
+            .into_iter()
+            .filter_map(|(value, names)| {
+                (names.len() > 1).then(|| format!("0x{value:04X}: {}", names.join(", ")))
+            })
+            .collect();
+
+        assert!(
+            duplicates.is_empty(),
+            "duplicate native IDs detected:\n{}",
+            duplicates.join("\n")
+        );
+    }
+}

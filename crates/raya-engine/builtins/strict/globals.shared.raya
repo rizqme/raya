@@ -144,6 +144,24 @@ function Number(value: PrimitiveCoercible): number {
     return __jsToNumber(value);
 }
 
+Object.defineProperty(Number, "isNaN", {
+    value: function(value: any): boolean {
+        return typeof value == "number" && value != value;
+    },
+    writable: true,
+    enumerable: false,
+    configurable: true,
+});
+
+Object.defineProperty(Number, "isFinite", {
+    value: function(value: any): boolean {
+        return typeof value == "number" && value == value && value != Infinity && value != -Infinity;
+    },
+    writable: true,
+    enumerable: false,
+    configurable: true,
+});
+
 (Number as any)["NaN"] = NaN;
 (Number as any)["POSITIVE_INFINITY"] = Infinity;
 (Number as any)["NEGATIVE_INFINITY"] = -Infinity;

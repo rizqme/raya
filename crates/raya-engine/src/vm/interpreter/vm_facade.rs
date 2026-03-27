@@ -720,6 +720,11 @@ impl Vm {
         self.scheduler.wait_all(timeout)
     }
 
+    /// Cheap snapshot: whether the VM currently appears quiescent.
+    pub fn is_quiescent_now(&self) -> bool {
+        self.scheduler.is_quiescent_now()
+    }
+
     /// Wait until terminal tasks and reactor-side completion work have settled.
     pub fn wait_quiescent(&self, timeout: std::time::Duration) -> bool {
         self.scheduler.wait_quiescent(timeout)

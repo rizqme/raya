@@ -659,6 +659,79 @@ fn test_node_compat_same_named_async_throw_collision_rejects_with_test262error()
     );
 }
 
+#[test]
+fn test_node_compat_sync_throw_in_promise_executor_rejects_with_test262error() {
+    expect_string_runtime_node_compat(
+        r#"
+        function Test262Error(message) {
+            this.name = "Test262Error";
+            this.message = message;
+        }
+
+        function throwsAsync(expectedErrorConstructor, func) {
+            return new Promise(function(resolve) {
+                var fail = function(detail) {
+                    throw new Test262Error(detail);
+                };
+                var expectedName = expectedErrorConstructor.name;
+                var res;
+                try {
+                    res = func();
+                } catch (_thrown) {
+                    fail("threw synchronously");
+                }
+                var onResFulfilled, onResRejected;
+                var resSettlementP = new Promise(function(onFulfilled, onRejected) {
+                    onResFulfilled = onFulfilled;
+                    onResRejected = onRejected;
+                });
+                try {
+                    res.then(onResFulfilled, onResRejected);
+                } catch (_thrown) {
+                    fail(".then threw synchronously");
+                }
+                resolve(resSettlementP.then(
+                    function() {
+                        fail("no exception");
+                    },
+                    function(thrown) {
+                        var actualName;
+                        if (thrown === null || typeof thrown !== "object") {
+                            fail("not object");
+                        } else if (thrown.constructor !== expectedErrorConstructor) {
+                            actualName = thrown.constructor.name;
+                            if (expectedName === actualName) {
+                                fail("same name different ctor");
+                            }
+                            fail("got " + actualName);
+                        }
+                    }
+                ));
+            });
+        }
+
+        async function inspect() {
+            try {
+                await throwsAsync(Test262Error, function() {
+                    throw new Error("boom");
+                });
+                return "fulfilled";
+            } catch (err) {
+                return JSON.stringify([
+                    err && err.constructor && err.constructor.name,
+                    err && err.name,
+                    err && err.message,
+                    typeof err
+                ]);
+            }
+        }
+
+        return await inspect();
+    "#,
+        r#"["Test262Error","Test262Error","threw synchronously","object"]"#,
+    );
+}
+
 // ============================================================================
 // Symbol tests
 // ============================================================================

@@ -8,16 +8,23 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const HARNESS_CORE_PRELUDE: &str = r#"
-class Test262Error extends Error {
-    constructor(message) {
-        super(message);
-    }
+function Test262Error(message) {
+    this.message = message || "";
+}
+
+Test262Error.prototype.toString = function () {
+    return "Test262Error: " + this.message;
+};
+
+Test262Error.thrower = function (message) {
+    throw new Test262Error(message);
 }
 
 function $ERROR(message) {
@@ -28,7 +35,7 @@ function $ERROR(message) {
 }
 
 function $DONOTEVALUATE() {
-    throw new Test262Error("This statement should not be evaluated.");
+    throw "Test262: This statement should not be evaluated.";
 }
 "#;
 
@@ -120,14 +127,50 @@ function __compareArray(actual, expected) {
     return true;
 }
 
+function __compareArray_format(arrayLike) {
+    return "[" + Array.prototype.map.call(arrayLike, String).join(", ") + "]";
+}
+
+function __compareArray_isPrimitive(value) {
+    return !value || (typeof value !== "object" && typeof value !== "function");
+}
+
 function __assert_compareArray(actual, expected, message) {
+    message = message === undefined ? "" : message;
+
+    if (typeof message === "symbol") {
+        message = message.toString();
+    }
+
+    if (__compareArray_isPrimitive(actual)) {
+        __assert(false, "Actual argument [" + actual + "] shouldn't be primitive. " + message);
+    } else if (__compareArray_isPrimitive(expected)) {
+        __assert(
+            false,
+            "Expected argument [" + expected + "] shouldn't be primitive. " + message
+        );
+    }
+
     if (__compareArray(actual, expected)) {
         return;
     }
     if (message == null) {
-        $ERROR("Expected arrays to compare equal");
+        $ERROR(
+            "Actual " +
+                __compareArray_format(actual) +
+                " and expected " +
+                __compareArray_format(expected) +
+                " should have the same contents. "
+        );
     }
-    $ERROR(String(message));
+    $ERROR(
+        "Actual " +
+            __compareArray_format(actual) +
+            " and expected " +
+            __compareArray_format(expected) +
+            " should have the same contents. " +
+            String(message)
+    );
 }
 "#;
 
@@ -161,6 +204,198 @@ function __assert_throws(expectedErrorConstructor, func, message) {
     }
     $ERROR(String(message));
 }
+"#;
+
+const NATIVE_FUNCTION_MATCHER_SHIM: &str = r#"
+const validateNativeFunctionSource = function(source) {
+  // ASCII-only identifier fallback for environments whose RegExp engine
+  // cannot compile the full Unicode-heavy Test262 helper patterns.
+  const UnicodeIDStart = /[A-Za-z]/;
+  const UnicodeIDContinue = /[0-9A-Z_a-z]/;
+  const UnicodeSpaceSeparator = /[ \xA0]/;
+
+  const isNewline = (c) => /[\u000A\u000D\u2028\u2029]/.test(c);
+  const isWhitespace = (c) => /[\u0009\u000B\u000C\u0020\u00A0\uFEFF]/.test(c) || UnicodeSpaceSeparator.test(c);
+
+  let pos = 0;
+
+  const eatWhitespace = () => {
+    while (pos < source.length) {
+      const c = source[pos];
+      if (isWhitespace(c) || isNewline(c)) {
+        pos += 1;
+        continue;
+      }
+
+      if (c === '/') {
+        if (source[pos + 1] === '/') {
+          while (pos < source.length) {
+            if (isNewline(source[pos])) {
+              break;
+            }
+            pos += 1;
+          }
+          continue;
+        }
+        if (source[pos + 1] === '*') {
+          const end = source.indexOf('*/', pos);
+          if (end === -1) {
+            throw new SyntaxError();
+          }
+          pos = end + '*/'.length;
+          continue;
+        }
+      }
+
+      break;
+    }
+  };
+
+  const getIdentifier = () => {
+    eatWhitespace();
+
+    const start = pos;
+    let end = pos;
+    switch (source[end]) {
+      case '_':
+      case '$':
+        end += 1;
+        break;
+      default:
+        if (UnicodeIDStart.test(source[end])) {
+          end += 1;
+          break;
+        }
+        return null;
+    }
+    while (end < source.length) {
+      const c = source[end];
+      switch (c) {
+        case '_':
+        case '$':
+          end += 1;
+          break;
+        default:
+          if (UnicodeIDContinue.test(c)) {
+            end += 1;
+            break;
+          }
+          return source.slice(start, end);
+      }
+    }
+    return source.slice(start, end);
+  };
+
+  const test = (s) => {
+    eatWhitespace();
+
+    if (/\w/.test(s)) {
+      return getIdentifier() === s;
+    }
+    return source.slice(pos, pos + s.length) === s;
+  };
+
+  const eat = (s) => {
+    if (test(s)) {
+      pos += s.length;
+      return true;
+    }
+    return false;
+  };
+
+  const eatIdentifier = () => {
+    const n = getIdentifier();
+    if (n !== null) {
+      pos += n.length;
+      return true;
+    }
+    return false;
+  };
+
+  const expect = (s) => {
+    if (!eat(s)) {
+      throw new SyntaxError();
+    }
+  };
+
+  const eatString = () => {
+    if (source[pos] === '\'' || source[pos] === '"') {
+      const match = source[pos];
+      pos += 1;
+      while (pos < source.length) {
+        if (source[pos] === match && source[pos - 1] !== '\\') {
+          return;
+        }
+        if (isNewline(source[pos])) {
+          throw new SyntaxError();
+        }
+        pos += 1;
+      }
+      throw new SyntaxError();
+    }
+  };
+
+  const stumbleUntil = (c) => {
+    const match = {
+      ']': '[',
+      ')': '(',
+    }[c];
+    let nesting = 1;
+    while (pos < source.length) {
+      eatWhitespace();
+      eatString();
+      if (source[pos] === match) {
+        nesting += 1;
+      } else if (source[pos] === c) {
+        nesting -= 1;
+      }
+      pos += 1;
+      if (nesting === 0) {
+        return;
+      }
+    }
+    throw new SyntaxError();
+  };
+
+  expect('function');
+  eat('get') || eat('set');
+
+  if (!eatIdentifier() && eat('[')) {
+    stumbleUntil(']');
+  }
+
+  expect('(');
+  stumbleUntil(')');
+  expect('{');
+  expect('[');
+  expect('native');
+  expect('code');
+  expect(']');
+  expect('}');
+
+  eatWhitespace();
+  if (pos !== source.length) {
+    throw new SyntaxError();
+  }
+};
+
+const assertToStringOrNativeFunction = function(fn, expected) {
+  const actual = "" + fn;
+  try {
+    __assert_sameValue(actual, expected);
+  } catch (unused) {
+    assertNativeFunction(fn, expected);
+  }
+};
+
+const assertNativeFunction = function(fn, special) {
+  const actual = "" + fn;
+  try {
+    validateNativeFunctionSource(actual);
+  } catch (unused) {
+    throw new Test262Error('Conforms to NativeFunction Syntax: ' + JSON.stringify(actual) + (special ? ' (' + special + ')' : ''));
+  }
+};
 "#;
 
 const HOST_262_PRELUDE: &str = r#"
@@ -344,7 +579,7 @@ function __262_detachArrayBuffer(buffer) {
     buffer.detach();
 }
 
-const $262 = {
+var $262 = {
     createRealm: __262_createRealm,
     evalScript: __262_evalScript,
     detachArrayBuffer: __262_detachArrayBuffer,
@@ -418,6 +653,9 @@ pub struct Args {
     #[arg(long, value_name = "N")]
     pub jobs: Option<usize>,
 
+    #[arg(long)]
+    pub timings: bool,
+
     #[arg(long = "exclude-prefix", value_name = "PATH")]
     pub exclude_prefixes: Vec<String>,
 
@@ -466,6 +704,31 @@ pub enum TestOutcome {
 struct CaseRunResult {
     outcome: TestOutcome,
     metadata: Frontmatter,
+}
+
+struct PreparedCaseSource {
+    full_source: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TimingTotals {
+    load: Duration,
+    prepare: Duration,
+    compile: Duration,
+    vm_create: Duration,
+    execute: Duration,
+    drain: Duration,
+}
+
+impl TimingTotals {
+    fn add_assign(&mut self, other: &TimingTotals) {
+        self.load += other.load;
+        self.prepare += other.prepare;
+        self.compile += other.compile;
+        self.vm_create += other.vm_create;
+        self.execute += other.execute;
+        self.drain += other.drain;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -554,6 +817,9 @@ pub fn run(args: Args) -> Result<i32> {
 
     let started = Instant::now();
     let mut summary = RunSummary::default();
+    let timing_totals = args
+        .timings
+        .then(|| Arc::new(Mutex::new(TimingTotals::default())));
     let requested_jobs = args.jobs.unwrap_or_else(default_job_count);
     let effective_jobs = requested_jobs.max(1).min(cases.len().max(1));
 
@@ -570,7 +836,7 @@ pub fn run(args: Args) -> Result<i32> {
                 let _ = std::io::stderr().flush();
             }
 
-            let result = run_case(&runtime, &root, case);
+            let result = run_case(&runtime, &root, case, timing_totals.as_deref());
             summary.record(&result.outcome);
 
             match &result.outcome {
@@ -599,7 +865,7 @@ pub fn run(args: Args) -> Result<i32> {
             }
         }
     } else {
-        let outcomes = run_cases_parallel(&root, &cases, effective_jobs);
+        let outcomes = run_cases_parallel(&root, &cases, effective_jobs, timing_totals.clone());
         for (index, (case, result)) in cases.iter().zip(outcomes.iter()).enumerate() {
             summary.record(&result.outcome);
             match &result.outcome {
@@ -634,6 +900,18 @@ pub fn run(args: Args) -> Result<i32> {
         summary.skipped,
         started.elapsed()
     );
+    if let Some(timings) = timing_totals {
+        let totals = timings.lock().unwrap().clone();
+        println!(
+            "timings: load={:.2?} prepare={:.2?} compile={:.2?} vm_create={:.2?} execute={:.2?} drain={:.2?}",
+            totals.load,
+            totals.prepare,
+            totals.compile,
+            totals.vm_create,
+            totals.execute,
+            totals.drain,
+        );
+    }
 
     Ok(if summary.failed == 0 { 0 } else { 1 })
 }
@@ -662,20 +940,28 @@ fn default_job_count() -> usize {
         .unwrap_or(1)
 }
 
-fn run_cases_parallel(root: &Path, cases: &[TestCase], jobs: usize) -> Vec<CaseRunResult> {
+fn run_cases_parallel(
+    root: &Path,
+    cases: &[TestCase],
+    jobs: usize,
+    timings: Option<Arc<Mutex<TimingTotals>>>,
+) -> Vec<CaseRunResult> {
     let next_index = AtomicUsize::new(0);
     let results = Mutex::new(vec![None; cases.len()]);
 
     thread::scope(|scope| {
         for _ in 0..jobs {
-            scope.spawn(|| {
+            let next_index = &next_index;
+            let results = &results;
+            let timings = timings.clone();
+            scope.spawn(move || {
                 let runtime = build_case_runtime();
                 loop {
                     let index = next_index.fetch_add(1, Ordering::Relaxed);
                     if index >= cases.len() {
                         break;
                     }
-                    let outcome = run_case(&runtime, root, &cases[index]);
+                    let outcome = run_case(&runtime, root, &cases[index], timings.as_deref());
                     results.lock().unwrap()[index] = Some(outcome);
                 }
             });
@@ -942,7 +1228,14 @@ fn parse_inline_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
+fn run_case(
+    runtime: &Runtime,
+    root: &Path,
+    case: &TestCase,
+    timings: Option<&Mutex<TimingTotals>>,
+) -> CaseRunResult {
+    let mut case_timings = TimingTotals::default();
+    let load_started = Instant::now();
     let loaded = match load_case(case) {
         Ok(loaded) => loaded,
         Err(error) => {
@@ -952,16 +1245,23 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
             };
         }
     };
+    case_timings.load = load_started.elapsed();
 
-    let transformed = match prepare_case_source(root, &loaded) {
+    let prepare_started = Instant::now();
+    let prepared = match prepare_case_source(root, &loaded) {
         Ok(source) => source,
         Err(reason) => {
+            case_timings.prepare = prepare_started.elapsed();
+            if let Some(totals) = timings {
+                totals.lock().unwrap().add_assign(&case_timings);
+            }
             return CaseRunResult {
                 outcome: TestOutcome::Skipped(reason),
                 metadata: loaded.metadata,
             };
         }
     };
+    case_timings.prepare = prepare_started.elapsed();
 
     let negative_phase = loaded
         .metadata
@@ -979,7 +1279,10 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
 
     let outcome = match negative_phase {
         Some("parse") | Some("resolution") => {
-            match runtime.compile_program_source_at_path(&transformed, &temp_path) {
+            let compile_started = Instant::now();
+            let compiled = runtime.compile_program_source_at_path(&prepared.full_source, &temp_path);
+            case_timings.compile += compile_started.elapsed();
+            match compiled {
                 Ok(_) => TestOutcome::Failed("expected compilation to fail".to_string()),
                 Err(error) => {
                     if matches_expected_error(&error.to_string(), expected_error) {
@@ -990,7 +1293,13 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
                 }
             }
         }
-        Some("runtime") => match execute_case_program(runtime, &temp_path, &transformed, is_async) {
+        Some("runtime") => match execute_case_program(
+            runtime,
+            &temp_path,
+            &prepared,
+            is_async,
+            &mut case_timings,
+        ) {
             Ok(()) => TestOutcome::Failed("expected runtime failure".to_string()),
             Err(error) => {
                 if matches_expected_error(&error, expected_error) {
@@ -1000,7 +1309,13 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
                 }
             }
         },
-        _ => match execute_case_program(runtime, &temp_path, &transformed, is_async) {
+        _ => match execute_case_program(
+            runtime,
+            &temp_path,
+            &prepared,
+            is_async,
+            &mut case_timings,
+        ) {
             Ok(()) => TestOutcome::Passed,
             Err(error) => TestOutcome::Failed(error),
         },
@@ -1008,7 +1323,7 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
 
     let outcome = match outcome {
         TestOutcome::Failed(message) => {
-            if let Err(error) = fs::write(&temp_path, &transformed) {
+            if let Err(error) = fs::write(&temp_path, &prepared.full_source) {
                 TestOutcome::Failed(format!(
                     "{}\n(additionally failed to materialize transformed case at {}: {})",
                     message,
@@ -1024,6 +1339,10 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> CaseRunResult {
             other
         }
     };
+
+    if let Some(totals) = timings {
+        totals.lock().unwrap().add_assign(&case_timings);
+    }
 
     CaseRunResult {
         outcome,
@@ -1104,32 +1423,40 @@ fn matches_expected_error(actual: &str, expected: Option<&str>) -> bool {
 fn execute_case_program(
     runtime: &Runtime,
     path: &Path,
-    source: &str,
+    prepared: &PreparedCaseSource,
     is_async: bool,
+    timings: &mut TimingTotals,
 ) -> std::result::Result<(), String> {
     if is_async {
-        return execute_async_case_program(runtime, path, source);
+        return execute_async_case_program(runtime, path, prepared, timings);
     }
 
     let debug_case = std::env::var("RAYA_DEBUG_ES262_CASE").is_ok();
     if debug_case {
         eprintln!("[es262-case] compile:start path={}", path.display());
     }
-    let program = runtime
-        .compile_program_source_at_path(source, path)
-        .map_err(|error| format!("compilation failed: {}", error))?;
+    let compile_started = Instant::now();
+    let program = compile_execution_program(runtime, path, prepared, timings)?;
+    let _ = compile_started;
     if debug_case {
         eprintln!("[es262-case] compile:done path={}", path.display());
         eprintln!("[es262-case] execute:start path={}", path.display());
     }
-    let mut vm = runtime.create_vm();
-    vm.set_unhandled_promise_rejection_reporting_enabled(false);
+    let vm_create_started = Instant::now();
+    let mut vm = create_conformance_vm(runtime);
+    timings.vm_create += vm_create_started.elapsed();
+    let execute_started = Instant::now();
     let result = runtime
         .execute_program_with_vm(&program, &mut vm)
         .map(|_| ())
         .map_err(|error| format!("runtime failed: {}", error));
-    let _ = vm.wait_quiescent(Duration::from_millis(250));
-    let _ = vm.wait_all(Duration::from_millis(250));
+    timings.execute += execute_started.elapsed();
+    if !vm.is_quiescent_now() {
+        let drain_started = Instant::now();
+        let _ = vm.wait_quiescent(Duration::from_millis(250));
+        let _ = vm.wait_all(Duration::from_millis(250));
+        timings.drain += drain_started.elapsed();
+    }
     vm.terminate();
     if debug_case {
         eprintln!(
@@ -1144,25 +1471,29 @@ fn execute_case_program(
 fn execute_async_case_program(
     runtime: &Runtime,
     path: &Path,
-    source: &str,
+    prepared: &PreparedCaseSource,
+    timings: &mut TimingTotals,
 ) -> std::result::Result<(), String> {
     let debug_case = std::env::var("RAYA_DEBUG_ES262_CASE").is_ok();
     if debug_case {
         eprintln!("[es262-case] async-compile:start path={}", path.display());
     }
-    let program = runtime
-        .compile_program_source_at_path(source, path)
-        .map_err(|error| format!("compilation failed: {}", error))?;
-    let mut vm = runtime.create_vm();
-    vm.set_unhandled_promise_rejection_reporting_enabled(false);
+    let program = compile_execution_program(runtime, path, prepared, timings)?;
+    let vm_create_started = Instant::now();
+    let mut vm = create_conformance_vm(runtime);
+    timings.vm_create += vm_create_started.elapsed();
     vm.install_test262_async_done_callback();
+    let execute_started = Instant::now();
     let result = runtime
         .execute_program_with_vm(&program, &mut vm)
         .map_err(|error| format!("runtime failed: {}", error));
+    timings.execute += execute_started.elapsed();
 
     let wait_timeout = Duration::from_secs(2);
+    let drain_started = Instant::now();
     let settled = vm.wait_quiescent(wait_timeout);
     let drained = vm.wait_all(wait_timeout);
+    timings.drain += drain_started.elapsed();
 
     let outcome = match result {
         Err(error) => Err(error),
@@ -1191,7 +1522,27 @@ fn execute_async_case_program(
     outcome
 }
 
-fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<String, String> {
+fn compile_execution_program(
+    runtime: &Runtime,
+    path: &Path,
+    prepared: &PreparedCaseSource,
+    timings: &mut TimingTotals,
+) -> std::result::Result<raya_runtime::CompiledProgram, String> {
+    let compile_started = Instant::now();
+    let program = runtime
+        .compile_program_source_at_path(&prepared.full_source, path)
+        .map_err(|error| format!("compilation failed: {}", error))?;
+    timings.compile += compile_started.elapsed();
+    Ok(program)
+}
+
+fn create_conformance_vm(runtime: &Runtime) -> raya_engine::vm::Vm {
+    let mut vm = runtime.create_vm();
+    vm.set_unhandled_promise_rejection_reporting_enabled(false);
+    vm
+}
+
+fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<PreparedCaseSource, String> {
     let is_raw = case.metadata.flags.iter().any(|flag| flag == "raw");
     let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
     for flag in &case.metadata.flags {
@@ -1264,12 +1615,18 @@ fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<St
         final_source.push_str(&include_sources);
         final_source.push_str(&transformed);
     }
-    Ok(final_source)
+    Ok(PreparedCaseSource {
+        full_source: final_source,
+    })
 }
 
 fn load_harness_include(root: &Path, include: &str) -> std::result::Result<String, String> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, std::result::Result<String, String>>>> =
         OnceLock::new();
+
+    if include == "nativeFunctionMatcher.js" {
+        return transform_source(NATIVE_FUNCTION_MATCHER_SHIM);
+    }
 
     let include_path = root.join("harness").join(include);
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -1280,9 +1637,75 @@ fn load_harness_include(root: &Path, include: &str) -> std::result::Result<Strin
 
     let loaded = fs::read_to_string(&include_path)
         .map_err(|_| format!("failed to load harness include: {}", include))
-        .and_then(|raw| transform_source(&raw));
+        .and_then(|raw| {
+            let raw = if include == "wellKnownIntrinsicObjects.js" {
+                rewrite_well_known_intrinsic_objects_harness(&raw)
+            } else {
+                raw
+            };
+            transform_source(&raw)
+        });
     cache.lock().unwrap().insert(include_path, loaded.clone());
     loaded
+}
+
+fn rewrite_well_known_intrinsic_objects_harness(raw: &str) -> String {
+    let eager_block = r#"
+WellKnownIntrinsicObjects.forEach((wkio) => {
+  var actual;
+
+  try {
+    actual = new Function("return " + wkio.source)();
+  } catch (exception) {
+    // Nothing to do here.
+  }
+
+  wkio.value = actual;
+});
+"#;
+
+    let lazy_getter = r#"
+function getWellKnownIntrinsicObject(key) {
+  for (var ix = 0; ix < WellKnownIntrinsicObjects.length; ix++) {
+    if (WellKnownIntrinsicObjects[ix].name === key) {
+      var wkio = WellKnownIntrinsicObjects[ix];
+      if (wkio.loaded !== true) {
+        var actual;
+        try {
+          if (wkio.source !== '') {
+            actual = new Function("return " + wkio.source)();
+          }
+        } catch (exception) {
+          // Nothing to do here.
+        }
+        wkio.value = actual;
+        wkio.loaded = true;
+      }
+      if (wkio.value !== undefined)
+        return wkio.value;
+      throw new Test262Error('this implementation could not obtain ' + key);
+    }
+  }
+  throw new Test262Error('unknown well-known intrinsic ' + key);
+}
+"#;
+
+    raw.replace(eager_block, "").replace(
+        r#"
+function getWellKnownIntrinsicObject(key) {
+  for (var ix = 0; ix < WellKnownIntrinsicObjects.length; ix++) {
+    if (WellKnownIntrinsicObjects[ix].name === key) {
+      var value = WellKnownIntrinsicObjects[ix].value;
+      if (value !== undefined)
+        return value;
+      throw new Test262Error('this implementation could not obtain ' + key);
+    }
+  }
+  throw new Test262Error('unknown well-known intrinsic ' + key);
+}
+"#,
+        lazy_getter,
+    )
 }
 
 fn required_harness_prelude(transformed_source: &str, include_sources: &str) -> String {
