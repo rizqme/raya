@@ -79,9 +79,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
                     let start_span = parser.current_span();
                     let expression = super::expr::parse_expression(parser)?;
 
-                    if parser.check(&Token::Semicolon) {
-                        parser.advance();
-                    }
+                    parser.consume_semicolon_or_asi()?;
 
                     let span = parser.combine_spans(&start_span, expression.span());
 
@@ -98,10 +96,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
                 let start_span = parser.current_span();
                 let expression = super::expr::parse_expression(parser)?;
 
-                // Optional semicolon
-                if parser.check(&Token::Semicolon) {
-                    parser.advance();
-                }
+                parser.consume_semicolon_or_asi()?;
 
                 let span = parser.combine_spans(&start_span, expression.span());
 
@@ -162,10 +157,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
         Token::Debugger => {
             let span = parser.current_span();
             parser.advance();
-            // Optional semicolon
-            if parser.check(&Token::Semicolon) {
-                parser.advance();
-            }
+            parser.consume_semicolon_or_asi()?;
             Ok(Statement::Debugger(span))
         }
 
@@ -186,10 +178,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
             let start_span = parser.current_span();
             let expression = super::expr::parse_expression(parser)?;
 
-            // Optional semicolon
-            if parser.check(&Token::Semicolon) {
-                parser.advance();
-            }
+            parser.consume_semicolon_or_asi()?;
 
             let span = parser.combine_spans(&start_span, expression.span());
 
@@ -269,9 +258,7 @@ fn parse_variable_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
         parser.advance();
     }
 
-    if parser.check(&Token::Semicolon) {
-        parser.advance();
-    }
+    parser.consume_semicolon_or_asi()?;
 
     if decls.len() == 1 {
         return Ok(Statement::VariableDecl(decls.pop().expect("single decl")));

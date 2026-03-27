@@ -896,7 +896,7 @@ impl<'a> Lowerer<'a> {
         if !self.allow_unresolved_runtime_fallback && !checker_validated {
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
-                message: format!(
+                    message: format!(
                     "strict mode forbids runtime late-bound fallback for member call '{}.{}(...)'",
                     match &*member.object {
                         Expression::Identifier(obj_ident) => {
@@ -906,7 +906,7 @@ impl<'a> Lowerer<'a> {
                     },
                     method_name
                 ),
-            });
+                });
             self.poison_register(&dest);
             return Some(dest);
         }

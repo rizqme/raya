@@ -262,6 +262,20 @@ impl Parser {
         self.at_eof() || self.check(&Token::Semicolon) || self.check(&Token::RightBrace)
     }
 
+    #[inline]
+    pub(crate) fn consume_semicolon_or_asi(&mut self) -> Result<(), crate::parser::ParseError> {
+        if self.check(&Token::Semicolon) {
+            self.advance();
+            return Ok(());
+        }
+
+        if self.has_line_terminator_before_current() || self.can_insert_semicolon_before_current() {
+            return Ok(());
+        }
+
+        Err(self.unexpected_token(&[Token::Semicolon]))
+    }
+
     /// Peek at the next token (lookahead).
     #[inline(always)]
     pub fn peek(&self) -> Option<&Token> {
