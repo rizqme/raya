@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::error::RuntimeError;
 use crate::CompiledModule;
 use crate::{compile, BuiltinMode, TypeMode};
+use raya_engine::semantics::SemanticProfile;
 
 /// Load a .ryb bytecode file from disk.
 pub fn load_bytecode_file(path: &Path) -> Result<CompiledModule, RuntimeError> {
@@ -213,12 +214,18 @@ fn load_entry_point_with_mode(
         Some("ryb") => load_bytecode_file(path),
         Some("raya") => {
             let source = std::fs::read_to_string(path)?;
-            let (inferred_mode, ts_options) = infer_type_mode_for_path(path)?;
-            let type_mode = forced_mode.unwrap_or(inferred_mode);
-            let (module, interner) = compile::compile_source_with_modes_and_ts_options(
+            let (inferred_profile, ts_options) = infer_semantic_profile_for_path(path)?;
+            let profile = forced_mode
+                .map(TypeMode::semantic_profile)
+                .unwrap_or(inferred_profile);
+            let (module, interner) = compile::compile_source_with_profile_and_ts_options(
                 &source,
-                builtin_mode_for_type_mode(type_mode),
-                type_mode,
+                builtin_mode_for_type_mode(match profile.source_kind {
+                    raya_engine::semantics::SourceKind::Raya => TypeMode::Raya,
+                    raya_engine::semantics::SourceKind::Ts => TypeMode::Ts,
+                    raya_engine::semantics::SourceKind::Js => TypeMode::Js,
+                }),
+                profile,
                 ts_options.as_ref(),
             )?;
             Ok(CompiledModule {
@@ -236,20 +243,32 @@ fn load_entry_point_with_mode(
 fn infer_type_mode_for_path(
     path: &Path,
 ) -> Result<(TypeMode, Option<compile::TsCompilerOptions>), RuntimeError> {
+    let (profile, ts_options) = infer_semantic_profile_for_path(path)?;
+    let type_mode = match profile.source_kind {
+        raya_engine::semantics::SourceKind::Js => TypeMode::Js,
+        raya_engine::semantics::SourceKind::Ts => TypeMode::Ts,
+        raya_engine::semantics::SourceKind::Raya => TypeMode::Raya,
+    };
+    Ok((type_mode, ts_options))
+}
+
+fn infer_semantic_profile_for_path(
+    path: &Path,
+) -> Result<(SemanticProfile, Option<compile::TsCompilerOptions>), RuntimeError> {
     let mut dir = match path.parent() {
         Some(p) => p.to_path_buf(),
-        None => return Ok((TypeMode::Raya, None)),
+        None => return Ok((SemanticProfile::raya(), None)),
     };
     loop {
         if let Some(tsconfig_path) = find_tsconfig(&dir) {
             let ts_options = load_ts_compiler_options(&tsconfig_path)?;
             if ts_options.allow_js.unwrap_or(false) {
-                return Ok((TypeMode::Js, Some(ts_options)));
+                return Ok((SemanticProfile::js(), Some(ts_options)));
             }
-            return Ok((TypeMode::Ts, Some(ts_options)));
+            return Ok((SemanticProfile::ts_strict(), Some(ts_options)));
         }
         if !dir.pop() {
-            return Ok((TypeMode::Raya, None));
+            return Ok((SemanticProfile::raya(), None));
         }
     }
 }

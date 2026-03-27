@@ -9,6 +9,7 @@ use raya_engine::parser::checker::{
     TypeSystemMode,
 };
 use raya_engine::parser::{Interner, LexError, ParseError, Parser, TypeContext};
+use raya_engine::semantics::{build_semantic_hir, SemanticHirModule, SemanticProfile, SourceKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
@@ -75,12 +76,28 @@ impl TsCompilerOptions {
     }
 }
 
+impl TypeMode {
+    /// Compatibility shim to map legacy type modes onto semantic profiles.
+    pub const fn semantic_profile(self) -> SemanticProfile {
+        match self {
+            TypeMode::Raya => SemanticProfile::raya(),
+            TypeMode::Ts => SemanticProfile::ts_strict(),
+            TypeMode::Js => SemanticProfile::js(),
+        }
+    }
+}
+
 #[inline]
 pub fn default_type_mode_for_builtin(mode: BuiltinMode) -> TypeMode {
     match mode {
         BuiltinMode::RayaStrict => TypeMode::Raya,
         BuiltinMode::NodeCompat => TypeMode::Js,
     }
+}
+
+#[inline]
+pub fn default_semantic_profile_for_builtin(mode: BuiltinMode) -> SemanticProfile {
+    default_type_mode_for_builtin(mode).semantic_profile()
 }
 
 #[inline]
@@ -109,6 +126,15 @@ fn checker_policy_for_mode(
     }
 }
 
+#[inline]
+fn checker_policy_for_profile(
+    profile: SemanticProfile,
+    ts_options: Option<&TsCompilerOptions>,
+) -> CheckerPolicy {
+    let ts_flags = ts_options.map(TsCompilerOptions::effective_typecheck_flags);
+    profile.checker_policy(ts_flags)
+}
+
 /// Options controlling compilation output.
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
@@ -121,6 +147,7 @@ pub struct CompileOptions {
 }
 
 /// Diagnostics returned from a check-only pass (no codegen).
+#[derive(Debug)]
 pub struct CheckDiagnostics {
     /// Type checking errors
     pub errors: Vec<CheckError>,
@@ -136,9 +163,22 @@ pub struct CheckDiagnostics {
     pub user_offset: usize,
 }
 
+/// Build an inspectable semantic-HIR summary for a source snippet.
+pub fn inspect_semantic_hir_with_profile(
+    source: &str,
+    profile: SemanticProfile,
+) -> Result<SemanticHirModule, RuntimeError> {
+    let parser = Parser::new_with_mode(source, profile.type_system_mode())
+        .map_err(|errors| RuntimeError::Lex(format!("{errors:?}")))?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|errors| RuntimeError::Parse(format!("{errors:?}")))?;
+    Ok(build_semantic_hir(&ast, &interner, profile))
+}
+
 /// Compile Raya source code to a bytecode module.
 pub fn compile_source(source: &str) -> Result<(Module, Interner), RuntimeError> {
-    compile_source_with_mode(source, BuiltinMode::RayaStrict)
+    compile_source_with_profile(source, BuiltinMode::RayaStrict, SemanticProfile::raya())
 }
 
 /// Compile Raya source code to a bytecode module with builtin API mode.
@@ -146,11 +186,20 @@ pub fn compile_source_with_mode(
     source: &str,
     builtin_mode: BuiltinMode,
 ) -> Result<(Module, Interner), RuntimeError> {
-    compile_source_with_modes(
+    compile_source_with_profile(
         source,
         builtin_mode,
-        default_type_mode_for_builtin(builtin_mode),
+        default_semantic_profile_for_builtin(builtin_mode),
     )
+}
+
+/// Compile source using an explicit semantic profile.
+pub fn compile_source_with_profile(
+    source: &str,
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
+) -> Result<(Module, Interner), RuntimeError> {
+    compile_source_with_profile_and_ts_options(source, builtin_mode, profile, None)
 }
 
 /// Compile Raya source code to a bytecode module with explicit builtin + type modes.
@@ -159,7 +208,12 @@ pub fn compile_source_with_modes(
     builtin_mode: BuiltinMode,
     type_mode: TypeMode,
 ) -> Result<(Module, Interner), RuntimeError> {
-    compile_source_with_modes_and_ts_options(source, builtin_mode, type_mode, None)
+    compile_source_with_profile_and_ts_options(
+        source,
+        builtin_mode,
+        type_mode.semantic_profile(),
+        None,
+    )
 }
 
 /// Compile source with explicit builtin + type mode + optional TS options.
@@ -171,19 +225,36 @@ pub fn compile_source_with_modes_and_ts_options(
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
-    validate_mode_constraints(builtin_mode, type_mode, ts_options)?;
+    compile_source_with_profile_and_ts_options(
+        source,
+        builtin_mode,
+        type_mode.semantic_profile(),
+        ts_options,
+    )
+}
+
+/// Compile source with explicit builtin surface + semantic profile + optional TS options.
+///
+/// This always goes through the binary module-graph compiler.
+pub fn compile_source_with_profile_and_ts_options(
+    source: &str,
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
+    ts_options: Option<&TsCompilerOptions>,
+) -> Result<(Module, Interner), RuntimeError> {
+    validate_profile_constraints(builtin_mode, profile, ts_options)?;
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
     use crate::module_system::ProgramCompiler;
-    let virtual_entry = match type_mode {
-        TypeMode::Js => Path::new("<inline>.js"),
-        TypeMode::Ts => Path::new("<inline>.ts"),
-        TypeMode::Raya => Path::new("<inline>.raya"),
+    let virtual_entry = match profile.source_kind {
+        SourceKind::Js => Path::new("<inline>.js"),
+        SourceKind::Ts => Path::new("<inline>.ts"),
+        SourceKind::Raya => Path::new("<inline>.raya"),
     };
     let compiler = ProgramCompiler {
         builtin_mode,
-        type_mode,
+        semantic_profile: profile,
         ts_options: ts_options.cloned(),
         compile_options: None,
     };
@@ -204,7 +275,12 @@ pub fn compile_source_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> Result<(Module, Interner), RuntimeError> {
-    compile_source_with_options_and_mode(source, options, BuiltinMode::RayaStrict)
+    compile_source_with_options_and_profile(
+        source,
+        options,
+        BuiltinMode::RayaStrict,
+        SemanticProfile::raya(),
+    )
 }
 
 /// Compile source with explicit compile options and builtin compatibility mode.
@@ -213,11 +289,27 @@ pub fn compile_source_with_options_and_mode(
     options: &CompileOptions,
     builtin_mode: BuiltinMode,
 ) -> Result<(Module, Interner), RuntimeError> {
-    compile_source_with_options_and_modes(
+    compile_source_with_options_and_profile(
         source,
         options,
         builtin_mode,
-        default_type_mode_for_builtin(builtin_mode),
+        default_semantic_profile_for_builtin(builtin_mode),
+    )
+}
+
+/// Compile source with explicit compile options, builtin mode, and semantic profile.
+pub fn compile_source_with_options_and_profile(
+    source: &str,
+    options: &CompileOptions,
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
+) -> Result<(Module, Interner), RuntimeError> {
+    compile_source_with_options_and_profile_and_ts_options(
+        source,
+        options,
+        builtin_mode,
+        profile,
+        None,
     )
 }
 
@@ -228,11 +320,11 @@ pub fn compile_source_with_options_and_modes(
     builtin_mode: BuiltinMode,
     type_mode: TypeMode,
 ) -> Result<(Module, Interner), RuntimeError> {
-    compile_source_with_options_and_modes_and_ts_options(
+    compile_source_with_options_and_profile_and_ts_options(
         source,
         options,
         builtin_mode,
-        type_mode,
+        type_mode.semantic_profile(),
         None,
     )
 }
@@ -242,6 +334,22 @@ pub fn compile_source_with_options_and_modes_and_ts_options(
     options: &CompileOptions,
     builtin_mode: BuiltinMode,
     type_mode: TypeMode,
+    ts_options: Option<&TsCompilerOptions>,
+) -> Result<(Module, Interner), RuntimeError> {
+    compile_source_with_options_and_profile_and_ts_options(
+        source,
+        options,
+        builtin_mode,
+        type_mode.semantic_profile(),
+        ts_options,
+    )
+}
+
+pub fn compile_source_with_options_and_profile_and_ts_options(
+    source: &str,
+    options: &CompileOptions,
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
     if options.sourcemap
@@ -255,7 +363,7 @@ pub fn compile_source_with_options_and_modes_and_ts_options(
             "compile_source_with_options now requires binary-link-compatible defaults (no sourcemap, no emit_generic_templates, monomorphization=ConsumerLink)".to_string(),
         ));
     }
-    compile_source_with_modes_and_ts_options(source, builtin_mode, type_mode, ts_options)
+    compile_source_with_profile_and_ts_options(source, builtin_mode, profile, ts_options)
 }
 
 /// Compile already-linked module-graph source (Module System V2 path).
@@ -267,11 +375,27 @@ pub fn compile_graph_source_with_modes_and_ts_options(
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
-    compile_graph_source_with_options_and_modes_and_ts_options(
+    compile_graph_source_with_options_and_profile_and_ts_options(
         source,
         &CompileOptions::default(),
         builtin_mode,
-        type_mode,
+        type_mode.semantic_profile(),
+        ts_options,
+    )
+}
+
+/// Compile already-linked module-graph source with an explicit semantic profile.
+pub fn compile_graph_source_with_profile_and_ts_options(
+    source: &str,
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
+    ts_options: Option<&TsCompilerOptions>,
+) -> Result<(Module, Interner), RuntimeError> {
+    compile_graph_source_with_options_and_profile_and_ts_options(
+        source,
+        &CompileOptions::default(),
+        builtin_mode,
+        profile,
         ts_options,
     )
 }
@@ -286,7 +410,24 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
-    validate_mode_constraints(builtin_mode, type_mode, ts_options)?;
+    compile_graph_source_with_options_and_profile_and_ts_options(
+        source,
+        options,
+        builtin_mode,
+        type_mode.semantic_profile(),
+        ts_options,
+    )
+}
+
+/// Compile already-linked module-graph source with an explicit semantic profile.
+pub fn compile_graph_source_with_options_and_profile_and_ts_options(
+    source: &str,
+    options: &CompileOptions,
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
+    ts_options: Option<&TsCompilerOptions>,
+) -> Result<(Module, Interner), RuntimeError> {
+    validate_profile_constraints(builtin_mode, profile, ts_options)?;
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
@@ -309,9 +450,9 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
 
     // Bind (creates symbol table)
     let mut type_ctx = TypeContext::new();
-    let policy = checker_policy_for_mode(type_mode, ts_options);
+    let policy = checker_policy_for_profile(profile, ts_options);
     let mut binder = Binder::new(&mut type_ctx, &interner)
-        .with_mode(type_system_mode(type_mode))
+        .with_mode(profile.type_system_mode())
         .with_policy(policy);
     binder.register_builtins(&[]);
     let builtin_exports = crate::Runtime::builtin_global_exports_for_mode(builtin_mode)?;
@@ -329,7 +470,7 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
 
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
-        .with_mode(type_system_mode(type_mode))
+        .with_mode(profile.type_system_mode())
         .with_policy(policy);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
@@ -347,15 +488,19 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     }
 
     // Compile via IR pipeline
-    let allow_unresolved_runtime_fallback = !matches!(type_mode, TypeMode::Raya);
+    let lowering = profile.lowering_semantics();
     let compiler = Compiler::new(type_ctx, &interner)
+        .with_semantic_profile(profile)
         .with_expr_types(check_result.expr_types)
         .with_type_annotation_types(check_result.type_annotation_types)
         .with_sourcemap(options.sourcemap)
         .with_emit_generic_templates(options.emit_generic_templates)
         .with_monomorphization_mode(options.monomorphization_mode)
-        .with_js_this_binding_compat(true)
-        .with_allow_unresolved_runtime_fallback(allow_unresolved_runtime_fallback)
+        .with_js_this_binding_compat(lowering.js_this_binding_compat)
+        .with_allow_unresolved_runtime_fallback(lowering.allow_unresolved_runtime_fallback)
+        .with_track_top_level_completion(lowering.track_top_level_completion)
+        .with_emit_script_global_bindings(lowering.emit_script_global_bindings)
+        .with_script_global_bindings_configurable(lowering.script_global_bindings_configurable)
         .with_source_text(full_source.clone());
     let bytecode = compiler.compile_via_ir(&ast)?;
 
@@ -367,7 +512,7 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
 /// Runs Parse → Bind → TypeCheck and returns all errors and warnings.
 /// Does not perform IR lowering, optimization, or code generation.
 pub fn check_source(source: &str) -> Result<CheckDiagnostics, RuntimeError> {
-    check_source_with_mode(source, BuiltinMode::RayaStrict)
+    check_source_with_profile(source, BuiltinMode::RayaStrict, SemanticProfile::raya())
 }
 
 /// Type-check source using a specific builtin compatibility mode.
@@ -375,11 +520,20 @@ pub fn check_source_with_mode(
     source: &str,
     builtin_mode: BuiltinMode,
 ) -> Result<CheckDiagnostics, RuntimeError> {
-    check_source_with_modes(
+    check_source_with_profile(
         source,
         builtin_mode,
-        default_type_mode_for_builtin(builtin_mode),
+        default_semantic_profile_for_builtin(builtin_mode),
     )
+}
+
+/// Type-check source using an explicit semantic profile.
+pub fn check_source_with_profile(
+    source: &str,
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
+) -> Result<CheckDiagnostics, RuntimeError> {
+    check_source_with_profile_and_ts_options(source, builtin_mode, profile, None)
 }
 
 /// Type-check source using explicit builtin compatibility + type mode.
@@ -388,7 +542,12 @@ pub fn check_source_with_modes(
     builtin_mode: BuiltinMode,
     type_mode: TypeMode,
 ) -> Result<CheckDiagnostics, RuntimeError> {
-    check_source_with_modes_and_ts_options(source, builtin_mode, type_mode, None)
+    check_source_with_profile_and_ts_options(
+        source,
+        builtin_mode,
+        type_mode.semantic_profile(),
+        None,
+    )
 }
 
 pub fn check_source_with_modes_and_ts_options(
@@ -397,7 +556,21 @@ pub fn check_source_with_modes_and_ts_options(
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<CheckDiagnostics, RuntimeError> {
-    check_graph_source_with_modes_and_ts_options(source, builtin_mode, type_mode, ts_options)
+    check_source_with_profile_and_ts_options(
+        source,
+        builtin_mode,
+        type_mode.semantic_profile(),
+        ts_options,
+    )
+}
+
+pub fn check_source_with_profile_and_ts_options(
+    source: &str,
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
+    ts_options: Option<&TsCompilerOptions>,
+) -> Result<CheckDiagnostics, RuntimeError> {
+    check_graph_source_with_profile_and_ts_options(source, builtin_mode, profile, ts_options)
 }
 
 /// Type-check already-linked module-graph source (Module System V2 path).
@@ -409,7 +582,22 @@ pub fn check_graph_source_with_modes_and_ts_options(
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<CheckDiagnostics, RuntimeError> {
-    validate_mode_constraints(builtin_mode, type_mode, ts_options)?;
+    check_graph_source_with_profile_and_ts_options(
+        source,
+        builtin_mode,
+        type_mode.semantic_profile(),
+        ts_options,
+    )
+}
+
+/// Type-check already-linked module-graph source with an explicit semantic profile.
+pub fn check_graph_source_with_profile_and_ts_options(
+    source: &str,
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
+    ts_options: Option<&TsCompilerOptions>,
+) -> Result<CheckDiagnostics, RuntimeError> {
+    validate_profile_constraints(builtin_mode, profile, ts_options)?;
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
@@ -429,9 +617,9 @@ pub fn check_graph_source_with_modes_and_ts_options(
 
     // Bind
     let mut type_ctx = TypeContext::new();
-    let policy = checker_policy_for_mode(type_mode, ts_options);
+    let policy = checker_policy_for_profile(profile, ts_options);
     let mut binder = Binder::new(&mut type_ctx, &interner)
-        .with_mode(type_system_mode(type_mode))
+        .with_mode(profile.type_system_mode())
         .with_policy(policy);
     binder.register_builtins(&[]);
     let builtin_exports = crate::Runtime::builtin_global_exports_for_mode(builtin_mode)?;
@@ -443,11 +631,11 @@ pub fn check_graph_source_with_modes_and_ts_options(
         Err(bind_errs) => (bind_errs, vec![], vec![]),
         Ok(symbols) => {
             let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
-                .with_mode(type_system_mode(type_mode))
+                .with_mode(profile.type_system_mode())
                 .with_policy(policy);
             match checker.check_module(&ast) {
                 Ok(mut result) => {
-                    if matches!(type_mode, TypeMode::Ts) {
+                    if matches!(profile.source_kind, SourceKind::Ts) {
                         if let Some(options) = ts_options {
                             for flag in options.unsupported_but_parsed_flags() {
                                 result.warnings.push(CheckWarning::UnsupportedTsFlag {
@@ -481,14 +669,37 @@ pub fn check_graph_source_with_modes_and_ts_options(
 fn validate_mode_constraints(
     builtin_mode: BuiltinMode,
     type_mode: TypeMode,
-    _ts_options: Option<&TsCompilerOptions>,
+    ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(), RuntimeError> {
-    if builtin_mode == BuiltinMode::RayaStrict && matches!(type_mode, TypeMode::Ts | TypeMode::Js) {
+    validate_profile_constraints(builtin_mode, type_mode.semantic_profile(), ts_options)
+}
+
+fn validate_profile_constraints(
+    builtin_mode: BuiltinMode,
+    profile: SemanticProfile,
+    ts_options: Option<&TsCompilerOptions>,
+) -> Result<(), RuntimeError> {
+    if builtin_mode == BuiltinMode::RayaStrict && !matches!(profile.source_kind, SourceKind::Raya) {
         return Err(RuntimeError::TypeCheck(
-            "Type mode 'ts' and 'js' require node-compat builtin mode.".to_string(),
+            "JS and TS semantic profiles require node-compat builtin mode.".to_string(),
         ));
     }
-
+    if matches!(profile.source_kind, SourceKind::Ts)
+        && ts_options.is_some_and(|options| {
+            let flags = options.effective_typecheck_flags();
+            !(flags.strict
+                && flags.no_implicit_any
+                && flags.no_implicit_this
+                && flags.strict_null_checks
+                && flags.strict_property_initialization
+                && flags.use_unknown_in_catch_variables
+                && flags.strict_function_types)
+        })
+    {
+        return Err(RuntimeError::TypeCheck(
+            "TypeScript semantic profile requires strict TS compiler options.".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -2608,5 +2819,51 @@ mod tests {
             result.errors.is_empty() && result.bind_errors.is_empty(),
             "explicit any cast/annotation should allow dot monkeypatch at checker level"
         );
+    }
+
+    #[test]
+    fn test_strict_ts_profile_rejects_loose_ts_options() {
+        let err = check_source_with_profile_and_ts_options(
+            "let value = 42; return value;",
+            BuiltinMode::NodeCompat,
+            SemanticProfile::ts_strict(),
+            Some(&TsCompilerOptions {
+                strict: Some(false),
+                ..TsCompilerOptions::default()
+            }),
+        )
+        .expect_err("strict TS semantic profile should reject loose compiler options");
+
+        assert!(
+            err.to_string().contains("strict TS compiler options"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_semantic_hir_tracks_raya_callable_and_await() {
+        let hir = inspect_semantic_hir_with_profile(
+            r#"
+            function main(x: number): number {
+                let y = await Promise.resolve(x + 1);
+                return y;
+            }
+            "#,
+            SemanticProfile::raya(),
+        )
+        .expect("semantic HIR should build");
+
+        assert_eq!(hir.profile, SemanticProfile::raya());
+        assert!(hir
+            .callables
+            .iter()
+            .any(|callable| callable.name.as_deref() == Some("main")));
+        assert!(hir.bindings.iter().any(|binding| {
+            binding.name == "x" && binding.kind == raya_engine::BindingKind::Parameter
+        }));
+        assert!(hir
+            .suspension_points
+            .iter()
+            .any(|point| point.kind == raya_engine::SuspensionKind::Await));
     }
 }

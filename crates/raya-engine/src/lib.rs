@@ -51,6 +51,9 @@
 /// Parser module: Lexer, parser, types, and type checker
 pub mod parser;
 
+/// Shared language semantic profiles and semantic-HIR inspection.
+pub mod semantics;
+
 /// Compiler module: IR, optimizations, and bytecode generation
 pub mod compiler;
 
@@ -104,6 +107,13 @@ pub use parser::{
     TypeChecker,
     TypeContext,
     TypeId,
+};
+
+pub use semantics::{
+    build_semantic_hir, BindingKind, CallableKind, ConcurrencySemantics, LoweringSemantics,
+    OptimizationProfile, RuntimeSemanticsBase, SemanticBinding, SemanticCallable,
+    SemanticHirModule, SemanticProfile, SourceKind, SuspensionKind, SuspensionPoint,
+    TypingDiscipline,
 };
 
 // ============================================================================

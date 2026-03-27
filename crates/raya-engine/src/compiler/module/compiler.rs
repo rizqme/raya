@@ -23,6 +23,7 @@ use crate::parser::checker::{
     Symbol, SymbolFlags, SymbolKind, TypeChecker, TypeSystemMode,
 };
 use crate::parser::{Interner, Parser, Span, TypeContext};
+use crate::semantics::{SemanticProfile, SourceKind, TypingDiscipline};
 
 use super::cache::ModuleCache;
 use super::declaration::{
@@ -120,10 +121,8 @@ pub struct ModuleCompiler {
     declaration_virtual_by_identity: HashMap<String, PathBuf>,
     /// Late-link requirements collected from declaration-backed imports.
     late_link_requirements: HashMap<u64, LateLinkRequirement>,
-    /// Checker mode (Raya strict or JS-like compatibility).
-    checker_mode: TypeSystemMode,
-    /// Checker policy override (TS flags etc.) propagated into bind/check passes.
-    checker_policy: CheckerPolicy,
+    /// Shared semantic profile for graph compilation.
+    semantic_profile: SemanticProfile,
     /// Builtin declaration surface used for global symbol seeding.
     builtin_surface_mode: BuiltinSurfaceMode,
     /// Optional override loaded from compiled builtin artifacts instead of declarations.
@@ -219,8 +218,7 @@ impl ModuleCompiler {
             declaration_modules: HashMap::new(),
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
-            checker_mode: TypeSystemMode::Raya,
-            checker_policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
+            semantic_profile: SemanticProfile::raya(),
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
             builtin_globals_override: None,
             builtin_globals: None,
@@ -242,8 +240,7 @@ impl ModuleCompiler {
             declaration_modules: HashMap::new(),
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
-            checker_mode: TypeSystemMode::Raya,
-            checker_policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
+            semantic_profile: SemanticProfile::raya(),
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
             builtin_globals_override: None,
             builtin_globals: None,
@@ -259,14 +256,37 @@ impl ModuleCompiler {
 
     /// Configure checker mode for graph compilation.
     pub fn with_checker_mode(mut self, mode: TypeSystemMode) -> Self {
-        self.checker_mode = mode;
-        self.checker_policy = CheckerPolicy::for_mode(mode);
+        self.semantic_profile = match mode {
+            TypeSystemMode::Js => SemanticProfile::js(),
+            TypeSystemMode::Ts => SemanticProfile::ts_strict(),
+            TypeSystemMode::Raya => SemanticProfile::raya(),
+        };
         self
     }
 
     /// Configure checker policy for graph compilation.
     pub fn with_checker_policy(mut self, policy: CheckerPolicy) -> Self {
-        self.checker_policy = policy;
+        self.semantic_profile.typing = if policy.allow_js_dynamic_fallback {
+            TypingDiscipline::DynamicJs
+        } else if policy.allow_explicit_any {
+            TypingDiscipline::StrictTs
+        } else {
+            TypingDiscipline::RayaStrict
+        };
+        if matches!(self.semantic_profile.typing, TypingDiscipline::DynamicJs) {
+            self.semantic_profile.source_kind = SourceKind::Js;
+        }
+        if matches!(self.semantic_profile.typing, TypingDiscipline::StrictTs)
+            && matches!(self.semantic_profile.source_kind, SourceKind::Raya)
+        {
+            self.semantic_profile.source_kind = SourceKind::Ts;
+        }
+        self
+    }
+
+    /// Configure the graph compiler from a shared semantic profile.
+    pub fn with_semantic_profile(mut self, profile: SemanticProfile) -> Self {
+        self.semantic_profile = profile;
         self
     }
 
@@ -882,22 +902,18 @@ impl ModuleCompiler {
     }
 
     fn parser_mode_for_path(&self, path: &Path) -> TypeSystemMode {
-        match path.extension().and_then(|ext| ext.to_str()) {
-            Some("js" | "mjs" | "cjs" | "jsx") => TypeSystemMode::Js,
-            Some("ts" | "mts" | "cts" | "tsx") => TypeSystemMode::Ts,
-            _ => TypeSystemMode::Raya,
-        }
+        SemanticProfile::from_path(path).type_system_mode()
     }
 
     fn early_error_options_for_path(&self, path: &Path) -> EarlyErrorOptions {
-        let mut options = EarlyErrorOptions::for_mode(self.checker_mode);
+        let profile = SemanticProfile::from_path(path);
+        let mut options = profile.early_error_options();
         let is_entry = self
             .root_entry_path
             .as_ref()
             .is_some_and(|entry| entry == path);
         if is_entry {
             options.allow_top_level_return = true;
-            options.allow_await_outside_async = true;
         }
         options
     }
@@ -974,9 +990,11 @@ impl ModuleCompiler {
 
         // Bind
         let mut type_ctx = TypeContext::new();
+        let checker_mode = self.semantic_profile.type_system_mode();
+        let checker_policy = self.semantic_profile.checker_policy(None);
         let mut binder = Binder::new(&mut type_ctx, &interner)
-            .with_mode(self.checker_mode)
-            .with_policy(self.checker_policy);
+            .with_mode(checker_mode)
+            .with_policy(checker_policy);
 
         if self.should_inject_builtin_globals(path) {
             binder.register_builtins(&[]);
@@ -1019,8 +1037,8 @@ impl ModuleCompiler {
 
         // Type check
         let mut checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
-            .with_mode(self.checker_mode)
-            .with_policy(self.checker_policy);
+            .with_mode(checker_mode)
+            .with_policy(checker_policy);
         let check_result =
             checker
                 .check_module(&ast)
@@ -1079,13 +1097,16 @@ impl ModuleCompiler {
             .unwrap_or_else(|| vec!["EventEmitter".to_string()]);
 
         // Compile
-        let allow_unresolved_runtime_fallback = !matches!(self.checker_mode, TypeSystemMode::Raya);
-        let js_compat_lowering = !matches!(self.checker_mode, TypeSystemMode::Raya);
+        let lowering = self.semantic_profile.lowering_semantics();
         let mut compiler = Compiler::new(type_ctx, &interner)
+            .with_semantic_profile(self.semantic_profile)
             .with_expr_types(check_result.expr_types)
             .with_type_annotation_types(check_result.type_annotation_types)
-            .with_js_this_binding_compat(js_compat_lowering)
-            .with_allow_unresolved_runtime_fallback(allow_unresolved_runtime_fallback);
+            .with_js_this_binding_compat(lowering.js_this_binding_compat)
+            .with_allow_unresolved_runtime_fallback(lowering.allow_unresolved_runtime_fallback)
+            .with_track_top_level_completion(lowering.track_top_level_completion)
+            .with_emit_script_global_bindings(lowering.emit_script_global_bindings)
+            .with_script_global_bindings_configurable(lowering.script_global_bindings_configurable);
         if let Some(ref jsx_opts) = self.jsx_options {
             compiler = compiler.with_jsx(jsx_opts.clone());
         }

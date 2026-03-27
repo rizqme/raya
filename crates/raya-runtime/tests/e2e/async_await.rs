@@ -99,6 +99,17 @@ fn test_await_conditional() {
     );
 }
 
+#[test]
+fn test_raya_profile_allows_await_without_async_function() {
+    expect_i32(
+        "function main(): number {
+             return await Promise.resolve(42);
+         }
+         return main();",
+        42,
+    );
+}
+
 // ============================================================================
 // Promise Creation
 // ============================================================================

@@ -48,6 +48,7 @@ use crate::parser::ast;
 use crate::parser::Interner;
 use crate::parser::TypeContext;
 use crate::parser::TypeId;
+use crate::semantics::SemanticProfile;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{HashMap, HashSet};
 
@@ -77,6 +78,8 @@ pub struct Compiler<'a> {
     type_annotation_types: FxHashMap<usize, TypeId>,
     /// JSX compilation options (None = JSX disabled)
     jsx_options: Option<lower::JsxOptions>,
+    /// Shared semantic profile driving checker/lowering behavior.
+    semantic_profile: SemanticProfile,
     /// Whether to emit source map (bytecode offset → source location)
     emit_sourcemap: bool,
     /// Use JS-compatible method extraction semantics in lowerer.
@@ -123,6 +126,7 @@ impl<'a> Compiler<'a> {
             expr_types: FxHashMap::default(),
             type_annotation_types: FxHashMap::default(),
             jsx_options: None,
+            semantic_profile: SemanticProfile::raya(),
             emit_sourcemap: false,
             js_this_binding_compat: false,
             allow_unresolved_runtime_fallback: true,
@@ -166,6 +170,18 @@ impl<'a> Compiler<'a> {
     /// Enable JSX compilation with the given options
     pub fn with_jsx(mut self, options: lower::JsxOptions) -> Self {
         self.jsx_options = Some(options);
+        self
+    }
+
+    /// Configure lowering/runtime behavior from a shared semantic profile.
+    pub fn with_semantic_profile(mut self, profile: SemanticProfile) -> Self {
+        let lowering = profile.lowering_semantics();
+        self.semantic_profile = profile;
+        self.js_this_binding_compat = lowering.js_this_binding_compat;
+        self.allow_unresolved_runtime_fallback = lowering.allow_unresolved_runtime_fallback;
+        self.track_top_level_completion = lowering.track_top_level_completion;
+        self.emit_script_global_bindings = lowering.emit_script_global_bindings;
+        self.script_global_bindings_configurable = lowering.script_global_bindings_configurable;
         self
     }
 

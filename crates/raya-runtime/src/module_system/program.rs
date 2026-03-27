@@ -1,5 +1,5 @@
 use crate::compile;
-use crate::compile::{TsCompilerOptions, TypeMode};
+use crate::compile::TsCompilerOptions;
 use crate::error::RuntimeError;
 use crate::BuiltinMode;
 use raya_engine::compiler::module::{
@@ -7,8 +7,9 @@ use raya_engine::compiler::module::{
 };
 use raya_engine::compiler::module::{ModuleCompileError, ModuleCompiler as BinaryModuleCompiler};
 use raya_engine::compiler::{module_id_from_name, SymbolType};
-use raya_engine::parser::checker::{CheckerPolicy, TsTypeFlags, TypeSystemMode};
+use raya_engine::parser::checker::TypeSystemMode;
 use raya_engine::parser::{Interner, Parser};
+use raya_engine::semantics::{SemanticProfile, SourceKind};
 use raya_engine::vm::module::ModuleLinker;
 use std::collections::HashMap;
 use std::fs;
@@ -35,7 +36,7 @@ pub struct ProgramDiagnostics {
 #[derive(Debug, Clone)]
 pub struct ProgramCompiler {
     pub builtin_mode: BuiltinMode,
-    pub type_mode: TypeMode,
+    pub semantic_profile: SemanticProfile,
     pub ts_options: Option<TsCompilerOptions>,
     pub compile_options: Option<compile::CompileOptions>,
 }
@@ -72,8 +73,7 @@ impl ProgramCompiler {
             })?;
 
         let mut compiler = BinaryModuleCompiler::new(project_root)
-            .with_checker_mode(self.type_system_mode())
-            .with_checker_policy(self.checker_policy())
+            .with_semantic_profile(self.semantic_profile)
             .with_builtin_surface_mode(self.builtin_surface_mode())
             .with_builtin_globals_override(builtin_globals);
         let mut compiled_modules = compiler.compile(&entry_path)?;
@@ -148,8 +148,7 @@ impl ProgramCompiler {
             })?;
 
         let mut compiler = BinaryModuleCompiler::new(project_root)
-            .with_checker_mode(self.type_system_mode())
-            .with_checker_policy(self.checker_policy())
+            .with_semantic_profile(self.semantic_profile)
             .with_builtin_surface_mode(self.builtin_surface_mode())
             .with_builtin_globals_override(builtin_globals);
         let mut compiled_modules =
@@ -373,37 +372,11 @@ impl ProgramCompiler {
     }
 
     fn can_use_binary_module_pipeline(&self) -> bool {
-        if !matches!(self.type_mode, TypeMode::Raya | TypeMode::Js | TypeMode::Ts) {
-            return false;
-        }
         if self.compile_options.is_some() {
             return false;
         }
 
         true
-    }
-
-    fn type_system_mode(&self) -> TypeSystemMode {
-        match self.type_mode {
-            TypeMode::Raya => TypeSystemMode::Raya,
-            TypeMode::Js => TypeSystemMode::Js,
-            TypeMode::Ts => TypeSystemMode::Ts,
-        }
-    }
-
-    fn checker_policy(&self) -> CheckerPolicy {
-        match self.type_mode {
-            TypeMode::Raya => CheckerPolicy::for_mode(TypeSystemMode::Raya),
-            TypeMode::Js => CheckerPolicy::for_mode(TypeSystemMode::Js),
-            TypeMode::Ts => {
-                let flags = self
-                    .ts_options
-                    .as_ref()
-                    .map(TsCompilerOptions::effective_typecheck_flags)
-                    .unwrap_or_else(TsTypeFlags::default);
-                CheckerPolicy::for_ts(flags)
-            }
-        }
     }
 
     fn builtin_surface_mode(&self) -> BuiltinSurfaceMode {
@@ -488,7 +461,9 @@ impl ProgramCompiler {
     }
 
     fn enforce_dynamic_import_policy(&self, source: &str) -> Result<(), RuntimeError> {
-        if matches!(self.type_mode, TypeMode::Raya) && looks_like_dynamic_import(source) {
+        if matches!(self.semantic_profile.source_kind, SourceKind::Raya)
+            && looks_like_dynamic_import(source)
+        {
             return Err(RuntimeError::TypeCheck(
                 "Dynamic import is not supported in strict mode. Use static import declarations."
                     .to_string(),
@@ -575,7 +550,7 @@ mod tests {
     fn strict_mode_rejects_dynamic_import() {
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -590,7 +565,7 @@ mod tests {
     fn compile_program_source_with_std_stream_import_succeeds() {
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -634,7 +609,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -689,7 +664,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -734,7 +709,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -771,7 +746,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -802,7 +777,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -833,7 +808,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -877,7 +852,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -918,7 +893,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -957,7 +932,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1008,7 +983,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1059,7 +1034,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1116,7 +1091,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1174,7 +1149,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1221,7 +1196,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1259,7 +1234,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1292,7 +1267,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1334,7 +1309,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1387,7 +1362,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1444,7 +1419,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1509,7 +1484,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1562,7 +1537,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
@@ -1606,7 +1581,7 @@ mod tests {
 
         let compiler = ProgramCompiler {
             builtin_mode: BuiltinMode::RayaStrict,
-            type_mode: TypeMode::Raya,
+            semantic_profile: SemanticProfile::raya(),
             ts_options: None,
             compile_options: None,
         };
