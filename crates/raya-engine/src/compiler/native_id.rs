@@ -169,7 +169,7 @@ pub const OBJECT_SET_PROPERTY_STRICT: u16 = 0x0050;
 /// JS `super[key] = value` assignment using [[Set]] semantics on the home object's prototype.
 pub const OBJECT_SET_SUPER_PROPERTY: u16 = 0x0051;
 /// Host-provided Test262 async completion callback.
-pub const HOST_TEST262_ASYNC_DONE: u16 = 0x0052;
+pub const HOST_TEST262_ASYNC_DONE: u16 = 0x0053;
 /// Strict-mode JS `super[key] = value` assignment.
 pub const OBJECT_SET_SUPER_PROPERTY_STRICT: u16 = 0x0052;
 /// Invoke iterator `return()` when preserving an existing throw completion.

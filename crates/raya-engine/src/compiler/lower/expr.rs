@@ -58,6 +58,32 @@ enum ClosureInvokeMode {
     Spawn,
 }
 
+#[derive(Clone)]
+enum InvokePlanTarget {
+    DirectFunction(FunctionId),
+    Closure(Register),
+}
+
+#[derive(Clone)]
+enum InvokePlanArgs {
+    Values(Vec<Register>),
+    Array(Register),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum InvokePlanCompletion {
+    Sync { result_ty: TypeId, propagate_type: bool },
+    Task,
+}
+
+#[derive(Clone)]
+pub(super) struct InvokePlan {
+    target: InvokePlanTarget,
+    receiver: Option<Register>,
+    args: InvokePlanArgs,
+    completion: InvokePlanCompletion,
+}
+
 enum ResolvedIdentifierClosure {
     DirectEval { closure: Register },
     Local {
@@ -191,6 +217,197 @@ impl<'a> Lowerer<'a> {
             }
         };
         self.emit_closure_invoke(dest, closure, args, mode);
+    }
+
+    pub(super) fn invoke_plan_sync(result_ty: TypeId) -> InvokePlanCompletion {
+        InvokePlanCompletion::Sync {
+            result_ty,
+            propagate_type: true,
+        }
+    }
+
+    pub(super) fn invoke_plan_sync_no_propagate() -> InvokePlanCompletion {
+        InvokePlanCompletion::Sync {
+            result_ty: UNRESOLVED,
+            propagate_type: false,
+        }
+    }
+
+    fn invoke_plan_completion_for_callable(
+        &self,
+        callee_ty: TypeId,
+        result_ty: TypeId,
+    ) -> InvokePlanCompletion {
+        if self.type_id_is_async_callable(callee_ty) {
+            InvokePlanCompletion::Task
+        } else {
+            Self::invoke_plan_sync(result_ty)
+        }
+    }
+
+    pub(super) fn plan_direct_function_invoke(
+        &self,
+        func: FunctionId,
+        args: Vec<Register>,
+        completion: InvokePlanCompletion,
+    ) -> InvokePlan {
+        InvokePlan {
+            target: InvokePlanTarget::DirectFunction(func),
+            receiver: None,
+            args: InvokePlanArgs::Values(args),
+            completion,
+        }
+    }
+
+    pub(super) fn plan_closure_invoke(
+        &self,
+        closure: Register,
+        args: Vec<Register>,
+        completion: InvokePlanCompletion,
+    ) -> InvokePlan {
+        InvokePlan {
+            target: InvokePlanTarget::Closure(closure),
+            receiver: None,
+            args: InvokePlanArgs::Values(args),
+            completion,
+        }
+    }
+
+    pub(super) fn plan_receiver_closure_invoke(
+        &self,
+        receiver: Register,
+        closure: Register,
+        args: Vec<Register>,
+        completion: InvokePlanCompletion,
+    ) -> InvokePlan {
+        InvokePlan {
+            target: InvokePlanTarget::Closure(closure),
+            receiver: Some(receiver),
+            args: InvokePlanArgs::Values(args),
+            completion,
+        }
+    }
+
+    pub(super) fn plan_apply_invoke(
+        &self,
+        receiver: Option<Register>,
+        closure: Register,
+        args_array: Register,
+        completion: InvokePlanCompletion,
+    ) -> InvokePlan {
+        InvokePlan {
+            target: InvokePlanTarget::Closure(closure),
+            receiver,
+            args: InvokePlanArgs::Array(args_array),
+            completion,
+        }
+    }
+
+    pub(super) fn emit_invoke_plan(&mut self, dest: Register, plan: InvokePlan) {
+        match plan {
+            InvokePlan {
+                target: InvokePlanTarget::DirectFunction(func),
+                args: InvokePlanArgs::Values(args),
+                completion,
+                ..
+            } => match completion {
+                InvokePlanCompletion::Task => {
+                    self.emit(IrInstr::Spawn {
+                        dest,
+                        func,
+                        args,
+                    });
+                }
+                InvokePlanCompletion::Sync {
+                    result_ty,
+                    propagate_type,
+                } => {
+                    self.emit(IrInstr::Call {
+                        dest: Some(dest.clone()),
+                        func,
+                        args,
+                    });
+                    if propagate_type {
+                        self.propagate_type_projection_to_register(result_ty, &dest);
+                    }
+                }
+            },
+            InvokePlan {
+                target: InvokePlanTarget::DirectFunction(_),
+                args: InvokePlanArgs::Array(_),
+                ..
+            } => {
+                self.errors
+                    .push(crate::compiler::CompileError::InternalError {
+                        message: "invoke plan bug: direct function cannot use array apply path"
+                            .to_string(),
+                    });
+                self.poison_register(&dest);
+            }
+            InvokePlan {
+                target: InvokePlanTarget::Closure(closure),
+                receiver,
+                args: InvokePlanArgs::Array(args_array),
+                completion,
+            } => {
+                let receiver = receiver.unwrap_or_else(|| self.lower_undefined_literal());
+                self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+                if let InvokePlanCompletion::Sync {
+                    result_ty,
+                    propagate_type,
+                } = completion
+                {
+                    if propagate_type {
+                        self.propagate_type_projection_to_register(result_ty, &dest);
+                    }
+                }
+            }
+            InvokePlan {
+                target: InvokePlanTarget::Closure(closure),
+                receiver: Some(receiver),
+                args: InvokePlanArgs::Values(args),
+                completion,
+            } => match completion {
+                InvokePlanCompletion::Task => {
+                    let bound = self.emit_js_bound_closure_helper(closure, receiver);
+                    self.emit(IrInstr::SpawnClosure {
+                        dest,
+                        closure: bound,
+                        args,
+                    });
+                }
+                InvokePlanCompletion::Sync {
+                    result_ty,
+                    propagate_type,
+                } => {
+                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+                    if propagate_type {
+                        self.propagate_type_projection_to_register(result_ty, &dest);
+                    }
+                }
+            },
+            InvokePlan {
+                target: InvokePlanTarget::Closure(closure),
+                receiver: None,
+                args: InvokePlanArgs::Values(args),
+                completion,
+            } => match completion {
+                InvokePlanCompletion::Task => {
+                    self.emit_closure_invoke(dest, closure, args, ClosureInvokeMode::Spawn);
+                }
+                InvokePlanCompletion::Sync {
+                    result_ty,
+                    propagate_type,
+                } => {
+                    let mode = if propagate_type {
+                        ClosureInvokeMode::Sync { result_ty }
+                    } else {
+                        ClosureInvokeMode::SyncNoPropagate
+                    };
+                    self.emit_closure_invoke(dest, closure, args, mode);
+                }
+            },
+        }
     }
 
     fn emit_member_spawn_call(
@@ -1758,17 +1975,9 @@ impl<'a> Lowerer<'a> {
             });
         }
 
-        if self.type_id_is_async_callable(closure.ty) {
-            let bound = self.emit_js_bound_closure_helper(closure, receiver);
-            self.emit(IrInstr::SpawnClosure {
-                dest: dest.clone(),
-                closure: bound,
-                args,
-            });
-        } else {
-            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-            self.propagate_type_projection_to_register(call_ty, &dest);
-        }
+        let completion = self.invoke_plan_completion_for_callable(closure.ty, call_ty);
+        let plan = self.plan_receiver_closure_invoke(receiver, closure, args, completion);
+        self.emit_invoke_plan(dest.clone(), plan);
 
         dest
     }
@@ -4497,19 +4706,12 @@ impl<'a> Lowerer<'a> {
                 "callable",
             ) {
                 Ok(Some(ResolvedIdentifierClosure::DirectEval { closure })) => {
-                    if call.has_spread_arguments() {
-                        let receiver = self.lower_undefined_literal();
-                        let args_array = self.lower_call_argument_array(&call.arguments);
-                        self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
-                    } else {
-                        self.emit_closure_invoke(
-                            dest.clone(),
-                            closure,
-                            args,
-                            ClosureInvokeMode::Sync { result_ty: call_ty },
-                        );
-                    }
-                    self.propagate_type_projection_to_register(call_ty, &dest);
+                    let plan = self.plan_closure_invoke(
+                        closure,
+                        args,
+                        Self::invoke_plan_sync(call_ty),
+                    );
+                    self.emit_invoke_plan(dest.clone(), plan);
                     return dest;
                 }
                 Ok(Some(ResolvedIdentifierClosure::Local {
@@ -4536,23 +4738,13 @@ impl<'a> Lowerer<'a> {
                     {
                         if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
                             let receiver = self.lower_undefined_literal();
-                            if call.has_spread_arguments() {
-                                let args_array = self.lower_call_argument_array(&call.arguments);
-                                self.emit_js_apply_helper(
-                                    dest.clone(),
-                                    receiver,
-                                    closure,
-                                    args_array,
-                                );
-                            } else {
-                                self.emit_js_member_call_helper(
-                                    dest.clone(),
-                                    receiver,
-                                    closure,
-                                    args,
-                                );
-                            }
-                            self.propagate_type_projection_to_register(call_ty, &dest);
+                            let plan = self.plan_receiver_closure_invoke(
+                                receiver,
+                                closure,
+                                args,
+                                Self::invoke_plan_sync(call_ty),
+                            );
+                            self.emit_invoke_plan(dest.clone(), plan);
                             return dest;
                         }
                         self.errors
@@ -4577,12 +4769,12 @@ impl<'a> Lowerer<'a> {
                                     func_id.as_u32()
                                 );
                             }
-                            self.emit_closure_invoke(
-                                dest.clone(),
+                            let plan = self.plan_closure_invoke(
                                 closure,
                                 args,
-                                ClosureInvokeMode::Spawn,
+                                InvokePlanCompletion::Task,
                             );
+                            self.emit_invoke_plan(dest.clone(), plan);
                             return dest;
                         }
                     }
@@ -4593,12 +4785,12 @@ impl<'a> Lowerer<'a> {
                             self.interner.resolve(ident.name)
                         );
                     }
-                    self.emit_closure_invoke(
-                        dest.clone(),
+                    let plan = self.plan_closure_invoke(
                         closure,
                         args,
-                        ClosureInvokeMode::SyncNoPropagate,
+                        Self::invoke_plan_sync_no_propagate(),
                     );
+                    self.emit_invoke_plan(dest.clone(), plan);
 
                     if let Some(&(nominal_type_id, method_name)) =
                         self.bound_method_vars.get(&ident.name)
@@ -4665,28 +4857,24 @@ impl<'a> Lowerer<'a> {
                     };
 
                     // Check if this is an async function - emit Spawn instead of Call
-                    if self.async_functions.contains(&effective_func_id) {
-                        // Use proper Task type for the destination register
+                    let completion = if self.async_functions.contains(&effective_func_id) {
+                        InvokePlanCompletion::Task
+                    } else {
+                        Self::invoke_plan_sync(call_ty)
+                    };
+                    let invoke_dest = if matches!(completion, InvokePlanCompletion::Task) {
                         let task_ty = self
                             .type_ctx
                             .generic_task_type()
                             .unwrap_or(TypeId::new(TASK_TYPE_ID));
-                        let task_dest = self.alloc_register(task_ty);
-                        self.emit(IrInstr::Spawn {
-                            dest: task_dest.clone(),
-                            func: effective_func_id,
-                            args,
-                        });
-                        return task_dest;
+                        self.alloc_register(task_ty)
                     } else {
-                        self.emit(IrInstr::Call {
-                            dest: Some(dest.clone()),
-                            func: effective_func_id,
-                            args,
-                        });
-                        self.propagate_type_projection_to_register(call_ty, &dest);
-                    }
-                    return dest;
+                        dest.clone()
+                    };
+                    let plan =
+                        self.plan_direct_function_invoke(effective_func_id, args, completion);
+                    self.emit_invoke_plan(invoke_dest.clone(), plan);
+                    return invoke_dest;
                 }
             }
 
@@ -4708,13 +4896,13 @@ impl<'a> Lowerer<'a> {
                             index: global_idx,
                         });
                         let receiver = self.lower_undefined_literal();
-                        if call.has_spread_arguments() {
-                            let args_array = self.lower_call_argument_array(&call.arguments);
-                            self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
-                        } else {
-                            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                        }
-                        self.propagate_type_projection_to_register(call_ty, &dest);
+                        let plan = self.plan_receiver_closure_invoke(
+                            receiver,
+                            closure,
+                            args,
+                            Self::invoke_plan_sync(call_ty),
+                        );
+                        self.emit_invoke_plan(dest.clone(), plan);
                         return dest;
                     }
                     self.errors
@@ -4745,27 +4933,27 @@ impl<'a> Lowerer<'a> {
                                 func_id.as_u32()
                             );
                         }
-                        self.emit_closure_invoke(
-                            dest.clone(),
+                        let plan = self.plan_closure_invoke(
                             closure,
                             args,
-                            ClosureInvokeMode::Spawn,
+                            InvokePlanCompletion::Task,
                         );
+                        self.emit_invoke_plan(dest.clone(), plan);
                     } else {
-                        self.emit_closure_invoke(
-                            dest.clone(),
+                        let plan = self.plan_closure_invoke(
                             closure,
                             args,
-                            ClosureInvokeMode::SyncNoPropagate,
+                            Self::invoke_plan_sync_no_propagate(),
                         );
+                        self.emit_invoke_plan(dest.clone(), plan);
                     }
                 } else {
-                    self.emit_closure_invoke(
-                        dest.clone(),
+                    let plan = self.plan_closure_invoke(
                         closure,
                         args,
-                        ClosureInvokeMode::SyncNoPropagate,
+                        Self::invoke_plan_sync_no_propagate(),
                     );
+                    self.emit_invoke_plan(dest.clone(), plan);
                 }
 
                 // Propagate return type for bound method calls (global variable path)
@@ -4835,22 +5023,19 @@ impl<'a> Lowerer<'a> {
                     if self.async_closures.contains(&func_id)
                         || self.async_functions.contains(&func_id)
                     {
-                        self.emit_closure_invoke(
-                            dest.clone(),
+                        let plan = self.plan_closure_invoke(
                             closure,
                             args,
-                            ClosureInvokeMode::Spawn,
+                            InvokePlanCompletion::Task,
                         );
+                        self.emit_invoke_plan(dest.clone(), plan);
                         return dest;
                     }
                 }
 
-                self.emit_closure_invoke(
-                    dest.clone(),
-                    closure,
-                    args,
-                    ClosureInvokeMode::Sync { result_ty: call_ty },
-                );
+                let plan =
+                    self.plan_closure_invoke(closure, args, Self::invoke_plan_sync(call_ty));
+                self.emit_invoke_plan(dest.clone(), plan);
                 return dest;
             }
 
@@ -4893,21 +5078,18 @@ impl<'a> Lowerer<'a> {
                                 is_ancestor
                             );
                         }
-                        self.emit_closure_invoke(
-                            dest.clone(),
+                        let plan = self.plan_closure_invoke(
                             closure,
                             args,
-                            ClosureInvokeMode::Spawn,
+                            InvokePlanCompletion::Task,
                         );
+                        self.emit_invoke_plan(dest.clone(), plan);
                         return dest;
                     }
                 }
-                self.emit_closure_invoke(
-                    dest.clone(),
-                    closure,
-                    args,
-                    ClosureInvokeMode::Sync { result_ty: call_ty },
-                );
+                let plan =
+                    self.plan_closure_invoke(closure, args, Self::invoke_plan_sync(call_ty));
+                self.emit_invoke_plan(dest.clone(), plan);
                 return dest;
             }
         }
@@ -5531,7 +5713,12 @@ impl<'a> Lowerer<'a> {
         }
 
         let closure = self.lower_expr(&call.callee);
-        self.emit_call_or_spawn_closure(dest.clone(), closure, args, callee_ty, call_ty);
+        let plan = self.plan_closure_invoke(
+            closure,
+            args,
+            self.invoke_plan_completion_for_callable(callee_ty, call_ty),
+        );
+        self.emit_invoke_plan(dest.clone(), plan);
         dest
     }
 
@@ -5554,7 +5741,13 @@ impl<'a> Lowerer<'a> {
             Expression::Member(member) => {
                 let receiver = self.lower_expr(&member.object);
                 let closure = self.lower_expr(&call.callee);
-                self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+                let plan = self.plan_apply_invoke(
+                    Some(receiver),
+                    closure,
+                    args_array,
+                    Self::invoke_plan_sync(call_ty),
+                );
+                self.emit_invoke_plan(dest.clone(), plan);
             }
             Expression::Index(index) => {
                 let receiver = self.lower_expr(&index.object);
@@ -5581,12 +5774,23 @@ impl<'a> Lowerer<'a> {
                         index: key,
                     });
                 }
-                self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+                let plan = self.plan_apply_invoke(
+                    Some(receiver),
+                    closure,
+                    args_array,
+                    Self::invoke_plan_sync(call_ty),
+                );
+                self.emit_invoke_plan(dest.clone(), plan);
             }
             _ => {
                 let closure = self.lower_expr(&call.callee);
-                let receiver = self.lower_undefined_literal();
-                self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+                let plan = self.plan_apply_invoke(
+                    None,
+                    closure,
+                    args_array,
+                    Self::invoke_plan_sync(call_ty),
+                );
+                self.emit_invoke_plan(dest.clone(), plan);
             }
         }
 
@@ -5656,21 +5860,18 @@ impl<'a> Lowerer<'a> {
             let call_result = self.alloc_register(dest.ty);
             if call.has_spread_arguments() {
                 let args_array = self.lower_call_argument_array(&call.arguments);
-                self.emit_js_apply_helper(call_result.clone(), receiver, callee, args_array);
-                self.propagate_type_projection_to_register(call_ty, &call_result);
+                let plan = self.plan_apply_invoke(
+                    Some(receiver),
+                    callee,
+                    args_array,
+                    Self::invoke_plan_sync(call_ty),
+                );
+                self.emit_invoke_plan(call_result.clone(), plan);
             } else {
                 let args = self.lower_call_argument_values(&call.arguments);
-                if self.type_id_is_async_callable(callee.ty) {
-                    let bound = self.emit_js_bound_closure_helper(callee, receiver);
-                    self.emit(IrInstr::SpawnClosure {
-                        dest: call_result.clone(),
-                        closure: bound,
-                        args,
-                    });
-                } else {
-                    self.emit_js_member_call_helper(call_result.clone(), receiver, callee, args);
-                    self.propagate_type_projection_to_register(call_ty, &call_result);
-                }
+                let completion = self.invoke_plan_completion_for_callable(callee.ty, call_ty);
+                let plan = self.plan_receiver_closure_invoke(receiver, callee, args, completion);
+                self.emit_invoke_plan(call_result.clone(), plan);
             }
             let call_exit = self.current_block;
             self.set_terminator(Terminator::Jump(merge_block));
@@ -5718,26 +5919,19 @@ impl<'a> Lowerer<'a> {
         let call_result = self.alloc_register(dest.ty);
         if call.has_spread_arguments() {
             let args_array = self.lower_call_argument_array(&call.arguments);
-            let receiver = self.lower_undefined_literal();
-            self.emit_js_apply_helper(call_result.clone(), receiver, callee, args_array);
-            self.propagate_type_projection_to_register(call_ty, &call_result);
+            let plan = self.plan_apply_invoke(
+                None,
+                callee,
+                args_array,
+                Self::invoke_plan_sync(call_ty),
+            );
+            self.emit_invoke_plan(call_result.clone(), plan);
         } else {
             let args = self.lower_call_argument_values(&call.arguments);
-            if self.type_id_is_async_callable(self.get_expr_type(&call.callee)) {
-                self.emit_closure_invoke(
-                    call_result.clone(),
-                    callee,
-                    args,
-                    ClosureInvokeMode::Spawn,
-                );
-            } else {
-                self.emit_closure_invoke(
-                    call_result.clone(),
-                    callee,
-                    args,
-                    ClosureInvokeMode::Sync { result_ty: call_ty },
-                );
-            }
+            let completion =
+                self.invoke_plan_completion_for_callable(self.get_expr_type(&call.callee), call_ty);
+            let plan = self.plan_closure_invoke(callee, args, completion);
+            self.emit_invoke_plan(call_result.clone(), plan);
         }
         let call_exit = self.current_block;
         self.set_terminator(Terminator::Jump(merge_block));
@@ -11815,12 +12009,8 @@ impl<'a> Lowerer<'a> {
                 "async callable",
             ) {
                 Ok(Some(ResolvedIdentifierClosure::DirectEval { closure })) => {
-                    self.emit_closure_invoke(
-                        dest.clone(),
-                        closure,
-                        args,
-                        ClosureInvokeMode::Spawn,
-                    );
+                    let plan = self.plan_closure_invoke(closure, args, InvokePlanCompletion::Task);
+                    self.emit_invoke_plan(dest.clone(), plan);
                     return dest;
                 }
                 Ok(Some(ResolvedIdentifierClosure::Local {
@@ -11855,12 +12045,8 @@ impl<'a> Lowerer<'a> {
                             local_idx
                         );
                     }
-                    self.emit_closure_invoke(
-                        dest.clone(),
-                        closure,
-                        args,
-                        ClosureInvokeMode::Spawn,
-                    );
+                    let plan = self.plan_closure_invoke(closure, args, InvokePlanCompletion::Task);
+                    self.emit_invoke_plan(dest.clone(), plan);
                     return dest;
                 }
                 Ok(None) => {}
@@ -11872,11 +12058,9 @@ impl<'a> Lowerer<'a> {
 
             // Direct function call: async myFn()
             if let Some(&func_id) = self.function_map.get(&ident.name) {
-                self.emit(IrInstr::Spawn {
-                    dest: dest.clone(),
-                    func: func_id,
-                    args,
-                });
+                let plan =
+                    self.plan_direct_function_invoke(func_id, args, InvokePlanCompletion::Task);
+                self.emit_invoke_plan(dest.clone(), plan);
                 return dest;
             }
 
@@ -11933,12 +12117,8 @@ impl<'a> Lowerer<'a> {
                 callee_ty.as_u32()
             );
         }
-        self.emit_closure_invoke(
-            dest.clone(),
-            callee_reg,
-            args,
-            ClosureInvokeMode::Spawn,
-        );
+        let plan = self.plan_closure_invoke(callee_reg, args, InvokePlanCompletion::Task);
+        self.emit_invoke_plan(dest.clone(), plan);
         dest
     }
 

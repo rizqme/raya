@@ -6567,11 +6567,12 @@ impl<'a> Lowerer<'a> {
         if let Some(func_id) = direct_func_id {
             // Case 1: Direct function call - use IrInstr::Call
             let result_reg = self.alloc_register(TypeId::new(0));
-            self.emit(IrInstr::Call {
-                dest: Some(result_reg),
-                func: func_id,
+            let plan = self.plan_direct_function_invoke(
+                func_id,
                 args,
-            });
+                Self::invoke_plan_sync_no_propagate(),
+            );
+            self.emit_invoke_plan(result_reg, plan);
         } else if let Expression::Call(_) = decorator_expr {
             // Case 2: Factory call - lower the factory call, then CallClosure on the result
             // The factory returns a closure that is the actual decorator
@@ -6593,11 +6594,12 @@ impl<'a> Lowerer<'a> {
             }
             let decorator_closure = self.lower_expr(decorator_expr);
             let result_reg = self.alloc_register(TypeId::new(0));
-            self.emit(IrInstr::CallClosure {
-                dest: Some(result_reg),
-                closure: decorator_closure,
+            let plan = self.plan_closure_invoke(
+                decorator_closure,
                 args,
-            });
+                Self::invoke_plan_sync_no_propagate(),
+            );
+            self.emit_invoke_plan(result_reg, plan);
         } else {
             // Case 3: Local variable or other expression - lower and use CallClosure
             let decorator_ty = if dec_info.expr_type != UNRESOLVED {
@@ -6618,11 +6620,12 @@ impl<'a> Lowerer<'a> {
             }
             let decorator_reg = self.lower_expr(decorator_expr);
             let result_reg = self.alloc_register(TypeId::new(0));
-            self.emit(IrInstr::CallClosure {
-                dest: Some(result_reg),
-                closure: decorator_reg,
+            let plan = self.plan_closure_invoke(
+                decorator_reg,
                 args,
-            });
+                Self::invoke_plan_sync_no_propagate(),
+            );
+            self.emit_invoke_plan(result_reg, plan);
         }
 
         // Register the decorator application in the metadata store
