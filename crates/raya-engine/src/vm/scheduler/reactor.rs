@@ -6,7 +6,9 @@
 //! preemption.
 
 use crate::vm::abi::native_to_value;
-use crate::vm::interpreter::{ExecutionResult, Interpreter, PromiseMicrotask, SharedVmState};
+use crate::vm::interpreter::{
+    ExecutionResult, Interpreter, PromiseHandle, PromiseMicrotask, SharedVmState,
+};
 use crate::vm::object::{Buffer, ChannelObject, Class, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::value::Value;
@@ -935,7 +937,8 @@ impl Reactor {
             return false;
         }
 
-        let Some(source_task_id) = value.as_u64().map(TaskId::from_u64) else {
+        let Some(source_task_id) = PromiseHandle::from_value(value).map(PromiseHandle::task_id)
+        else {
             return false;
         };
 
@@ -965,8 +968,7 @@ impl Reactor {
                 task.complete(source_task.result().unwrap_or(Value::undefined()));
             }
             TaskState::Failed => {
-                source_task.mark_rejection_observed();
-                task.set_exception(source_task.current_exception().unwrap_or(Value::null()));
+                task.set_exception(source_task.observe_rejection_reason().unwrap_or(Value::null()));
                 task.fail();
             }
             TaskState::Created | TaskState::Running | TaskState::Suspended | TaskState::Resumed => {
@@ -1338,8 +1340,7 @@ impl Reactor {
             let source_failed = source.state() == TaskState::Failed;
             let source_result = source.result();
             let source_exception = if source_failed {
-                source.mark_rejection_observed();
-                Some(source.current_exception().unwrap_or(Value::null()))
+                Some(source.observe_rejection_reason().unwrap_or(Value::null()))
             } else {
                 None
             };
@@ -1381,8 +1382,7 @@ impl Reactor {
         let tasks_map = shared_state.tasks.read();
         let task_failed = task.state() == TaskState::Failed;
         let exception = if task_failed {
-            task.mark_rejection_observed();
-            task.current_exception()
+            task.observe_rejection_reason()
         } else {
             None
         };

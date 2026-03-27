@@ -44,6 +44,13 @@ pub struct VmStats {
     pub jit_telemetry: crate::vm::interpreter::JitTelemetrySnapshot,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsyncCallbackStatus {
+    Pending,
+    Succeeded,
+    Failed(String),
+}
+
 fn raw_heap_value_ptr(header_ptr: *mut GcHeader) -> usize {
     let header = unsafe { &*header_ptr };
     unsafe { (header_ptr as *mut u8).add(header.value_offset() as usize) as usize }
@@ -603,6 +610,24 @@ impl Vm {
             .set_unhandled_promise_rejection_reporting_enabled(enabled);
     }
 
+    pub fn test262_async_callback_status(&self) -> Result<AsyncCallbackStatus, String> {
+        let state = self
+            .builtin_global_named_field_value("globalThis", "__test262AsyncState__")
+            .ok_or_else(|| "async completion state is not available on globalThis".to_string())
+            .and_then(Self::value_to_i32ish)?;
+        match state {
+            0 => Ok(AsyncCallbackStatus::Pending),
+            1 => Ok(AsyncCallbackStatus::Succeeded),
+            2 => Ok(AsyncCallbackStatus::Failed(
+                self.builtin_global_named_field_value("globalThis", "__test262AsyncFailure__")
+                    .and_then(|value| self.plain_string_value(value))
+                    .filter(|message| !message.is_empty())
+                    .unwrap_or_else(|| "async test failed via $DONE".to_string()),
+            )),
+            other => Err(format!("unexpected async completion state: {}", other)),
+        }
+    }
+
     /// Read an ambient builtin global value by name.
     pub fn builtin_global_value(&self, name: &str) -> Option<Value> {
         self.shared_state().get_builtin_global(name)
@@ -627,6 +652,31 @@ impl Vm {
     /// Best-effort conversion of a VM value into a plain host string.
     pub fn plain_string_value(&self, value: Value) -> Option<String> {
         Self::value_to_plain_string(value)
+    }
+
+    fn value_to_i32ish(value: Value) -> Result<i32, String> {
+        if let Some(state) = value.as_i32() {
+            return Ok(state);
+        }
+        if let Some(state) = value.as_i64() {
+            return i32::try_from(state)
+                .map_err(|_| format!("async completion probe returned out-of-range i64 state: {state}"));
+        }
+        if let Some(state) = value.as_u64() {
+            return i32::try_from(state)
+                .map_err(|_| format!("async completion probe returned out-of-range u64 state: {state}"));
+        }
+        if let Some(state) = value.as_f64() {
+            if state.is_finite() && state.fract() == 0.0 {
+                return i32::try_from(state as i64).map_err(|_| {
+                    format!("async completion probe returned out-of-range f64 state: {state}")
+                });
+            }
+        }
+        Err(format!(
+            "async completion probe returned a non-integer state: {:?}",
+            value
+        ))
     }
 
     /// Load a .ryb file into this VM

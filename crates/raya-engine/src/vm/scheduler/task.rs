@@ -997,6 +997,12 @@ impl Task {
         self.lifecycle.lock().rejection_observed = true;
     }
 
+    /// Mark this task's rejection as observed and return the current rejection reason, if any.
+    pub fn observe_rejection_reason(&self) -> Option<Value> {
+        self.mark_rejection_observed();
+        self.current_exception()
+    }
+
     /// Whether this task's rejection has been observed by a consumer.
     pub fn is_rejection_observed(&self) -> bool {
         self.lifecycle.lock().rejection_observed

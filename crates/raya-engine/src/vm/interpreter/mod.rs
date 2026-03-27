@@ -35,4 +35,4 @@ pub use shared_state::{
     RuntimeTypeHandleRegistry, ShapeAdapter, SharedVmState, StructuralAdapterKey,
     StructuralSlotBinding,
 };
-pub use vm_facade::{Vm, VmStats};
+pub use vm_facade::{AsyncCallbackStatus, Vm, VmStats};

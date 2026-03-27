@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use raya_engine::vm::AsyncCallbackStatus;
 use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
 use regex::Regex;
 use std::collections::{BTreeSet, HashMap};
@@ -1182,14 +1183,13 @@ fn execute_async_case_program(
 
     let outcome = match result {
         Err(error) => Err(error),
-        Ok(_) => match probe_async_state(runtime, &mut vm) {
-            Ok(1) => Ok(()),
-            Ok(2) => Err(probe_async_failure(runtime, &mut vm)),
-            Ok(0) if !settled || !drained => Err(
+        Ok(_) => match vm.test262_async_callback_status() {
+            Ok(AsyncCallbackStatus::Succeeded) => Ok(()),
+            Ok(AsyncCallbackStatus::Failed(message)) => Err(message),
+            Ok(AsyncCallbackStatus::Pending) if !settled || !drained => Err(
                 "async test did not settle before the completion timeout".to_string(),
             ),
-            Ok(0) => Err("async test did not call $DONE".to_string()),
-            Ok(other) => Err(format!("unexpected async completion state: {}", other)),
+            Ok(AsyncCallbackStatus::Pending) => Err("async test did not call $DONE".to_string()),
             Err(error) => Err(error),
         },
     };
@@ -1206,45 +1206,6 @@ fn execute_async_case_program(
 
     vm.terminate();
     outcome
-}
-
-fn probe_async_state(
-    _runtime: &Runtime,
-    vm: &mut raya_engine::vm::Vm,
-) -> std::result::Result<i32, String> {
-    let value = vm
-        .builtin_global_named_field_value("globalThis", "__test262AsyncState__")
-        .ok_or_else(|| "async completion state is not available on globalThis".to_string())?;
-    if let Some(state) = value.as_i32() {
-        return Ok(state);
-    }
-    if let Some(state) = value.as_i64() {
-        return i32::try_from(state)
-            .map_err(|_| format!("async completion probe returned out-of-range i64 state: {state}"));
-    }
-    if let Some(state) = value.as_u64() {
-        return i32::try_from(state)
-            .map_err(|_| format!("async completion probe returned out-of-range u64 state: {state}"));
-    }
-    if let Some(state) = value.as_f64() {
-        if state.is_finite() && state.fract() == 0.0 {
-            return i32::try_from(state as i64).map_err(|_| {
-                format!("async completion probe returned out-of-range f64 state: {state}")
-            });
-        }
-    }
-    Err(format!(
-        "async completion probe returned a non-integer state: {:?}",
-        value
-    ))
-}
-
-fn probe_async_failure(runtime: &Runtime, vm: &mut raya_engine::vm::Vm) -> String {
-    let _ = runtime;
-    vm.builtin_global_named_field_value("globalThis", "__test262AsyncFailure__")
-        .and_then(|value| vm.plain_string_value(value))
-        .filter(|message| !message.is_empty())
-        .unwrap_or_else(|| "async test failed via $DONE".to_string())
 }
 
 fn prepare_case_source(root: &Path, case: &LoadedCase) -> std::result::Result<String, String> {

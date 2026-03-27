@@ -60,8 +60,8 @@ pub use abi::{
 };
 
 pub use interpreter::{
-    ClassRegistry, ContextRegistry, ResourceCounters, ResourceLimits, Vm, VmContext, VmContextId,
-    VmOptions, VmStats,
+    AsyncCallbackStatus, ClassRegistry, ContextRegistry, ResourceCounters, ResourceLimits, Vm,
+    VmContext, VmContextId, VmOptions, VmStats,
 };
 pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
 pub use native_registry::{NativeFn, NativeFunctionRegistry, ResolvedNatives};

@@ -926,6 +926,109 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn try_lower_dynamic_member_fallbacks(
+        &mut self,
+        dest: Register,
+        member: &ast::MemberExpression,
+        callee_expr: &Expression,
+        object: Register,
+        nominal_type_id: Option<NominalTypeId>,
+        obj_type_id: u32,
+        method_name: &str,
+        args: &[Register],
+    ) -> Option<Register> {
+        if let Expression::Identifier(ident) = &*member.object {
+            let field_index = self
+                .variable_object_fields
+                .get(&ident.name)
+                .and_then(|fields| {
+                    fields
+                        .iter()
+                        .find(|(name, _)| name == method_name)
+                        .map(|(_, idx)| *idx as u16)
+                });
+            if let Some(field_index) = field_index {
+                let object = self.lower_expr(&member.object);
+                let closure = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::LoadFieldExact {
+                    dest: closure.clone(),
+                    object: object.clone(),
+                    field: field_index,
+                    optional: member.optional,
+                });
+                if self.late_bound_member_call_is_async(&member.object, callee_expr, method_name) {
+                    self.emit(IrInstr::SpawnClosure {
+                        dest: dest.clone(),
+                        closure,
+                        args: args.to_vec(),
+                    });
+                } else {
+                    let receiver = object;
+                    self.emit_js_member_call_helper(
+                        dest.clone(),
+                        receiver,
+                        closure,
+                        args.to_vec(),
+                    );
+                }
+                return Some(dest);
+            }
+        }
+
+        if self.js_this_binding_compat
+            && self.member_read_uses_dynamic_property_path(&member.object, object.ty)
+        {
+            let closure = self.alloc_register(UNRESOLVED);
+            self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
+            if self.late_bound_member_call_is_async(&member.object, callee_expr, method_name) {
+                self.emit(IrInstr::SpawnClosure {
+                    dest: dest.clone(),
+                    closure,
+                    args: args.to_vec(),
+                });
+            } else {
+                let receiver = object.clone();
+                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
+            }
+            return Some(dest);
+        }
+
+        let receiver_runtime_dynamic = nominal_type_id.is_none()
+            && self.allow_unresolved_runtime_fallback
+            && (obj_type_id == UNRESOLVED_TYPE_ID
+                || self.type_is_runtime_dynamic_dispatch(object.ty)
+                || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)));
+        if receiver_runtime_dynamic {
+            let closure = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::LateBoundMember {
+                dest: closure.clone(),
+                object: object.clone(),
+                property: method_name.to_string(),
+            });
+            if self.late_bound_member_call_is_async(&member.object, callee_expr, method_name) {
+                self.emit(IrInstr::SpawnClosure {
+                    dest: dest.clone(),
+                    closure,
+                    args: args.to_vec(),
+                });
+            } else {
+                let receiver = object.clone();
+                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
+            }
+            return Some(dest);
+        }
+
+        if self.allow_unresolved_runtime_fallback {
+            let closure = self.alloc_register(UNRESOLVED);
+            self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
+            let receiver = object;
+            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
+            return Some(dest);
+        }
+
+        None
+    }
+
     fn resolve_identifier_closure_source(
         &mut self,
         ident: &ast::Identifier,
@@ -5329,103 +5432,17 @@ impl<'a> Lowerer<'a> {
                 return result;
             }
 
-            // Last structural fallback: if the receiver is a known object-literal
-            // with a concrete field layout, treat `obj.m(...)` as loading a
-            // function-valued field then invoking it as a closure.
-            if let Expression::Identifier(ident) = &*member.object {
-                let field_index = self
-                    .variable_object_fields
-                    .get(&ident.name)
-                    .and_then(|fields| {
-                        fields
-                            .iter()
-                            .find(|(name, _)| name == method_name)
-                            .map(|(_, idx)| *idx as u16)
-                    });
-                if let Some(field_index) = field_index {
-                    let object = self.lower_expr(&member.object);
-                    let closure = self.alloc_register(UNRESOLVED);
-                    self.emit(IrInstr::LoadFieldExact {
-                        dest: closure.clone(),
-                        object: object.clone(),
-                        field: field_index,
-                        optional: member.optional,
-                    });
-                    if self.late_bound_member_call_is_async(
-                        &member.object,
-                        &call.callee,
-                        method_name,
-                    ) {
-                        self.emit(IrInstr::SpawnClosure {
-                            dest: dest.clone(),
-                            closure,
-                            args,
-                        });
-                    } else {
-                        let receiver = object;
-                        self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                    }
-                    return dest;
-                }
-            }
-
-            if self.js_this_binding_compat
-                && self.member_read_uses_dynamic_property_path(&member.object, object.ty)
-            {
-                let closure = self.alloc_register(UNRESOLVED);
-                self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
-                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
-                    self.emit(IrInstr::SpawnClosure {
-                        dest: dest.clone(),
-                        closure,
-                        args,
-                    });
-                } else {
-                    let receiver = object;
-                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                }
-                return dest;
-            }
-
-            let receiver_runtime_dynamic = nominal_type_id.is_none()
-                && self.allow_unresolved_runtime_fallback
-                && (obj_type_id == UNRESOLVED_TYPE_ID
-                    || self.type_is_runtime_dynamic_dispatch(object.ty)
-                    || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)));
-
-            // Unknown/dynamic receiver fallback: lower `obj.m(...)` as
-            // `CallClosure(LateBoundMember(obj, "m"), args)` so strict mode
-            // can still compile unresolved-but-valid dynamic patterns.
-            if receiver_runtime_dynamic {
-                let closure = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::LateBoundMember {
-                    dest: closure.clone(),
-                    object: object.clone(),
-                    property: method_name.to_string(),
-                });
-                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
-                    self.emit(IrInstr::SpawnClosure {
-                        dest: dest.clone(),
-                        closure,
-                        args,
-                    });
-                } else {
-                    let receiver = object;
-                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                }
-                return dest;
-            }
-
-            // JS mode catch-all: emit runtime dynamic member call for ANY type
-            // the compiler cannot statically resolve.  At runtime, DynGetKeyed
-            // handles all ES spec semantics (TypeError for null/undefined,
-            // property lookup, prototype chain traversal, etc.).
-            if self.allow_unresolved_runtime_fallback {
-                let closure = self.alloc_register(UNRESOLVED);
-                self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
-                let receiver = object;
-                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                return dest;
+            if let Some(result) = self.try_lower_dynamic_member_fallbacks(
+                dest.clone(),
+                member,
+                &call.callee,
+                object.clone(),
+                nominal_type_id,
+                obj_type_id,
+                method_name,
+                &args,
+            ) {
+                return result;
             }
 
             let class_name = inferred_nominal_type_id.and_then(|cid| {
