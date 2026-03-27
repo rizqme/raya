@@ -1122,9 +1122,15 @@ fn execute_case_program(
         eprintln!("[es262-case] compile:done path={}", path.display());
         eprintln!("[es262-case] execute:start path={}", path.display());
     }
+    let mut vm = runtime.create_vm();
+    vm.set_unhandled_promise_rejection_reporting_enabled(false);
     let result = runtime
-        .execute_program_and_teardown(&program)
+        .execute_program_with_vm(&program, &mut vm)
+        .map(|_| ())
         .map_err(|error| format!("runtime failed: {}", error));
+    let _ = vm.wait_quiescent(Duration::from_millis(250));
+    let _ = vm.wait_all(Duration::from_millis(250));
+    vm.terminate();
     if debug_case {
         eprintln!(
             "[es262-case] execute:done path={} ok={}",
