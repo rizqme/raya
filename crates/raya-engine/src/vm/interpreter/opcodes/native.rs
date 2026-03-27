@@ -9105,15 +9105,18 @@ impl<'a> Interpreter<'a> {
             DYNAMIC_JS_FUNCTION_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
 
+        let mut semantic_profile = SemanticProfile::js();
+        semantic_profile.track_top_level_completion = options.track_top_level_completion;
+        semantic_profile.emit_script_global_bindings = options.emit_script_global_bindings;
+        semantic_profile.script_global_bindings_configurable =
+            options.script_global_bindings_configurable;
+
         let mut compiler = Compiler::new(type_ctx, &interner)
-            .with_semantic_profile(SemanticProfile::js())
+            .with_semantic_profile(semantic_profile)
             .with_expr_types(check_result.expr_types)
             .with_type_annotation_types(check_result.type_annotation_types)
             .with_module_identity(module_identity)
             .with_ambient_builtin_globals(ambient_builtin_globals)
-            .with_track_top_level_completion(options.track_top_level_completion)
-            .with_emit_script_global_bindings(options.emit_script_global_bindings)
-            .with_script_global_bindings_configurable(options.script_global_bindings_configurable)
             .with_source_text(source.to_string());
         if let Some(entry) = options.direct_eval_entry_function {
             compiler = compiler

@@ -85,7 +85,11 @@ fn load_lockfile_semantic_profiles(manifest_dir: &Path) -> HashMap<String, Seman
         Err(_) => return out,
     };
     for pkg in lock.packages {
-        if let Some(profile) = pkg.type_mode.as_deref().and_then(parse_semantic_profile) {
+        if let Some(profile) = pkg
+            .semantic_profile
+            .as_deref()
+            .and_then(parse_semantic_profile)
+        {
             out.insert(pkg.name, profile);
         }
     }
@@ -224,7 +228,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn parses_lockfile_type_mode_strings_into_semantic_profiles() {
+    fn parses_lockfile_semantic_profile_strings() {
         assert_eq!(
             parse_semantic_profile("raya"),
             Some(SemanticProfile::raya())

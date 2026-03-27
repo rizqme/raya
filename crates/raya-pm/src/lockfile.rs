@@ -76,9 +76,9 @@ pub struct LockedPackage {
     /// Peer dependencies resolved/required by this package
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub peer_dependencies: Vec<String>,
-    /// Per-package type mode (raya | ts | js) for runtime compilation behavior
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub type_mode: Option<String>,
+    /// Per-package semantic profile (raya | ts | js) for runtime compilation behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_profile: Option<String>,
     /// Deterministic flattened install path key under .raya/packages
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_path: Option<String>,
@@ -267,7 +267,7 @@ impl LockedPackage {
             source,
             dependencies: Vec::new(),
             peer_dependencies: Vec::new(),
-            type_mode: None,
+            semantic_profile: None,
             install_path: None,
         }
     }
@@ -464,6 +464,26 @@ source = { type = "registry" }
         let parsed = Lockfile::from_str(&toml).unwrap();
 
         assert_eq!(lock, parsed);
+    }
+
+    #[test]
+    fn test_semantic_profile_roundtrips_in_lockfile() {
+        let toml = r#"
+version = 1
+
+[[packages]]
+name = "profiled"
+version = "1.0.0"
+checksum = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+source = { type = "registry" }
+semantic_profile = "js"
+"#;
+
+        let lockfile = Lockfile::from_str(toml).unwrap();
+        assert_eq!(lockfile.packages[0].semantic_profile.as_deref(), Some("js"));
+
+        let serialized = toml::to_string_pretty(&lockfile).unwrap();
+        assert!(serialized.contains("semantic_profile = \"js\""));
     }
 
     #[test]

@@ -4,7 +4,8 @@ use raya_engine::parser::checker::{
     BindError, CheckError, CheckWarning, Diagnostic, SimpleFiles, WarningCode, WarningConfig,
 };
 use raya_engine::parser::Span;
-use raya_runtime::{loader, BuiltinMode, Runtime, RuntimeOptions, TsCompilerOptions, TypeMode};
+use raya_engine::semantics::{SemanticProfile, SourceKind};
+use raya_runtime::{loader, BuiltinMode, Runtime, RuntimeOptions, TsCompilerOptions};
 
 use super::files::collect_raya_files;
 
@@ -17,7 +18,7 @@ pub fn execute(
     deny: Vec<String>,
     no_warnings: bool,
     node_compat: bool,
-    type_mode: TypeMode,
+    semantic_profile: SemanticProfile,
 ) -> anyhow::Result<()> {
     let raya_files = collect_raya_files(&files)?;
 
@@ -26,7 +27,11 @@ pub fn execute(
         std::process::exit(1);
     }
 
-    if matches!(type_mode, TypeMode::Ts | TypeMode::Js) && !node_compat {
+    if matches!(
+        semantic_profile.source_kind,
+        SourceKind::Ts | SourceKind::Js
+    ) && !node_compat
+    {
         anyhow::bail!("--mode ts/js requires --node-compat");
     }
 
@@ -48,17 +53,18 @@ pub fn execute(
             }
         };
 
-        let ts_options: Option<TsCompilerOptions> = if matches!(type_mode, TypeMode::Ts) {
-            let parent = file_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."));
-            match loader::find_tsconfig(parent) {
-                Some(tsconfig) => Some(loader::load_ts_compiler_options(&tsconfig)?),
-                None => Some(TsCompilerOptions::default()),
-            }
-        } else {
-            None
-        };
+        let ts_options: Option<TsCompilerOptions> =
+            if matches!(semantic_profile.source_kind, SourceKind::Ts) {
+                let parent = file_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                match loader::find_tsconfig(parent) {
+                    Some(tsconfig) => Some(loader::load_ts_compiler_options(&tsconfig)?),
+                    None => Some(TsCompilerOptions::default()),
+                }
+            } else {
+                None
+            };
 
         let rt = Runtime::with_options(RuntimeOptions {
             builtin_mode: if node_compat {
@@ -66,7 +72,7 @@ pub fn execute(
             } else {
                 BuiltinMode::RayaStrict
             },
-            type_mode: Some(type_mode),
+            semantic_profile: Some(semantic_profile),
             ts_options,
             ..Default::default()
         });

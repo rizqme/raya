@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use raya_engine::semantics::SemanticProfile;
 use raya_engine::vm::AsyncCallbackStatus;
-use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
 use regex::Regex;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -924,7 +925,7 @@ pub fn default_test262_root() -> PathBuf {
 fn build_case_runtime() -> Runtime {
     Runtime::with_options(RuntimeOptions {
         builtin_mode: BuiltinMode::NodeCompat,
-        type_mode: Some(TypeMode::Js),
+        semantic_profile: Some(SemanticProfile::js()),
         threads: 1,
         max_preemptions: Some(5_000),
         preempt_threshold_ms: Some(250),

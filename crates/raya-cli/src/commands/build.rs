@@ -1,7 +1,8 @@
 //! `raya build` — Compile Raya source to .ryb bytecode.
 
+use raya_engine::semantics::{SemanticProfile, SourceKind};
 use raya_runtime::compile::CompileOptions;
-use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
 use std::path::{Path, PathBuf};
 
 pub fn execute(
@@ -12,11 +13,15 @@ pub fn execute(
     sourcemap: bool,
     dry_run: bool,
     node_compat: bool,
-    type_mode: TypeMode,
+    semantic_profile: SemanticProfile,
 ) -> anyhow::Result<()> {
     let _ = (release, watch); // TODO: wire these flags
 
-    if matches!(type_mode, TypeMode::Ts | TypeMode::Js) && !node_compat {
+    if matches!(
+        semantic_profile.source_kind,
+        SourceKind::Ts | SourceKind::Js
+    ) && !node_compat
+    {
         anyhow::bail!("--mode ts/js requires --node-compat");
     }
 
@@ -26,7 +31,7 @@ pub fn execute(
         } else {
             BuiltinMode::RayaStrict
         },
-        type_mode: Some(type_mode),
+        semantic_profile: Some(semantic_profile),
         ..Default::default()
     });
     let out_dir = PathBuf::from(&out_dir);

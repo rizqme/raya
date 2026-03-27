@@ -288,6 +288,7 @@ mod aot_impl {
             | Opcode::ArrayLen
             | Opcode::Await
             | Opcode::Yield
+            | Opcode::GeneratorInitSuspend
             | Opcode::GeneratorYield
             | Opcode::Sleep
             | Opcode::NewMutex

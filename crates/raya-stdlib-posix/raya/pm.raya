@@ -386,7 +386,7 @@ function copyDirRecursive(src: string, dst: string): void {
     }
 }
 
-function inferTypeModeFromTsconfig(depDir: string): string {
+function inferSemanticProfileFromTsconfig(depDir: string): string {
     const tsconfigPath = path.join(depDir, "tsconfig.json");
     if (!fs.exists(tsconfigPath)) return "raya";
     try {
@@ -712,7 +712,7 @@ function installDependency(
         pkg.set("dependencies", encoding.json.newArray());
         pkg.set("peer_dependencies", encoding.json.newArray());
         pkg.set("install_path", encoding.json.fromString(name));
-        pkg.set("type_mode", encoding.json.fromString(inferTypeModeFromTsconfig(resolvedPath)));
+        pkg.set("semantic_profile", encoding.json.fromString(inferSemanticProfileFromTsconfig(resolvedPath)));
         pkg.set("_cached", encoding.json.fromBool(true));
         return pkg;
     }
@@ -729,7 +729,7 @@ function installDependency(
         pkg.set("dependencies", encoding.json.newArray());
         pkg.set("peer_dependencies", encoding.json.newArray());
         pkg.set("install_path", encoding.json.fromString(name));
-        pkg.set("type_mode", encoding.json.fromString("raya"));
+        pkg.set("semantic_profile", encoding.json.fromString("raya"));
         pkg.set("_cached", encoding.json.fromBool(true));
         return pkg;
     }
@@ -762,7 +762,7 @@ function installDependency(
                     if (!fs.isDir(materializedDir)) {
                         copyDirRecursive(normalizeExtractedSourceDir(cache.modulePath(checksum)), materializedDir);
                     }
-                    pkg.set("type_mode", encoding.json.fromString(inferTypeModeFromTsconfig(materializedDir)));
+                    pkg.set("semantic_profile", encoding.json.fromString(inferSemanticProfileFromTsconfig(materializedDir)));
                     pkg.set("_cached", encoding.json.fromBool(true));
                     return pkg;
                 }
@@ -818,7 +818,7 @@ function installDependency(
     pkg.set("dependencies", depList);
     pkg.set("peer_dependencies", peerList);
     pkg.set("install_path", encoding.json.fromString(installKey));
-    pkg.set("type_mode", encoding.json.fromString(inferTypeModeFromTsconfig(materializedDir)));
+    pkg.set("semantic_profile", encoding.json.fromString(inferSemanticProfileFromTsconfig(materializedDir)));
     pkg.set("_cached", encoding.json.fromBool(wasCached));
     versionInfo.release();
     return pkg;

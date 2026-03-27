@@ -18,7 +18,7 @@ use crate::parser::ast::{
 };
 use crate::parser::token::Span;
 use crate::parser::{Interner, Symbol, Type, TypeContext, TypeId};
-use crate::semantics::SemanticProfile;
+use crate::semantics::{CallableKind, SemanticLoweringPlan, SemanticProfile};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 fn remap_function_id(func_id: &mut FunctionId, remap: &FxHashMap<u32, u32>) {
@@ -832,6 +832,8 @@ pub struct Lowerer<'a> {
     type_param_substitutions: FxHashMap<String, TypeId>,
     /// Cache of already-specialized generic functions: "funcName$typeId1_typeId2" → FunctionId
     specialized_function_cache: FxHashMap<String, FunctionId>,
+    /// Canonical semantic plan for this lowering run.
+    semantic_plan: SemanticLoweringPlan,
     /// JS-compatible method extraction mode (`obj.method` is unbound).
     js_this_binding_compat: bool,
     /// Current inherited JS strictness context.
@@ -1414,7 +1416,9 @@ impl<'a> Lowerer<'a> {
         self.function_decl_ids.insert(func.span.start, func_id);
         self.function_map.insert(func.name.name, func_id);
 
-        if func.is_async && !func.is_generator {
+        let callable_kind =
+            self.callable_kind_for_span(func.span.start, func.is_async, func.is_generator, false);
+        if Self::callable_spawns_task(callable_kind) {
             self.async_functions.insert(func_id);
         }
 
@@ -1561,6 +1565,7 @@ impl<'a> Lowerer<'a> {
             generic_function_asts: FxHashMap::default(),
             type_param_substitutions: FxHashMap::default(),
             specialized_function_cache: FxHashMap::default(),
+            semantic_plan: SemanticLoweringPlan::empty(SemanticProfile::raya()),
             js_this_binding_compat: false,
             js_strict_context: false,
             builtin_this_coercion_compat: false,
@@ -1611,9 +1616,10 @@ impl<'a> Lowerer<'a> {
         self
     }
 
-    /// Configure lowering behavior from a shared semantic profile.
-    pub fn with_semantic_profile(mut self, profile: SemanticProfile) -> Self {
-        let lowering = profile.lowering_semantics();
+    /// Configure lowering behavior from a semantic lowering plan.
+    pub fn with_semantic_plan(mut self, plan: SemanticLoweringPlan) -> Self {
+        let lowering = plan.lowering_semantics();
+        self.semantic_plan = plan;
         self.js_this_binding_compat = lowering.js_this_binding_compat;
         self.allow_unresolved_runtime_fallback = lowering.allow_unresolved_runtime_fallback;
         self.track_top_level_completion = lowering.track_top_level_completion;
@@ -1622,21 +1628,9 @@ impl<'a> Lowerer<'a> {
         self
     }
 
-    /// Enable JS-compatible method extraction (`obj.method` is unbound).
-    pub fn with_js_this_binding_compat(mut self, enable: bool) -> Self {
-        self.js_this_binding_compat = enable;
-        self
-    }
-
     /// Enable builtin JS receiver coercion semantics for compiled builtin surfaces.
     pub fn with_builtin_this_coercion_compat(mut self, enable: bool) -> Self {
         self.builtin_this_coercion_compat = enable;
-        self
-    }
-
-    /// Enable/disable lowering unresolved member dispatch to runtime late-bound paths.
-    pub fn with_unresolved_runtime_fallback(mut self, enable: bool) -> Self {
-        self.allow_unresolved_runtime_fallback = enable;
         self
     }
 
@@ -1654,25 +1648,67 @@ impl<'a> Lowerer<'a> {
         self
     }
 
-    pub fn with_track_top_level_completion(mut self, enable: bool) -> Self {
-        self.track_top_level_completion = enable;
-        self
-    }
-
-    pub fn with_emit_script_global_bindings(mut self, enable: bool) -> Self {
-        self.emit_script_global_bindings = enable;
-        self
-    }
-
-    pub fn with_script_global_bindings_configurable(mut self, enable: bool) -> Self {
-        self.script_global_bindings_configurable = enable;
-        self
-    }
-
     pub(super) fn direct_eval_has_parameter_binding(&self, name: &str) -> bool {
         self.parameter_symbols
             .iter()
             .any(|symbol| self.interner.resolve(*symbol) == name)
+    }
+
+    fn callable_kind_from_flags(
+        &self,
+        is_async: bool,
+        is_generator: bool,
+        is_method: bool,
+    ) -> CallableKind {
+        match (is_method, is_async, is_generator) {
+            (false, false, false) => CallableKind::SyncFunction,
+            (false, true, false) => CallableKind::AsyncFunction,
+            (false, false, true) => CallableKind::GeneratorFunction,
+            (false, true, true) => CallableKind::AsyncGeneratorFunction,
+            (true, false, false) => CallableKind::SyncMethod,
+            (true, true, false) => CallableKind::AsyncMethod,
+            (true, false, true) => CallableKind::GeneratorMethod,
+            (true, true, true) => CallableKind::AsyncGeneratorMethod,
+        }
+    }
+
+    fn callable_kind_for_span(
+        &self,
+        span_start: usize,
+        is_async: bool,
+        is_generator: bool,
+        is_method: bool,
+    ) -> CallableKind {
+        self.semantic_plan
+            .callable_kind_at_span(span_start)
+            .unwrap_or_else(|| self.callable_kind_from_flags(is_async, is_generator, is_method))
+    }
+
+    fn callable_spawns_task(kind: CallableKind) -> bool {
+        matches!(
+            kind,
+            CallableKind::AsyncFunction | CallableKind::AsyncMethod
+        )
+    }
+
+    fn callable_is_async(kind: CallableKind) -> bool {
+        matches!(
+            kind,
+            CallableKind::AsyncFunction
+                | CallableKind::AsyncGeneratorFunction
+                | CallableKind::AsyncMethod
+                | CallableKind::AsyncGeneratorMethod
+        )
+    }
+
+    fn callable_is_generator(kind: CallableKind) -> bool {
+        matches!(
+            kind,
+            CallableKind::GeneratorFunction
+                | CallableKind::AsyncGeneratorFunction
+                | CallableKind::GeneratorMethod
+                | CallableKind::AsyncGeneratorMethod
+        )
     }
 
     /// Report an unresolved type error at a dispatch point.
@@ -2225,8 +2261,11 @@ impl<'a> Lowerer<'a> {
             if self.js_this_binding_compat && !self.builtin_this_coercion_compat {
                 let mut js_function_scoped_vars = FxHashSet::default();
                 collect_function_scoped_var_names(&module.statements, &mut js_function_scoped_vars);
-                self.js_function_scoped_var_globals = js_function_scoped_vars.clone();
-                for name in js_function_scoped_vars {
+                self.js_function_scoped_var_globals = js_function_scoped_vars
+                    .into_iter()
+                    .filter(|name| self.semantic_plan.is_top_level_var(*name))
+                    .collect();
+                for name in self.js_function_scoped_var_globals.clone() {
                     self.module_var_globals.entry(name).or_insert_with(|| {
                         let global_index = self.next_global_index;
                         self.next_global_index += 1;
@@ -2241,19 +2280,24 @@ impl<'a> Lowerer<'a> {
                     Statement::VariableDecl(decl)
                         if decl.kind != crate::parser::ast::VariableKind::Var =>
                     {
-                        if let ast::Pattern::Identifier(ident) = &decl.pattern {
-                            if decl.kind == crate::parser::ast::VariableKind::Const {
-                                self.js_script_const_globals.insert(ident.name);
+                        let mut names = FxHashSet::default();
+                        collect_pattern_names(&decl.pattern, &mut names);
+                        for ident in names {
+                            if !self.semantic_plan.is_top_level_lexical(ident) {
+                                continue;
+                            }
+                            if self.semantic_plan.is_top_level_const_lexical(ident) {
+                                self.js_script_const_globals.insert(ident);
                             }
                             self.js_script_lexical_globals
-                                .entry(ident.name)
+                                .entry(ident)
                                 .or_insert_with(|| {
                                     let global_index = self.next_global_index;
                                     self.next_global_index += 1;
                                     global_index
                                 });
                             self.js_script_lexical_init_globals
-                                .entry(ident.name)
+                                .entry(ident)
                                 .or_insert_with(|| {
                                     let global_index = self.next_global_index;
                                     self.next_global_index += 1;
@@ -2262,21 +2306,23 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     Statement::ClassDecl(class) => {
-                        self.js_top_level_class_globals.insert(class.name.name);
-                        self.js_script_lexical_globals
-                            .entry(class.name.name)
-                            .or_insert_with(|| {
-                                let global_index = self.next_global_index;
-                                self.next_global_index += 1;
-                                global_index
-                            });
-                        self.js_script_lexical_init_globals
-                            .entry(class.name.name)
-                            .or_insert_with(|| {
-                                let global_index = self.next_global_index;
-                                self.next_global_index += 1;
-                                global_index
-                            });
+                        if self.semantic_plan.is_top_level_class(class.name.name) {
+                            self.js_top_level_class_globals.insert(class.name.name);
+                            self.js_script_lexical_globals
+                                .entry(class.name.name)
+                                .or_insert_with(|| {
+                                    let global_index = self.next_global_index;
+                                    self.next_global_index += 1;
+                                    global_index
+                                });
+                            self.js_script_lexical_init_globals
+                                .entry(class.name.name)
+                                .or_insert_with(|| {
+                                    let global_index = self.next_global_index;
+                                    self.next_global_index += 1;
+                                    global_index
+                                });
+                        }
                     }
                     _ => {}
                 }
@@ -2304,7 +2350,13 @@ impl<'a> Lowerer<'a> {
                             global_index,
                             func_id,
                         ));
-                        if func.is_async {
+                        let callable_kind = self.callable_kind_for_span(
+                            func.span.start,
+                            func.is_async,
+                            func.is_generator,
+                            false,
+                        );
+                        if Self::callable_spawns_task(callable_kind) {
                             self.closure_globals.insert(global_index, func_id);
                         }
                     }
@@ -3584,7 +3636,13 @@ impl<'a> Lowerer<'a> {
                     let func_id = FunctionId::new(self.next_function_id);
                     self.next_function_id += 1;
 
-                    if method.is_async && !method.is_generator {
+                    let callable_kind = self.callable_kind_for_span(
+                        method.span.start,
+                        method.is_async,
+                        method.is_generator,
+                        true,
+                    );
+                    if Self::callable_spawns_task(callable_kind) {
                         self.async_functions.insert(func_id);
                     }
 
@@ -4119,11 +4177,13 @@ impl<'a> Lowerer<'a> {
                 });
 
         // Create function with fixed parameter count only
+        let callable_kind =
+            self.callable_kind_for_span(func.span.start, func.is_async, func.is_generator, false);
         let mut ir_func = IrFunction::new(name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
-        ir_func.is_constructible = !func.is_generator;
-        ir_func.is_async = func.is_async;
-        ir_func.is_generator = func.is_generator;
+        ir_func.is_constructible = !Self::callable_is_generator(callable_kind);
+        ir_func.is_async = Self::callable_is_async(callable_kind);
+        ir_func.is_generator = Self::callable_is_generator(callable_kind);
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
         ir_func.uses_js_runtime_semantics = true;
@@ -4236,10 +4296,12 @@ impl<'a> Lowerer<'a> {
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
-        if func.is_generator && self.function_uses_generator_snapshot(&func.body) {
+        if Self::callable_is_generator(callable_kind)
+            && self.function_uses_generator_snapshot(&func.body)
+        {
             self.init_generator_yield_array();
         }
-        if func.is_generator {
+        if Self::callable_is_generator(callable_kind) {
             self.emit(IrInstr::GeneratorInitSuspend);
         }
 
@@ -4961,11 +5023,17 @@ impl<'a> Lowerer<'a> {
                         .count();
 
                     // Create function with mangled name
+                    let callable_kind = self.callable_kind_for_span(
+                        method.span.start,
+                        method.is_async,
+                        method.is_generator,
+                        true,
+                    );
                     let mut ir_func = IrFunction::new(&full_name, params, return_ty);
                     ir_func.uses_js_this_slot = method_has_js_this_slot;
                     ir_func.is_constructible = false;
-                    ir_func.is_async = method.is_async;
-                    ir_func.is_generator = method.is_generator;
+                    ir_func.is_async = Self::callable_is_async(callable_kind);
+                    ir_func.is_generator = Self::callable_is_generator(callable_kind);
                     ir_func.visible_length = visible_length;
                     ir_func.is_strict_js = true;
                     ir_func.uses_js_runtime_semantics = true;
@@ -5080,10 +5148,12 @@ impl<'a> Lowerer<'a> {
                     self.emit_js_function_captured_lexical_prebindings(&body.statements);
                     self.emit_js_function_decl_hoists(&body.statements);
 
-                    if method.is_generator && self.function_uses_generator_snapshot(body) {
+                    if Self::callable_is_generator(callable_kind)
+                        && self.function_uses_generator_snapshot(body)
+                    {
                         self.init_generator_yield_array();
                     }
-                    if method.is_generator {
+                    if Self::callable_is_generator(callable_kind) {
                         self.emit(IrInstr::GeneratorInitSuspend);
                     }
 

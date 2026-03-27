@@ -2599,7 +2599,13 @@ impl<'a> Lowerer<'a> {
 
                     // Track if this is an async arrow function assigned to a global
                     let is_async_arrow = if let ast::Expression::Arrow(arrow) = init {
-                        arrow.is_async
+                        let callable_kind = self.callable_kind_for_span(
+                            arrow.span.start,
+                            arrow.is_async,
+                            false,
+                            false,
+                        );
+                        Self::callable_spawns_task(callable_kind)
                     } else {
                         false
                     };
@@ -2898,7 +2904,9 @@ impl<'a> Lowerer<'a> {
 
             // Track if this is an arrow function for async closure detection
             let is_async_arrow = if let ast::Expression::Arrow(arrow) = init {
-                arrow.is_async
+                let callable_kind =
+                    self.callable_kind_for_span(arrow.span.start, arrow.is_async, false, false);
+                Self::callable_spawns_task(callable_kind)
             } else {
                 false
             };
@@ -3307,7 +3315,13 @@ impl<'a> Lowerer<'a> {
 
         // Async function declarations lowered through the closure path still need
         // closure-locals metadata so call lowering emits SpawnClosure, not CallClosure.
-        if func_decl.is_async {
+        let callable_kind = self.callable_kind_for_span(
+            func_decl.span.start,
+            func_decl.is_async,
+            func_decl.is_generator,
+            false,
+        );
+        if Self::callable_spawns_task(callable_kind) {
             if let Some(func_id) = preassigned_func_id.or(self.last_arrow_func_id) {
                 if self.async_closures.contains(&func_id) {
                     self.closure_locals.insert(local_idx, func_id);

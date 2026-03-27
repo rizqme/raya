@@ -2,7 +2,8 @@
 //!
 //! Tests the Runtime API that powers `raya run`, `raya eval`, and `raya build`.
 
-use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
+use raya_engine::semantics::SemanticProfile;
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -590,15 +591,15 @@ function main(): number { return square(11); }
 fn test_runtime_with_options() {
     let rt = Runtime::with_options(RuntimeOptions {
         threads: 2,
+        builtin_mode: BuiltinMode::RayaStrict,
         heap_limit: 64 * 1024 * 1024, // 64MB
         timeout: 5000,
         no_jit: true,
         jit_threshold: 500,
         cpu_prof: None,
         prof_interval_us: 10_000,
-        builtin_mode: BuiltinMode::RayaStrict,
-        type_mode: None,
-        ts_options: None,
+        semantic_profile: None,
+        ..Default::default()
     });
 
     let value = rt.eval("return 99;").expect("eval with options failed");
@@ -641,7 +642,7 @@ fn test_session_eval_basic() {
 fn test_session_node_compat_uses_runtime_builtin_hydration() {
     let mut session = Session::new(&RuntimeOptions {
         builtin_mode: BuiltinMode::NodeCompat,
-        type_mode: Some(TypeMode::Js),
+        semantic_profile: Some(SemanticProfile::js()),
         ..Default::default()
     });
     let value = session

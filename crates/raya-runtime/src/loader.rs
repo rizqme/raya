@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::RuntimeError;
 use crate::CompiledModule;
-use crate::{compile, BuiltinMode, TypeMode};
+use crate::{compile, BuiltinMode};
 use raya_engine::semantics::{SemanticProfile, SourceKind};
 
 /// Load a .ryb bytecode file from disk.
@@ -111,15 +111,6 @@ pub fn load_package_dir_pub(dir: &Path, name: &str) -> Result<CompiledModule, Ru
     load_package_dir_with_profile(dir, name, None)
 }
 
-/// Load a package using an explicit dependency type mode when available.
-pub fn load_package_dir_with_mode_pub(
-    dir: &Path,
-    name: &str,
-    forced_mode: Option<TypeMode>,
-) -> Result<CompiledModule, RuntimeError> {
-    load_package_dir_with_profile(dir, name, forced_mode.map(TypeMode::semantic_profile))
-}
-
 /// Load a package using an explicit semantic profile when available.
 pub fn load_package_dir_with_profile_pub(
     dir: &Path,
@@ -134,14 +125,6 @@ pub fn load_package_dir_with_profile_pub(
 /// Public alias for use by the dependency resolver.
 pub fn load_entry_point_pub(path: &Path) -> Result<CompiledModule, RuntimeError> {
     load_entry_point_with_profile(path, None)
-}
-
-/// Load an entry point with an explicit type mode override.
-pub fn load_entry_point_with_mode_pub(
-    path: &Path,
-    forced_mode: Option<TypeMode>,
-) -> Result<CompiledModule, RuntimeError> {
-    load_entry_point_with_profile(path, forced_mode.map(TypeMode::semantic_profile))
 }
 
 /// Load an entry point with an explicit semantic profile override.
@@ -215,14 +198,6 @@ fn load_package_dir_with_profile(
     )))
 }
 
-/// Load an entry point file, dispatching by extension.
-fn builtin_mode_for_type_mode(type_mode: TypeMode) -> BuiltinMode {
-    match type_mode {
-        TypeMode::Raya => BuiltinMode::RayaStrict,
-        TypeMode::Ts | TypeMode::Js => BuiltinMode::NodeCompat,
-    }
-}
-
 fn builtin_mode_for_profile(profile: SemanticProfile) -> BuiltinMode {
     match profile.source_kind {
         SourceKind::Raya => BuiltinMode::RayaStrict,
@@ -236,7 +211,7 @@ fn load_entry_point_with_profile(
 ) -> Result<CompiledModule, RuntimeError> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("ryb") => load_bytecode_file(path),
-        Some("raya") => {
+        Some("raya" | "js" | "mjs" | "cjs" | "jsx" | "ts" | "mts" | "cts" | "tsx") => {
             let source = std::fs::read_to_string(path)?;
             let (inferred_profile, ts_options) = infer_semantic_profile_for_path(path)?;
             let profile = forced_profile.unwrap_or(inferred_profile);
@@ -258,35 +233,35 @@ fn load_entry_point_with_profile(
     }
 }
 
-fn infer_type_mode_for_path(
-    path: &Path,
-) -> Result<(TypeMode, Option<compile::TsCompilerOptions>), RuntimeError> {
-    let (profile, ts_options) = infer_semantic_profile_for_path(path)?;
-    let type_mode = match profile.source_kind {
-        raya_engine::semantics::SourceKind::Js => TypeMode::Js,
-        raya_engine::semantics::SourceKind::Ts => TypeMode::Ts,
-        raya_engine::semantics::SourceKind::Raya => TypeMode::Raya,
-    };
-    Ok((type_mode, ts_options))
-}
-
 fn infer_semantic_profile_for_path(
     path: &Path,
 ) -> Result<(SemanticProfile, Option<compile::TsCompilerOptions>), RuntimeError> {
+    let base_profile = SemanticProfile::from_path(path);
     let mut dir = match path.parent() {
         Some(p) => p.to_path_buf(),
-        None => return Ok((SemanticProfile::raya(), None)),
+        None => return Ok((base_profile, None)),
     };
+
+    if matches!(base_profile.source_kind, SourceKind::Raya) {
+        return Ok((base_profile, None));
+    }
+
     loop {
         if let Some(tsconfig_path) = find_tsconfig(&dir) {
             let ts_options = load_ts_compiler_options(&tsconfig_path)?;
-            if ts_options.allow_js.unwrap_or(false) {
-                return Ok((SemanticProfile::js(), Some(ts_options)));
+            match base_profile.source_kind {
+                SourceKind::Js => {
+                    if ts_options.allow_js.unwrap_or(false) {
+                        return Ok((SemanticProfile::js(), Some(ts_options)));
+                    }
+                    return Ok((SemanticProfile::js(), None));
+                }
+                SourceKind::Ts => return Ok((SemanticProfile::ts_strict(), Some(ts_options))),
+                SourceKind::Raya => return Ok((base_profile, None)),
             }
-            return Ok((SemanticProfile::ts_strict(), Some(ts_options)));
         }
         if !dir.pop() {
-            return Ok((SemanticProfile::raya(), None));
+            return Ok((base_profile, None));
         }
     }
 }
@@ -330,4 +305,62 @@ pub fn load_ts_compiler_options(path: &Path) -> Result<compile::TsCompilerOption
             e
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn infer_semantic_profile_uses_source_extension_without_tsconfig() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let js_path = temp_dir.path().join("entry.js");
+        let ts_path = temp_dir.path().join("entry.ts");
+        let raya_path = temp_dir.path().join("entry.raya");
+
+        let (js_profile, js_options) =
+            infer_semantic_profile_for_path(&js_path).expect("js profile inference");
+        let (ts_profile, ts_options) =
+            infer_semantic_profile_for_path(&ts_path).expect("ts profile inference");
+        let (raya_profile, raya_options) =
+            infer_semantic_profile_for_path(&raya_path).expect("raya profile inference");
+
+        assert_eq!(js_profile, SemanticProfile::js());
+        assert!(js_options.is_none());
+        assert_eq!(ts_profile, SemanticProfile::ts_strict());
+        assert!(ts_options.is_none());
+        assert_eq!(raya_profile, SemanticProfile::raya());
+        assert!(raya_options.is_none());
+    }
+
+    #[test]
+    fn infer_semantic_profile_layers_tsconfig_only_where_applicable() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let tsconfig_path = temp_dir.path().join("tsconfig.json");
+        fs::write(
+            &tsconfig_path,
+            r#"{"compilerOptions":{"strict":true,"allowJs":true}}"#,
+        )
+        .expect("write tsconfig");
+
+        let js_path = temp_dir.path().join("entry.js");
+        let ts_path = temp_dir.path().join("entry.ts");
+        let raya_path = temp_dir.path().join("entry.raya");
+
+        let (js_profile, js_options) =
+            infer_semantic_profile_for_path(&js_path).expect("js profile inference");
+        let (ts_profile, ts_options) =
+            infer_semantic_profile_for_path(&ts_path).expect("ts profile inference");
+        let (raya_profile, raya_options) =
+            infer_semantic_profile_for_path(&raya_path).expect("raya profile inference");
+
+        assert_eq!(js_profile, SemanticProfile::js());
+        assert_eq!(js_options.expect("js ts options").allow_js, Some(true));
+        assert_eq!(ts_profile, SemanticProfile::ts_strict());
+        assert_eq!(ts_options.expect("ts options").strict, Some(true));
+        assert_eq!(raya_profile, SemanticProfile::raya());
+        assert!(raya_options.is_none());
+    }
 }

@@ -1536,9 +1536,9 @@ pub fn debug_compile(source: &str) -> String {
     };
 
     let compiler = Compiler::new(type_ctx, &interner)
+        .with_semantic_profile(raya_engine::semantics::SemanticProfile::js())
         .with_expr_types(check_result.expr_types)
-        .with_type_annotation_types(check_result.type_annotation_types)
-        .with_js_this_binding_compat(true);
+        .with_type_annotation_types(check_result.type_annotation_types);
     match compiler.compile_with_debug(&ast) {
         Ok((_, debug_output)) => debug_output,
         Err(e) => format!("Compile error: {}", e),

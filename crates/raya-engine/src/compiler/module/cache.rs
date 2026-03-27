@@ -202,6 +202,7 @@ mod tests {
                 generic_templates: vec![],
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
+                js_global_bindings: vec![],
                 structural_shapes: vec![],
                 structural_layouts: vec![],
             },

@@ -271,20 +271,18 @@ impl ModuleCompiler {
 
     /// Configure checker policy for graph compilation.
     pub fn with_checker_policy(mut self, policy: CheckerPolicy) -> Self {
-        self.semantic_profile.typing = if policy.allow_js_dynamic_fallback {
-            TypingDiscipline::DynamicJs
+        let source_kind = self.semantic_profile.source_kind;
+        self.semantic_profile = if policy.allow_js_dynamic_fallback {
+            SemanticProfile::js()
         } else if policy.allow_explicit_any {
-            TypingDiscipline::StrictTs
+            SemanticProfile::ts_strict()
         } else {
-            TypingDiscipline::RayaStrict
+            SemanticProfile::raya()
         };
-        if matches!(self.semantic_profile.typing, TypingDiscipline::DynamicJs) {
-            self.semantic_profile.source_kind = SourceKind::Js;
-        }
-        if matches!(self.semantic_profile.typing, TypingDiscipline::StrictTs)
-            && matches!(self.semantic_profile.source_kind, SourceKind::Raya)
+        if matches!(source_kind, SourceKind::Js)
+            && !matches!(self.semantic_profile.typing, TypingDiscipline::RayaStrict)
         {
-            self.semantic_profile.source_kind = SourceKind::Ts;
+            self.semantic_profile.source_kind = SourceKind::Js;
         }
         self.use_path_profiles = false;
         self

@@ -9,6 +9,7 @@ use crate::parser::ast::{
 };
 use crate::parser::checker::{CheckerPolicy, EarlyErrorOptions, TsTypeFlags, TypeSystemMode};
 use crate::parser::{Interner, Symbol};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::Path;
 
 /// Source language family inferred from file extension or explicit configuration.
@@ -87,6 +88,16 @@ pub struct SemanticProfile {
     pub concurrency: ConcurrencySemantics,
     /// Lowering/optimization emphasis.
     pub optimization: OptimizationProfile,
+    /// Whether method extraction follows JS unbound-receiver rules.
+    pub js_this_binding_compat: bool,
+    /// Whether unresolved members may fall back to runtime dynamic lookup.
+    pub allow_unresolved_runtime_fallback: bool,
+    /// Whether top-level completion values are observable.
+    pub track_top_level_completion: bool,
+    /// Whether top-level bindings publish to `globalThis`.
+    pub emit_script_global_bindings: bool,
+    /// Whether published globals are configurable.
+    pub script_global_bindings_configurable: bool,
     /// Whether top-level `return` is legal.
     pub allow_top_level_return: bool,
     /// Whether `await` is legal outside `async` functions.
@@ -127,6 +138,11 @@ impl SemanticProfile {
             typing: TypingDiscipline::DynamicJs,
             concurrency: ConcurrencySemantics::StandardJsAsync,
             optimization: OptimizationProfile::Compatibility,
+            js_this_binding_compat: true,
+            allow_unresolved_runtime_fallback: true,
+            track_top_level_completion: true,
+            emit_script_global_bindings: true,
+            script_global_bindings_configurable: true,
             allow_top_level_return: false,
             allow_await_outside_async: false,
             allow_typescript_syntax: false,
@@ -142,6 +158,11 @@ impl SemanticProfile {
             typing: TypingDiscipline::StrictTs,
             concurrency: ConcurrencySemantics::StandardJsAsync,
             optimization: OptimizationProfile::Compatibility,
+            js_this_binding_compat: true,
+            allow_unresolved_runtime_fallback: true,
+            track_top_level_completion: true,
+            emit_script_global_bindings: true,
+            script_global_bindings_configurable: true,
             allow_top_level_return: false,
             allow_await_outside_async: false,
             allow_typescript_syntax: true,
@@ -157,6 +178,11 @@ impl SemanticProfile {
             typing: TypingDiscipline::RayaStrict,
             concurrency: ConcurrencySemantics::CoroutineFirst,
             optimization: OptimizationProfile::OptimizedCoroutineFirst,
+            js_this_binding_compat: false,
+            allow_unresolved_runtime_fallback: false,
+            track_top_level_completion: false,
+            emit_script_global_bindings: true,
+            script_global_bindings_configurable: false,
             allow_top_level_return: true,
             allow_await_outside_async: true,
             allow_typescript_syntax: false,
@@ -208,21 +234,12 @@ impl SemanticProfile {
 
     /// Lowering switches derived from the profile.
     pub const fn lowering_semantics(self) -> LoweringSemantics {
-        match self.typing {
-            TypingDiscipline::DynamicJs | TypingDiscipline::StrictTs => LoweringSemantics {
-                js_this_binding_compat: true,
-                allow_unresolved_runtime_fallback: true,
-                track_top_level_completion: true,
-                emit_script_global_bindings: true,
-                script_global_bindings_configurable: true,
-            },
-            TypingDiscipline::RayaStrict => LoweringSemantics {
-                js_this_binding_compat: false,
-                allow_unresolved_runtime_fallback: false,
-                track_top_level_completion: false,
-                emit_script_global_bindings: true,
-                script_global_bindings_configurable: false,
-            },
+        LoweringSemantics {
+            js_this_binding_compat: self.js_this_binding_compat,
+            allow_unresolved_runtime_fallback: self.allow_unresolved_runtime_fallback,
+            track_top_level_completion: self.track_top_level_completion,
+            emit_script_global_bindings: self.emit_script_global_bindings,
+            script_global_bindings_configurable: self.script_global_bindings_configurable,
         }
     }
 }
@@ -234,7 +251,10 @@ pub enum CallableKind {
     AsyncFunction,
     GeneratorFunction,
     AsyncGeneratorFunction,
-    Method,
+    SyncMethod,
+    AsyncMethod,
+    GeneratorMethod,
+    AsyncGeneratorMethod,
     Constructor,
 }
 
@@ -289,12 +309,93 @@ pub struct SemanticHirModule {
     pub uses_direct_eval: bool,
 }
 
+/// Top-level callable declaration tracked for lowering decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticTopLevelCallable {
+    pub name: Symbol,
+    pub kind: CallableKind,
+    pub span_start: usize,
+}
+
+/// Semantic lowering plan derived from a module before IR lowering starts.
+#[derive(Debug, Clone)]
+pub struct SemanticLoweringPlan {
+    pub hir: SemanticHirModule,
+    callable_kinds_by_span: FxHashMap<usize, CallableKind>,
+    top_level_callables: Vec<SemanticTopLevelCallable>,
+    top_level_vars: FxHashSet<Symbol>,
+    top_level_lexicals: FxHashSet<Symbol>,
+    top_level_const_lexicals: FxHashSet<Symbol>,
+    top_level_classes: FxHashSet<Symbol>,
+}
+
+impl SemanticLoweringPlan {
+    pub fn empty(profile: SemanticProfile) -> Self {
+        Self {
+            hir: SemanticHirModule {
+                profile,
+                callables: Vec::new(),
+                bindings: Vec::new(),
+                suspension_points: Vec::new(),
+                uses_direct_eval: false,
+            },
+            callable_kinds_by_span: FxHashMap::default(),
+            top_level_callables: Vec::new(),
+            top_level_vars: FxHashSet::default(),
+            top_level_lexicals: FxHashSet::default(),
+            top_level_const_lexicals: FxHashSet::default(),
+            top_level_classes: FxHashSet::default(),
+        }
+    }
+
+    pub fn profile(&self) -> SemanticProfile {
+        self.hir.profile
+    }
+
+    pub fn lowering_semantics(&self) -> LoweringSemantics {
+        self.hir.profile.lowering_semantics()
+    }
+
+    pub fn callable_kind_at_span(&self, span_start: usize) -> Option<CallableKind> {
+        self.callable_kinds_by_span.get(&span_start).copied()
+    }
+
+    pub fn top_level_callables(&self) -> &[SemanticTopLevelCallable] {
+        &self.top_level_callables
+    }
+
+    pub fn is_top_level_var(&self, symbol: Symbol) -> bool {
+        self.top_level_vars.contains(&symbol)
+    }
+
+    pub fn is_top_level_lexical(&self, symbol: Symbol) -> bool {
+        self.top_level_lexicals.contains(&symbol)
+    }
+
+    pub fn is_top_level_const_lexical(&self, symbol: Symbol) -> bool {
+        self.top_level_const_lexicals.contains(&symbol)
+    }
+
+    pub fn is_top_level_class(&self, symbol: Symbol) -> bool {
+        self.top_level_classes.contains(&symbol)
+    }
+}
+
 /// Build a semantic HIR summary from an AST module.
 pub fn build_semantic_hir(
     module: &ast::Module,
     interner: &Interner,
     profile: SemanticProfile,
 ) -> SemanticHirModule {
+    build_semantic_lowering_plan(module, interner, profile).hir
+}
+
+/// Build a lowering-oriented semantic plan from an AST module.
+pub fn build_semantic_lowering_plan(
+    module: &ast::Module,
+    interner: &Interner,
+    profile: SemanticProfile,
+) -> SemanticLoweringPlan {
     let mut builder = SemanticHirBuilder {
         interner,
         callables: Vec::new(),
@@ -302,26 +403,80 @@ pub fn build_semantic_hir(
         suspension_points: Vec::new(),
         uses_direct_eval: false,
         function_depth: 0,
+        top_level_callables: Vec::new(),
+        top_level_vars: FxHashSet::default(),
+        top_level_lexicals: FxHashSet::default(),
+        top_level_const_lexicals: FxHashSet::default(),
+        top_level_classes: FxHashSet::default(),
     };
     for stmt in &module.statements {
         builder.visit_stmt(stmt);
     }
-    SemanticHirModule {
+    let hir = SemanticHirModule {
         profile,
-        callables: builder.callables,
-        bindings: builder.bindings,
+        callables: builder
+            .callables
+            .iter()
+            .map(|callable| SemanticCallable {
+                name: callable.name.clone(),
+                kind: callable.kind,
+                span_start: callable.span_start,
+            })
+            .collect(),
+        bindings: builder
+            .bindings
+            .iter()
+            .map(|binding| SemanticBinding {
+                name: interner.resolve(binding.name).to_string(),
+                kind: binding.kind,
+                top_level: binding.top_level,
+            })
+            .collect(),
         suspension_points: builder.suspension_points,
         uses_direct_eval: builder.uses_direct_eval,
+    };
+    let callable_kinds_by_span = builder
+        .callables
+        .iter()
+        .map(|callable| (callable.span_start, callable.kind))
+        .collect();
+    SemanticLoweringPlan {
+        hir,
+        callable_kinds_by_span,
+        top_level_callables: builder.top_level_callables,
+        top_level_vars: builder.top_level_vars,
+        top_level_lexicals: builder.top_level_lexicals,
+        top_level_const_lexicals: builder.top_level_const_lexicals,
+        top_level_classes: builder.top_level_classes,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemanticCallableInfo {
+    name: Option<String>,
+    kind: CallableKind,
+    span_start: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SemanticBindingInfo {
+    name: Symbol,
+    kind: BindingKind,
+    top_level: bool,
 }
 
 struct SemanticHirBuilder<'a> {
     interner: &'a Interner,
-    callables: Vec<SemanticCallable>,
-    bindings: Vec<SemanticBinding>,
+    callables: Vec<SemanticCallableInfo>,
+    bindings: Vec<SemanticBindingInfo>,
     suspension_points: Vec<SuspensionPoint>,
     uses_direct_eval: bool,
     function_depth: usize,
+    top_level_callables: Vec<SemanticTopLevelCallable>,
+    top_level_vars: FxHashSet<Symbol>,
+    top_level_lexicals: FxHashSet<Symbol>,
+    top_level_const_lexicals: FxHashSet<Symbol>,
+    top_level_classes: FxHashSet<Symbol>,
 }
 
 impl<'a> SemanticHirBuilder<'a> {
@@ -343,11 +498,34 @@ impl<'a> SemanticHirBuilder<'a> {
     }
 
     fn record_binding(&mut self, symbol: Symbol, kind: BindingKind) {
-        self.bindings.push(SemanticBinding {
-            name: self.symbol(symbol),
+        self.bindings.push(SemanticBindingInfo {
+            name: symbol,
             kind,
             top_level: self.function_depth == 0,
         });
+    }
+
+    fn collect_pattern_symbols(pattern: &Pattern, out: &mut Vec<Symbol>) {
+        match pattern {
+            Pattern::Identifier(id) => out.push(id.name),
+            Pattern::Array(arr) => {
+                for elem in arr.elements.iter().flatten() {
+                    Self::collect_pattern_symbols(&elem.pattern, out);
+                }
+                if let Some(rest) = &arr.rest {
+                    Self::collect_pattern_symbols(rest, out);
+                }
+            }
+            Pattern::Object(obj) => {
+                for prop in &obj.properties {
+                    Self::collect_pattern_symbols(&prop.value, out);
+                }
+                if let Some(rest) = &obj.rest {
+                    out.push(rest.name);
+                }
+            }
+            Pattern::Rest(rest) => Self::collect_pattern_symbols(&rest.argument, out),
+        }
     }
 
     fn record_pattern(&mut self, pattern: &Pattern, kind: BindingKind) {
@@ -395,7 +573,7 @@ impl<'a> SemanticHirBuilder<'a> {
             (false, true) => CallableKind::GeneratorFunction,
             (true, true) => CallableKind::AsyncGeneratorFunction,
         });
-        self.callables.push(SemanticCallable {
+        self.callables.push(SemanticCallableInfo {
             name,
             kind,
             span_start,
@@ -416,7 +594,12 @@ impl<'a> SemanticHirBuilder<'a> {
     }
 
     fn visit_method(&mut self, method: &MethodDecl) {
-        let callable_kind = CallableKind::Method;
+        let callable_kind = match (method.is_async, method.is_generator) {
+            (false, false) => CallableKind::SyncMethod,
+            (true, false) => CallableKind::AsyncMethod,
+            (false, true) => CallableKind::GeneratorMethod,
+            (true, true) => CallableKind::AsyncGeneratorMethod,
+        };
         let name = self
             .property_key_name(&method.name)
             .or_else(|| Some("<computed>".to_string()));
@@ -443,6 +626,19 @@ impl<'a> SemanticHirBuilder<'a> {
                 ..
             }) => {
                 self.record_binding(name.name, BindingKind::Function);
+                if self.function_depth == 0 {
+                    let kind = match (*is_async, *is_generator) {
+                        (false, false) => CallableKind::SyncFunction,
+                        (true, false) => CallableKind::AsyncFunction,
+                        (false, true) => CallableKind::GeneratorFunction,
+                        (true, true) => CallableKind::AsyncGeneratorFunction,
+                    };
+                    self.top_level_callables.push(SemanticTopLevelCallable {
+                        name: name.name,
+                        kind,
+                        span_start: span.start,
+                    });
+                }
                 self.visit_function_like(
                     Some(self.identifier(name)),
                     *is_async,
@@ -455,6 +651,10 @@ impl<'a> SemanticHirBuilder<'a> {
             }
             Statement::ClassDecl(class_decl) => {
                 self.record_binding(class_decl.name.name, BindingKind::Class);
+                if self.function_depth == 0 {
+                    self.top_level_classes.insert(class_decl.name.name);
+                    self.top_level_lexicals.insert(class_decl.name.name);
+                }
                 for member in &class_decl.members {
                     match member {
                         ast::ClassMember::Method(method) => self.visit_method(method),
@@ -487,6 +687,24 @@ impl<'a> SemanticHirBuilder<'a> {
                     VariableKind::Var => BindingKind::Var,
                     VariableKind::Const | VariableKind::Let => BindingKind::Lexical,
                 };
+                if self.function_depth == 0 {
+                    let mut names = Vec::new();
+                    Self::collect_pattern_symbols(&var_decl.pattern, &mut names);
+                    for name in names {
+                        match var_decl.kind {
+                            VariableKind::Var => {
+                                self.top_level_vars.insert(name);
+                            }
+                            VariableKind::Const => {
+                                self.top_level_lexicals.insert(name);
+                                self.top_level_const_lexicals.insert(name);
+                            }
+                            VariableKind::Let => {
+                                self.top_level_lexicals.insert(name);
+                            }
+                        }
+                    }
+                }
                 self.record_pattern(&var_decl.pattern, kind);
                 if let Some(init) = &var_decl.initializer {
                     self.visit_expr(init);
@@ -686,7 +904,7 @@ impl<'a> SemanticHirBuilder<'a> {
                 );
             }
             Expression::Arrow(arrow) => {
-                self.callables.push(SemanticCallable {
+                self.callables.push(SemanticCallableInfo {
                     name: None,
                     kind: if arrow.is_async {
                         CallableKind::AsyncFunction

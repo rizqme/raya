@@ -656,6 +656,8 @@ mod tests {
             is_strict_js: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
+            is_async: false,
+            uses_js_runtime_semantics: false,
             local_count: 1,
             code: writer.into_bytes(),
         });
@@ -677,6 +679,8 @@ mod tests {
             is_strict_js: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
+            is_async: false,
+            uses_js_runtime_semantics: false,
             local_count: 0,
             code: vec![0xFF], // Invalid opcode (unassigned)
         });
@@ -703,6 +707,8 @@ mod tests {
             is_strict_js: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
+            is_async: false,
+            uses_js_runtime_semantics: false,
             local_count: 0,
             code: writer.into_bytes(),
         });
@@ -729,6 +735,8 @@ mod tests {
             is_strict_js: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
+            is_async: false,
+            uses_js_runtime_semantics: false,
             local_count: 2,
             code: writer.into_bytes(),
         });
@@ -757,6 +765,8 @@ mod tests {
             is_strict_js: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
+            is_async: false,
+            uses_js_runtime_semantics: false,
             local_count: 3,
             code: writer.into_bytes(),
         });
@@ -782,6 +792,8 @@ mod tests {
             is_strict_js: false,
             uses_builtin_this_coercion: false,
             js_arguments_mapping: Vec::new(),
+            is_async: false,
+            uses_js_runtime_semantics: false,
             local_count: 0,
             code: writer.into_bytes(),
         });

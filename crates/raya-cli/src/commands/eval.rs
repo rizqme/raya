@@ -1,6 +1,7 @@
 //! `raya eval` — Evaluate an inline expression or statement.
 
-use raya_runtime::{BuiltinMode, RuntimeOptions, Session, TypeMode};
+use raya_engine::semantics::{SemanticProfile, SourceKind};
+use raya_runtime::{BuiltinMode, RuntimeOptions, Session};
 
 pub fn execute(
     code: String,
@@ -9,9 +10,13 @@ pub fn execute(
     no_jit: bool,
     jit_threshold: u32,
     node_compat: bool,
-    type_mode: TypeMode,
+    semantic_profile: SemanticProfile,
 ) -> anyhow::Result<()> {
-    if matches!(type_mode, TypeMode::Ts | TypeMode::Js) && !node_compat {
+    if matches!(
+        semantic_profile.source_kind,
+        SourceKind::Ts | SourceKind::Js
+    ) && !node_compat
+    {
         anyhow::bail!("--mode ts/js requires --node-compat");
     }
     let options = RuntimeOptions {
@@ -22,13 +27,17 @@ pub fn execute(
         } else {
             BuiltinMode::RayaStrict
         },
-        type_mode: Some(type_mode),
+        semantic_profile: Some(semantic_profile),
         ts_options: None,
         ..Default::default()
     };
     let mut session = Session::new(&options);
 
-    let value = if node_compat && matches!(type_mode, TypeMode::Ts | TypeMode::Js) {
+    let value = if node_compat
+        && matches!(
+            semantic_profile.source_kind,
+            SourceKind::Ts | SourceKind::Js
+        ) {
         session
             .eval_via_vm(&code)
             .map_err(|e| anyhow::anyhow!("{}", e))?

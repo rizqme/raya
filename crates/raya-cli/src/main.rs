@@ -7,7 +7,7 @@ mod commands;
 mod output;
 
 use clap::{Parser, Subcommand};
-use raya_runtime::TypeMode;
+use raya_engine::semantics::SemanticProfile;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -381,11 +381,11 @@ fn looks_like_raya_file(arg: &str) -> bool {
     arg.ends_with(".raya") || arg.ends_with(".ryb")
 }
 
-fn parse_type_mode(mode: &str) -> anyhow::Result<TypeMode> {
+fn parse_semantic_profile(mode: &str) -> anyhow::Result<SemanticProfile> {
     match mode {
-        "raya" => Ok(TypeMode::Raya),
-        "ts" => Ok(TypeMode::Ts),
-        "js" => Ok(TypeMode::Js),
+        "raya" => Ok(SemanticProfile::raya()),
+        "ts" => Ok(SemanticProfile::ts_strict()),
+        "js" => Ok(SemanticProfile::js()),
         "strict" | "allowAny" | "jsMode" => Err(anyhow::anyhow!(
             "Legacy mode '{}' is no longer supported. Use one of: raya, ts, js.",
             mode
@@ -397,13 +397,16 @@ fn parse_type_mode(mode: &str) -> anyhow::Result<TypeMode> {
     }
 }
 
-fn resolve_type_mode(mode: Option<&str>, node_compat: bool) -> anyhow::Result<TypeMode> {
+fn resolve_semantic_profile(
+    mode: Option<&str>,
+    node_compat: bool,
+) -> anyhow::Result<SemanticProfile> {
     match mode {
-        Some(mode) => parse_type_mode(mode),
+        Some(mode) => parse_semantic_profile(mode),
         None => Ok(if node_compat {
-            TypeMode::Js
+            SemanticProfile::js()
         } else {
-            TypeMode::Raya
+            SemanticProfile::raya()
         }),
     }
 }
@@ -467,7 +470,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             cpu_prof,
             prof_interval,
             node_compat,
-            type_mode: resolve_type_mode(mode.as_deref(), node_compat)?,
+            semantic_profile: resolve_semantic_profile(mode.as_deref(), node_compat)?,
         }),
 
         Commands::Debug {
@@ -494,7 +497,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             sourcemap,
             dry_run,
             node_compat,
-            resolve_type_mode(mode.as_deref(), node_compat)?,
+            resolve_semantic_profile(mode.as_deref(), node_compat)?,
         ),
 
         Commands::Check {
@@ -516,7 +519,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             deny,
             no_warnings,
             node_compat,
-            resolve_type_mode(mode.as_deref(), node_compat)?,
+            resolve_semantic_profile(mode.as_deref(), node_compat)?,
         ),
 
         Commands::Eval {
@@ -534,7 +537,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             no_jit,
             jit_threshold,
             node_compat,
-            resolve_type_mode(mode.as_deref(), node_compat)?,
+            resolve_semantic_profile(mode.as_deref(), node_compat)?,
         ),
 
         Commands::Test {
@@ -575,7 +578,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
         } => commands::repl::execute(
             no_jit,
             node_compat,
-            resolve_type_mode(mode.as_deref(), node_compat)?,
+            resolve_semantic_profile(mode.as_deref(), node_compat)?,
         ),
 
         Commands::Init {
@@ -686,14 +689,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_type_mode_defaults_to_raya_without_node_compat() {
-        let mode = resolve_type_mode(None, false).expect("mode should resolve");
-        assert_eq!(mode, TypeMode::Raya);
+    fn resolve_semantic_profile_defaults_to_raya_without_node_compat() {
+        let profile = resolve_semantic_profile(None, false).expect("profile should resolve");
+        assert_eq!(profile, SemanticProfile::raya());
     }
 
     #[test]
-    fn resolve_type_mode_defaults_to_js_with_node_compat() {
-        let mode = resolve_type_mode(None, true).expect("mode should resolve");
-        assert_eq!(mode, TypeMode::Js);
+    fn resolve_semantic_profile_defaults_to_js_with_node_compat() {
+        let profile = resolve_semantic_profile(None, true).expect("profile should resolve");
+        assert_eq!(profile, SemanticProfile::js());
     }
 }

@@ -7,7 +7,6 @@ use raya_engine::compiler::module::{
 };
 use raya_engine::compiler::module::{ModuleCompileError, ModuleCompiler as BinaryModuleCompiler};
 use raya_engine::compiler::{module_id_from_name, SymbolType};
-use raya_engine::parser::checker::TypeSystemMode;
 use raya_engine::parser::{Interner, Parser};
 use raya_engine::semantics::{SemanticProfile, SourceKind};
 use raya_engine::vm::module::ModuleLinker;
@@ -478,8 +477,11 @@ fn looks_like_dynamic_import(source: &str) -> bool {
 }
 
 fn parse_interner(source: &str, virtual_entry_path: &Path) -> Result<Interner, RuntimeError> {
-    let parser = Parser::new_with_mode(source, parser_mode_for_virtual_entry(virtual_entry_path))
-        .map_err(|errors| {
+    let parser = Parser::new_with_mode(
+        source,
+        SemanticProfile::from_path(virtual_entry_path).type_system_mode(),
+    )
+    .map_err(|errors| {
         RuntimeError::Lex(
             errors
                 .iter()
@@ -498,14 +500,6 @@ fn parse_interner(source: &str, virtual_entry_path: &Path) -> Result<Interner, R
         )
     })?;
     Ok(interner)
-}
-
-fn parser_mode_for_virtual_entry(path: &Path) -> TypeSystemMode {
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("js" | "mjs" | "cjs" | "jsx") => TypeSystemMode::Js,
-        Some("ts" | "mts" | "cts" | "tsx") => TypeSystemMode::Ts,
-        _ => TypeSystemMode::Raya,
-    }
 }
 
 fn map_module_compile_error(error: ModuleCompileError) -> RuntimeError {

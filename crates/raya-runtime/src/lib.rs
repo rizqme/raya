@@ -37,7 +37,6 @@ mod vm_setup;
 
 // Re-export key types from raya-engine for convenience
 pub use crate::compile::TsCompilerOptions;
-pub use crate::compile::TypeMode;
 pub use raya_engine::compiler::Module;
 pub use raya_engine::semantics::{SemanticHirModule, SemanticProfile, SourceKind};
 pub use raya_engine::vm::Value;
@@ -147,12 +146,9 @@ pub struct RuntimeOptions {
     /// Builtin API mode (strict Raya vs node-compat surface).
     pub builtin_mode: BuiltinMode,
     /// Optional semantic profile override.
-    /// None = inferred from `semantic_profile`, `type_mode`, or builtin mode.
+    /// None = inferred from builtin mode for inline sources and from file path for source files.
     pub semantic_profile: Option<SemanticProfile>,
-    /// Optional type-system mode override.
-    /// Compatibility shim. None = inferred from builtin mode.
-    pub type_mode: Option<TypeMode>,
-    /// Optional TS compiler options payload for `TypeMode::Ts`.
+    /// Optional TS compiler options payload for TS semantic profiles.
     pub ts_options: Option<TsCompilerOptions>,
 }
 
@@ -170,7 +166,6 @@ impl Default for RuntimeOptions {
             prof_interval_us: 10_000,
             builtin_mode: BuiltinMode::RayaStrict,
             semantic_profile: None,
-            type_mode: None,
             ts_options: None,
         }
     }
@@ -218,6 +213,11 @@ pub struct Runtime {
     options: RuntimeOptions,
 }
 
+struct ResolvedSemanticOptions {
+    profile: SemanticProfile,
+    ts_options: Option<TsCompilerOptions>,
+}
+
 impl Default for Runtime {
     fn default() -> Self {
         Self::new()
@@ -232,17 +232,23 @@ impl Runtime {
         )
     }
 
+    fn configured_semantic_profile(&self) -> Option<SemanticProfile> {
+        self.options.semantic_profile
+    }
+
     fn effective_semantic_profile(&self) -> SemanticProfile {
-        self.options
-            .semantic_profile
-            .or_else(|| self.options.type_mode.map(TypeMode::semantic_profile))
-            .unwrap_or_else(|| {
-                compile::default_semantic_profile_for_builtin(self.options.builtin_mode)
-            })
+        self.configured_semantic_profile().unwrap_or_else(|| {
+            compile::default_semantic_profile_for_builtin(self.options.builtin_mode)
+        })
     }
 
     fn source_kind_for_inline(&self) -> SourceKind {
         self.effective_semantic_profile().source_kind
+    }
+
+    fn effective_semantic_profile_for_path(&self, path: &Path) -> SemanticProfile {
+        self.configured_semantic_profile()
+            .unwrap_or_else(|| SemanticProfile::from_path(path))
     }
 
     fn compile_program_source_with_virtual_entry(
@@ -250,12 +256,11 @@ impl Runtime {
         source: &str,
         virtual_entry: &Path,
     ) -> Result<CompiledProgram, RuntimeError> {
-        let semantic_profile = self.effective_semantic_profile();
-        let ts_options = self.resolve_ts_options_for_inline()?;
+        let semantic = self.resolve_semantic_options_for_inline()?;
         let compiler = module_system::ProgramCompiler {
             builtin_mode: self.options.builtin_mode,
-            semantic_profile,
-            ts_options,
+            semantic_profile: semantic.profile,
+            ts_options: semantic.ts_options,
             compile_options: None,
         };
         compiler.compile_program_source(source, virtual_entry)
@@ -278,48 +283,52 @@ impl Runtime {
         }
     }
 
-    fn resolve_ts_options_for_inline(&self) -> Result<Option<TsCompilerOptions>, RuntimeError> {
-        if !matches!(self.source_kind_for_inline(), SourceKind::Ts) {
+    fn resolve_ts_options_for_profile(
+        &self,
+        profile: SemanticProfile,
+        search_root: Option<&Path>,
+    ) -> Result<Option<TsCompilerOptions>, RuntimeError> {
+        if !matches!(profile.source_kind, SourceKind::Ts) {
             return Ok(self.options.ts_options.clone());
         }
         if let Some(opts) = &self.options.ts_options {
             return Ok(Some(opts.clone()));
         }
-        let cwd = match std::env::current_dir() {
-            Ok(path) => path,
-            Err(_) => return Ok(Some(TsCompilerOptions::default())),
+
+        let search_root = match search_root {
+            Some(path) => path.to_path_buf(),
+            None => match std::env::current_dir() {
+                Ok(path) => path,
+                Err(_) => return Ok(Some(TsCompilerOptions::default())),
+            },
         };
-        match loader::find_tsconfig(&cwd) {
+
+        match loader::find_tsconfig(&search_root) {
             Some(tsconfig) => Ok(Some(loader::load_ts_compiler_options(&tsconfig)?)),
             None => Ok(Some(TsCompilerOptions::default())),
         }
     }
 
-    fn resolve_ts_options_for_path(
+    fn resolve_semantic_options_for_inline(&self) -> Result<ResolvedSemanticOptions, RuntimeError> {
+        let profile = self.effective_semantic_profile();
+        let ts_options = self.resolve_ts_options_for_profile(profile, None)?;
+        Ok(ResolvedSemanticOptions {
+            profile,
+            ts_options,
+        })
+    }
+
+    fn resolve_semantic_options_for_path(
         &self,
         path: &Path,
-    ) -> Result<Option<TsCompilerOptions>, RuntimeError> {
-        if !matches!(
-            self.options
-                .semantic_profile
-                .map(|profile| profile.source_kind)
-                .or_else(|| self
-                    .options
-                    .type_mode
-                    .map(|mode| mode.semantic_profile().source_kind))
-                .unwrap_or_else(|| SourceKind::from_path(path)),
-            SourceKind::Ts
-        ) {
-            return Ok(self.options.ts_options.clone());
-        }
-        if let Some(opts) = &self.options.ts_options {
-            return Ok(Some(opts.clone()));
-        }
-        let search_root = path.parent().unwrap_or(path);
-        match loader::find_tsconfig(search_root) {
-            Some(tsconfig) => Ok(Some(loader::load_ts_compiler_options(&tsconfig)?)),
-            None => Ok(Some(TsCompilerOptions::default())),
-        }
+    ) -> Result<ResolvedSemanticOptions, RuntimeError> {
+        let profile = self.effective_semantic_profile_for_path(path);
+        let ts_options =
+            self.resolve_ts_options_for_profile(profile, Some(path.parent().unwrap_or(path)))?;
+        Ok(ResolvedSemanticOptions {
+            profile,
+            ts_options,
+        })
     }
 
     /// Create a runtime with default options.
@@ -346,13 +355,12 @@ impl Runtime {
     /// Uses inline compilation path for plain source and automatically routes
     /// to binary module-graph compilation when `std:`/`node:` imports are present.
     pub fn compile(&self, source: &str) -> Result<CompiledModule, RuntimeError> {
-        let semantic_profile = self.effective_semantic_profile();
-        let ts_options = self.resolve_ts_options_for_inline()?;
+        let semantic = self.resolve_semantic_options_for_inline()?;
         let (module, interner) = compile::compile_source_with_profile_and_ts_options(
             source,
             self.options.builtin_mode,
-            semantic_profile,
-            ts_options.as_ref(),
+            semantic.profile,
+            semantic.ts_options.as_ref(),
         )?;
         Ok(CompiledModule {
             module,
@@ -389,13 +397,12 @@ impl Runtime {
         source: &str,
         virtual_entry: &Path,
     ) -> Result<CompiledProgram, RuntimeError> {
-        let semantic_profile = self.effective_semantic_profile();
-        let ts_options = self.resolve_ts_options_for_inline()?;
+        let semantic = self.resolve_semantic_options_for_inline()?;
         let (mut module, interner) = compile::compile_graph_source_with_profile_and_ts_options(
             source,
             self.options.builtin_mode,
-            semantic_profile,
-            ts_options.as_ref(),
+            semantic.profile,
+            semantic.ts_options.as_ref(),
         )?;
         let entry_name = virtual_entry.to_string_lossy().to_string();
         if !entry_name.is_empty() {
@@ -425,14 +432,13 @@ impl Runtime {
         source: &str,
         options: &compile::CompileOptions,
     ) -> Result<CompiledModule, RuntimeError> {
-        let semantic_profile = self.effective_semantic_profile();
-        let ts_options = self.resolve_ts_options_for_inline()?;
+        let semantic = self.resolve_semantic_options_for_inline()?;
         let (module, interner) = compile::compile_source_with_options_and_profile_and_ts_options(
             source,
             options,
             self.options.builtin_mode,
-            semantic_profile,
-            ts_options.as_ref(),
+            semantic.profile,
+            semantic.ts_options.as_ref(),
         )?;
         Ok(CompiledModule {
             module,
@@ -455,13 +461,12 @@ impl Runtime {
     ///
     /// Returns diagnostics (errors + warnings) without compiling.
     pub fn check(&self, source: &str) -> Result<compile::CheckDiagnostics, RuntimeError> {
-        let semantic_profile = self.effective_semantic_profile();
-        let ts_options = self.resolve_ts_options_for_inline()?;
+        let semantic = self.resolve_semantic_options_for_inline()?;
         compile::check_source_with_profile_and_ts_options(
             source,
             self.options.builtin_mode,
-            semantic_profile,
-            ts_options.as_ref(),
+            semantic.profile,
+            semantic.ts_options.as_ref(),
         )
     }
 
@@ -472,17 +477,12 @@ impl Runtime {
 
     /// Compile a full file program (entry + resolved local module graph).
     pub fn compile_program_file(&self, path: &Path) -> Result<CompiledProgram, RuntimeError> {
-        let semantic_profile = self
-            .options
-            .semantic_profile
-            .or_else(|| self.options.type_mode.map(TypeMode::semantic_profile))
-            .unwrap_or_else(|| SemanticProfile::from_path(path));
-        let ts_options = self.resolve_ts_options_for_path(path)?;
+        let semantic = self.resolve_semantic_options_for_path(path)?;
 
         let compiler = module_system::ProgramCompiler {
             builtin_mode: self.options.builtin_mode,
-            semantic_profile,
-            ts_options,
+            semantic_profile: semantic.profile,
+            ts_options: semantic.ts_options,
             compile_options: None,
         };
         compiler.compile_program_file(path)
@@ -494,17 +494,12 @@ impl Runtime {
         path: &Path,
         options: &compile::CompileOptions,
     ) -> Result<CompiledProgram, RuntimeError> {
-        let semantic_profile = self
-            .options
-            .semantic_profile
-            .or_else(|| self.options.type_mode.map(TypeMode::semantic_profile))
-            .unwrap_or_else(|| SemanticProfile::from_path(path));
-        let ts_options = self.resolve_ts_options_for_path(path)?;
+        let semantic = self.resolve_semantic_options_for_path(path)?;
 
         let compiler = module_system::ProgramCompiler {
             builtin_mode: self.options.builtin_mode,
-            semantic_profile,
-            ts_options,
+            semantic_profile: semantic.profile,
+            ts_options: semantic.ts_options,
             compile_options: if options.sourcemap
                 || options.emit_generic_templates
                 || !matches!(
@@ -521,17 +516,12 @@ impl Runtime {
 
     /// Type-check a full file program (entry + resolved local module graph).
     pub fn check_program_file(&self, path: &Path) -> Result<ProgramDiagnostics, RuntimeError> {
-        let semantic_profile = self
-            .options
-            .semantic_profile
-            .or_else(|| self.options.type_mode.map(TypeMode::semantic_profile))
-            .unwrap_or_else(|| SemanticProfile::from_path(path));
-        let ts_options = self.resolve_ts_options_for_path(path)?;
+        let semantic = self.resolve_semantic_options_for_path(path)?;
 
         let compiler = module_system::ProgramCompiler {
             builtin_mode: self.options.builtin_mode,
-            semantic_profile,
-            ts_options,
+            semantic_profile: semantic.profile,
+            ts_options: semantic.ts_options,
             compile_options: None,
         };
         compiler.check_program_file(path)

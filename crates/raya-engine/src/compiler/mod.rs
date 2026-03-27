@@ -48,7 +48,7 @@ use crate::parser::ast;
 use crate::parser::Interner;
 use crate::parser::TypeContext;
 use crate::parser::TypeId;
-use crate::semantics::SemanticProfile;
+use crate::semantics::{build_semantic_lowering_plan, SemanticProfile};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{HashMap, HashSet};
 
@@ -82,10 +82,6 @@ pub struct Compiler<'a> {
     semantic_profile: SemanticProfile,
     /// Whether to emit source map (bytecode offset → source location)
     emit_sourcemap: bool,
-    /// Use JS-compatible method extraction semantics in lowerer.
-    js_this_binding_compat: bool,
-    /// Allow lowering unresolved receiver/member dispatch to runtime late-bound paths.
-    allow_unresolved_runtime_fallback: bool,
     /// Emit generic template metadata into bytecode artifacts.
     emit_generic_templates: bool,
     /// Monomorphization mode for IR pipeline.
@@ -100,12 +96,6 @@ pub struct Compiler<'a> {
     direct_eval_entry_function: Option<String>,
     /// Identifier names that should resolve through the direct-eval environment.
     direct_eval_binding_names: FxHashSet<String>,
-    /// Whether top-level statement completion values should be preserved as the module result.
-    track_top_level_completion: bool,
-    /// Whether top-level JS var/function declarations should publish to globalThis.
-    emit_script_global_bindings: bool,
-    /// Whether published top-level JS globals should be configurable.
-    script_global_bindings_configurable: bool,
 }
 
 impl<'a> Compiler<'a> {
@@ -128,8 +118,6 @@ impl<'a> Compiler<'a> {
             jsx_options: None,
             semantic_profile: SemanticProfile::raya(),
             emit_sourcemap: false,
-            js_this_binding_compat: false,
-            allow_unresolved_runtime_fallback: true,
             emit_generic_templates: false,
             monomorphization_mode: MonomorphizationMode::ConsumerLink,
             module_identity: None,
@@ -137,9 +125,6 @@ impl<'a> Compiler<'a> {
             ambient_builtin_globals: FxHashSet::default(),
             direct_eval_entry_function: None,
             direct_eval_binding_names: FxHashSet::default(),
-            track_top_level_completion: false,
-            emit_script_global_bindings: true,
-            script_global_bindings_configurable: false,
         }
     }
 
@@ -175,34 +160,13 @@ impl<'a> Compiler<'a> {
 
     /// Configure lowering/runtime behavior from a shared semantic profile.
     pub fn with_semantic_profile(mut self, profile: SemanticProfile) -> Self {
-        let lowering = profile.lowering_semantics();
         self.semantic_profile = profile;
-        self.js_this_binding_compat = lowering.js_this_binding_compat;
-        self.allow_unresolved_runtime_fallback = lowering.allow_unresolved_runtime_fallback;
-        self.track_top_level_completion = lowering.track_top_level_completion;
-        self.emit_script_global_bindings = lowering.emit_script_global_bindings;
-        self.script_global_bindings_configurable = lowering.script_global_bindings_configurable;
         self
     }
 
     /// Enable/disable source map generation in output bytecode
     pub fn with_sourcemap(mut self, enable: bool) -> Self {
         self.emit_sourcemap = enable;
-        self
-    }
-
-    /// Enable JS-compatible method extraction (`obj.method` is unbound).
-    pub fn with_js_this_binding_compat(mut self, enable: bool) -> Self {
-        self.js_this_binding_compat = enable;
-        self
-    }
-
-    /// Enable/disable unresolved runtime fallback lowering (`LateBoundMember` paths).
-    ///
-    /// Strict Raya should disable this so unresolved member dispatch fails at compile time
-    /// instead of silently lowering to dynamic runtime lookup.
-    pub fn with_allow_unresolved_runtime_fallback(mut self, enable: bool) -> Self {
-        self.allow_unresolved_runtime_fallback = enable;
         self
     }
 
@@ -250,35 +214,21 @@ impl<'a> Compiler<'a> {
         self
     }
 
-    pub fn with_track_top_level_completion(mut self, enable: bool) -> Self {
-        self.track_top_level_completion = enable;
-        self
-    }
-
-    pub fn with_emit_script_global_bindings(mut self, enable: bool) -> Self {
-        self.emit_script_global_bindings = enable;
-        self
-    }
-
-    pub fn with_script_global_bindings_configurable(mut self, enable: bool) -> Self {
-        self.script_global_bindings_configurable = enable;
-        self
-    }
-
-    fn build_lowerer(&self, emit_sourcemap: bool) -> lower::Lowerer<'_> {
+    fn build_lowerer_for_module(
+        &self,
+        module: &ast::Module,
+        emit_sourcemap: bool,
+    ) -> lower::Lowerer<'_> {
+        let semantic_plan =
+            build_semantic_lowering_plan(module, self.interner, self.semantic_profile);
         lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
             .with_type_annotation_types(self.type_annotation_types.clone())
             .with_sourcemap(emit_sourcemap)
-            .with_semantic_profile(self.semantic_profile)
+            .with_semantic_plan(semantic_plan)
             .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
             .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
             .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
             .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
-            .with_js_this_binding_compat(self.js_this_binding_compat)
-            .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
-            .with_track_top_level_completion(self.track_top_level_completion)
-            .with_emit_script_global_bindings(self.emit_script_global_bindings)
-            .with_script_global_bindings_configurable(self.script_global_bindings_configurable)
     }
 
     /// Compile a module into bytecode
@@ -289,7 +239,7 @@ impl<'a> Compiler<'a> {
 
     /// Compile a module to IR (for debugging/inspection)
     pub fn compile_to_ir(&self, module: &ast::Module) -> ir::IrModule {
-        let mut lowerer = self.build_lowerer(self.emit_sourcemap);
+        let mut lowerer = self.build_lowerer_for_module(module, self.emit_sourcemap);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -326,7 +276,7 @@ impl<'a> Compiler<'a> {
         let need_sourcemap = self.emit_sourcemap || dump_ir || dump_bc;
 
         // Step 1: Lower AST to IR
-        let mut lowerer = self.build_lowerer(need_sourcemap);
+        let mut lowerer = self.build_lowerer_for_module(module, need_sourcemap);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -376,7 +326,7 @@ impl<'a> Compiler<'a> {
         // when disabled.  DynGetProp and LateBoundMember may legitimately appear
         // for imported class instances whose methods are checker-validated but
         // require runtime dispatch (no local nominal type ID).
-        if !self.allow_unresolved_runtime_fallback {
+        if !self.semantic_profile.allow_unresolved_runtime_fallback {
             for func in &ir_module.functions {
                 for block in &func.blocks {
                     for instr in &block.instructions {
@@ -493,7 +443,7 @@ impl<'a> Compiler<'a> {
         let mut debug = String::new();
 
         // Step 1: Lower AST to IR
-        let mut lowerer = self.build_lowerer(self.emit_sourcemap);
+        let mut lowerer = self.build_lowerer_for_module(module, self.emit_sourcemap);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -1380,7 +1330,7 @@ mod tests {
         let parser = Parser::new(source).expect("lexer failure");
         let (ast, interner) = parser.parse().expect("parse failure");
         let compiler = Compiler::new(TypeContext::new(), &interner)
-            .with_allow_unresolved_runtime_fallback(false);
+            .with_semantic_profile(SemanticProfile::raya());
 
         let err = compiler
             .compile_via_ir(&ast)

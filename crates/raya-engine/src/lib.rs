@@ -110,10 +110,10 @@ pub use parser::{
 };
 
 pub use semantics::{
-    build_semantic_hir, BindingKind, CallableKind, ConcurrencySemantics, LoweringSemantics,
-    OptimizationProfile, RuntimeSemanticsBase, SemanticBinding, SemanticCallable,
-    SemanticHirModule, SemanticProfile, SourceKind, SuspensionKind, SuspensionPoint,
-    TypingDiscipline,
+    build_semantic_hir, build_semantic_lowering_plan, BindingKind, CallableKind,
+    ConcurrencySemantics, LoweringSemantics, OptimizationProfile, RuntimeSemanticsBase,
+    SemanticBinding, SemanticCallable, SemanticHirModule, SemanticLoweringPlan, SemanticProfile,
+    SemanticTopLevelCallable, SourceKind, SuspensionKind, SuspensionPoint, TypingDiscipline,
 };
 
 // ============================================================================

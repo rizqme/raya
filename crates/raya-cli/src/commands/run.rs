@@ -1,8 +1,9 @@
 //! `raya run` — dual-mode: run scripts from raya.toml or execute files directly.
 
 use anyhow::{anyhow, Context};
+use raya_engine::semantics::{SemanticProfile, SourceKind};
 use raya_pm::PackageManifest;
-use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,12 +25,16 @@ pub struct RunArgs {
     pub cpu_prof: Option<std::path::PathBuf>,
     pub prof_interval: u64,
     pub node_compat: bool,
-    pub type_mode: TypeMode,
+    pub semantic_profile: SemanticProfile,
 }
 
 impl RunArgs {
     fn to_runtime_options(&self) -> anyhow::Result<RuntimeOptions> {
-        if matches!(self.type_mode, TypeMode::Ts | TypeMode::Js) && !self.node_compat {
+        if matches!(
+            self.semantic_profile.source_kind,
+            SourceKind::Ts | SourceKind::Js
+        ) && !self.node_compat
+        {
             anyhow::bail!("--mode ts/js requires --node-compat");
         }
         Ok(RuntimeOptions {
@@ -45,7 +50,7 @@ impl RunArgs {
             } else {
                 BuiltinMode::RayaStrict
             },
-            type_mode: Some(self.type_mode),
+            semantic_profile: Some(self.semantic_profile),
             ts_options: None,
             ..Default::default()
         })

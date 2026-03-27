@@ -10147,7 +10147,9 @@ impl<'a> Lowerer<'a> {
             func_id
         };
 
-        if func.is_async && !func.is_generator {
+        let callable_kind =
+            self.callable_kind_for_span(func.span.start, func.is_async, func.is_generator, false);
+        if Self::callable_spawns_task(callable_kind) {
             self.async_closures.insert(func_id);
         }
 
@@ -10382,11 +10384,13 @@ impl<'a> Lowerer<'a> {
         self.prepare_executable_body_declarations(&func.body.statements, None);
         self.scan_for_captured_vars(&func.body.statements, &func.params, &closure_locals);
 
+        let callable_kind =
+            self.callable_kind_for_span(func.span.start, func.is_async, func.is_generator, false);
         let mut ir_func = crate::ir::IrFunction::new(&function_name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
-        ir_func.is_constructible = !func.is_generator;
-        ir_func.is_async = func.is_async;
-        ir_func.is_generator = func.is_generator;
+        ir_func.is_constructible = !Self::callable_is_generator(callable_kind);
+        ir_func.is_async = Self::callable_is_async(callable_kind);
+        ir_func.is_generator = Self::callable_is_generator(callable_kind);
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
         ir_func.uses_js_runtime_semantics = true;
@@ -10466,10 +10470,12 @@ impl<'a> Lowerer<'a> {
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
-        if func.is_generator && self.function_uses_generator_snapshot(&func.body) {
+        if Self::callable_is_generator(callable_kind)
+            && self.function_uses_generator_snapshot(&func.body)
+        {
             self.init_generator_yield_array();
         }
-        if func.is_generator {
+        if Self::callable_is_generator(callable_kind) {
             self.emit(IrInstr::GeneratorInitSuspend);
         }
 
@@ -11004,9 +11010,11 @@ impl<'a> Lowerer<'a> {
         }
 
         // Create the arrow function
+        let callable_kind =
+            self.callable_kind_for_span(arrow.span.start, arrow.is_async, false, false);
         let mut ir_func = crate::ir::IrFunction::new(&arrow_name, params, return_ty);
         ir_func.is_constructible = false;
-        ir_func.is_async = arrow.is_async;
+        ir_func.is_async = Self::callable_is_async(callable_kind);
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
         ir_func.uses_js_runtime_semantics = true;
@@ -12793,7 +12801,13 @@ impl<'a> Lowerer<'a> {
         self.next_function_id += 1;
 
         // Preserve async marker from original function
-        if func_ast.is_async && !func_ast.is_generator {
+        let callable_kind = self.callable_kind_for_span(
+            func_ast.span.start,
+            func_ast.is_async,
+            func_ast.is_generator,
+            false,
+        );
+        if Self::callable_spawns_task(callable_kind) {
             self.async_functions.insert(specialized_id);
         }
 
@@ -14559,7 +14573,11 @@ mod tests {
         );
         let type_ctx = crate::parser::TypeContext::new();
         let mut lowerer =
-            Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
+            Lowerer::new(&type_ctx, &interner).with_semantic_plan(
+                crate::semantics::SemanticLoweringPlan::empty(
+                    crate::semantics::SemanticProfile::raya(),
+                ),
+            );
         let ir = lowerer.lower_module(&module);
 
         let has_unresolved_error = lowerer
@@ -14596,7 +14614,11 @@ mod tests {
         );
         let type_ctx = crate::parser::TypeContext::new();
         let mut lowerer =
-            Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
+            Lowerer::new(&type_ctx, &interner).with_semantic_plan(
+                crate::semantics::SemanticLoweringPlan::empty(
+                    crate::semantics::SemanticProfile::raya(),
+                ),
+            );
         let ir = lowerer.lower_module(&module);
 
         let has_unresolved_error = lowerer
