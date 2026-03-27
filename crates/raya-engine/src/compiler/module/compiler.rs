@@ -123,6 +123,8 @@ pub struct ModuleCompiler {
     late_link_requirements: HashMap<u64, LateLinkRequirement>,
     /// Shared semantic profile for graph compilation.
     semantic_profile: SemanticProfile,
+    /// Whether non-entry modules infer their profile from the source path.
+    use_path_profiles: bool,
     /// Builtin declaration surface used for global symbol seeding.
     builtin_surface_mode: BuiltinSurfaceMode,
     /// Optional override loaded from compiled builtin artifacts instead of declarations.
@@ -219,6 +221,7 @@ impl ModuleCompiler {
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
             semantic_profile: SemanticProfile::raya(),
+            use_path_profiles: false,
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
             builtin_globals_override: None,
             builtin_globals: None,
@@ -241,6 +244,7 @@ impl ModuleCompiler {
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
             semantic_profile: SemanticProfile::raya(),
+            use_path_profiles: false,
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
             builtin_globals_override: None,
             builtin_globals: None,
@@ -261,6 +265,7 @@ impl ModuleCompiler {
             TypeSystemMode::Ts => SemanticProfile::ts_strict(),
             TypeSystemMode::Raya => SemanticProfile::raya(),
         };
+        self.use_path_profiles = false;
         self
     }
 
@@ -281,12 +286,14 @@ impl ModuleCompiler {
         {
             self.semantic_profile.source_kind = SourceKind::Ts;
         }
+        self.use_path_profiles = false;
         self
     }
 
     /// Configure the graph compiler from a shared semantic profile.
     pub fn with_semantic_profile(mut self, profile: SemanticProfile) -> Self {
         self.semantic_profile = profile;
+        self.use_path_profiles = true;
         self
     }
 
@@ -902,11 +909,34 @@ impl ModuleCompiler {
     }
 
     fn parser_mode_for_path(&self, path: &Path) -> TypeSystemMode {
-        SemanticProfile::from_path(path).type_system_mode()
+        let is_entry = self
+            .root_entry_path
+            .as_ref()
+            .is_some_and(|entry| entry == path);
+        if self.use_path_profiles && is_entry {
+            self.semantic_profile.type_system_mode()
+        } else {
+            SemanticProfile::from_path(path).type_system_mode()
+        }
+    }
+
+    fn semantic_profile_for_path(&self, path: &Path) -> SemanticProfile {
+        if !self.use_path_profiles {
+            return self.semantic_profile;
+        }
+        let is_entry = self
+            .root_entry_path
+            .as_ref()
+            .is_some_and(|entry| entry == path);
+        if is_entry {
+            self.semantic_profile
+        } else {
+            SemanticProfile::from_path(path)
+        }
     }
 
     fn early_error_options_for_path(&self, path: &Path) -> EarlyErrorOptions {
-        let profile = SemanticProfile::from_path(path);
+        let profile = self.semantic_profile_for_path(path);
         let mut options = profile.early_error_options();
         let is_entry = self
             .root_entry_path
@@ -990,8 +1020,9 @@ impl ModuleCompiler {
 
         // Bind
         let mut type_ctx = TypeContext::new();
-        let checker_mode = self.semantic_profile.type_system_mode();
-        let checker_policy = self.semantic_profile.checker_policy(None);
+        let semantic_profile = self.semantic_profile_for_path(path);
+        let checker_mode = semantic_profile.type_system_mode();
+        let checker_policy = semantic_profile.checker_policy(None);
         let mut binder = Binder::new(&mut type_ctx, &interner)
             .with_mode(checker_mode)
             .with_policy(checker_policy);
@@ -1097,16 +1128,10 @@ impl ModuleCompiler {
             .unwrap_or_else(|| vec!["EventEmitter".to_string()]);
 
         // Compile
-        let lowering = self.semantic_profile.lowering_semantics();
         let mut compiler = Compiler::new(type_ctx, &interner)
-            .with_semantic_profile(self.semantic_profile)
+            .with_semantic_profile(semantic_profile)
             .with_expr_types(check_result.expr_types)
-            .with_type_annotation_types(check_result.type_annotation_types)
-            .with_js_this_binding_compat(lowering.js_this_binding_compat)
-            .with_allow_unresolved_runtime_fallback(lowering.allow_unresolved_runtime_fallback)
-            .with_track_top_level_completion(lowering.track_top_level_completion)
-            .with_emit_script_global_bindings(lowering.emit_script_global_bindings)
-            .with_script_global_bindings_configurable(lowering.script_global_bindings_configurable);
+            .with_type_annotation_types(check_result.type_annotation_types);
         if let Some(ref jsx_opts) = self.jsx_options {
             compiler = compiler.with_jsx(jsx_opts.clone());
         }

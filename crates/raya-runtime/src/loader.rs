@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::error::RuntimeError;
 use crate::CompiledModule;
 use crate::{compile, BuiltinMode, TypeMode};
-use raya_engine::semantics::SemanticProfile;
+use raya_engine::semantics::{SemanticProfile, SourceKind};
 
 /// Load a .ryb bytecode file from disk.
 pub fn load_bytecode_file(path: &Path) -> Result<CompiledModule, RuntimeError> {
@@ -74,20 +74,20 @@ fn find_library(name: &str, base_dir: &Path) -> Result<CompiledModule, RuntimeEr
     // 3. .raya/packages/{name}/ — look for entry point
     let local_raya_pkg_dir = base_dir.join(".raya").join("packages").join(name);
     if local_raya_pkg_dir.exists() {
-        return load_package_dir_with_mode(&local_raya_pkg_dir, name, None);
+        return load_package_dir_with_profile(&local_raya_pkg_dir, name, None);
     }
 
     // 4. raya_packages/{name}/ — legacy fallback
     let pkg_dir = base_dir.join("raya_packages").join(name);
     if pkg_dir.exists() {
-        return load_package_dir_with_mode(&pkg_dir, name, None);
+        return load_package_dir_with_profile(&pkg_dir, name, None);
     }
 
     // 5. ~/.raya/packages/{name}/ — global
     if let Some(home) = dirs::home_dir() {
         let global_pkg = home.join(".raya").join("packages").join(name);
         if global_pkg.exists() {
-            return load_package_dir_with_mode(&global_pkg, name, None);
+            return load_package_dir_with_profile(&global_pkg, name, None);
         }
     }
 
@@ -108,7 +108,7 @@ fn find_library(name: &str, base_dir: &Path) -> Result<CompiledModule, RuntimeEr
 ///
 /// Public alias for use by the dependency resolver.
 pub fn load_package_dir_pub(dir: &Path, name: &str) -> Result<CompiledModule, RuntimeError> {
-    load_package_dir_with_mode(dir, name, None)
+    load_package_dir_with_profile(dir, name, None)
 }
 
 /// Load a package using an explicit dependency type mode when available.
@@ -117,14 +117,23 @@ pub fn load_package_dir_with_mode_pub(
     name: &str,
     forced_mode: Option<TypeMode>,
 ) -> Result<CompiledModule, RuntimeError> {
-    load_package_dir_with_mode(dir, name, forced_mode)
+    load_package_dir_with_profile(dir, name, forced_mode.map(TypeMode::semantic_profile))
+}
+
+/// Load a package using an explicit semantic profile when available.
+pub fn load_package_dir_with_profile_pub(
+    dir: &Path,
+    name: &str,
+    forced_profile: Option<SemanticProfile>,
+) -> Result<CompiledModule, RuntimeError> {
+    load_package_dir_with_profile(dir, name, forced_profile)
 }
 
 /// Load an entry point file, dispatching by extension.
 ///
 /// Public alias for use by the dependency resolver.
 pub fn load_entry_point_pub(path: &Path) -> Result<CompiledModule, RuntimeError> {
-    load_entry_point_with_mode(path, None)
+    load_entry_point_with_profile(path, None)
 }
 
 /// Load an entry point with an explicit type mode override.
@@ -132,14 +141,22 @@ pub fn load_entry_point_with_mode_pub(
     path: &Path,
     forced_mode: Option<TypeMode>,
 ) -> Result<CompiledModule, RuntimeError> {
-    load_entry_point_with_mode(path, forced_mode)
+    load_entry_point_with_profile(path, forced_mode.map(TypeMode::semantic_profile))
+}
+
+/// Load an entry point with an explicit semantic profile override.
+pub fn load_entry_point_with_profile_pub(
+    path: &Path,
+    forced_profile: Option<SemanticProfile>,
+) -> Result<CompiledModule, RuntimeError> {
+    load_entry_point_with_profile(path, forced_profile)
 }
 
 /// Load a package from its directory, finding the entry point.
-fn load_package_dir_with_mode(
+fn load_package_dir_with_profile(
     dir: &Path,
     name: &str,
-    forced_mode: Option<TypeMode>,
+    forced_profile: Option<SemanticProfile>,
 ) -> Result<CompiledModule, RuntimeError> {
     // Try package.json → raya.entry/main first
     let package_json_path = dir.join("package.json");
@@ -154,7 +171,7 @@ fn load_package_dir_with_mode(
                 if let Some(main) = entry {
                     let entry = dir.join(main);
                     if entry.exists() {
-                        return load_entry_point_with_mode(&entry, forced_mode);
+                        return load_entry_point_with_profile(&entry, forced_profile);
                     }
                 }
             }
@@ -168,7 +185,7 @@ fn load_package_dir_with_mode(
             if let Some(main) = &manifest.package.main {
                 let entry = dir.join(main);
                 if entry.exists() {
-                    return load_entry_point_with_mode(&entry, forced_mode);
+                    return load_entry_point_with_profile(&entry, forced_profile);
                 }
             }
         }
@@ -186,7 +203,7 @@ fn load_package_dir_with_mode(
 
     for candidate in &candidates {
         if candidate.exists() {
-            return load_entry_point_with_mode(candidate, forced_mode);
+            return load_entry_point_with_profile(candidate, forced_profile);
         }
     }
 
@@ -206,25 +223,26 @@ fn builtin_mode_for_type_mode(type_mode: TypeMode) -> BuiltinMode {
     }
 }
 
-fn load_entry_point_with_mode(
+fn builtin_mode_for_profile(profile: SemanticProfile) -> BuiltinMode {
+    match profile.source_kind {
+        SourceKind::Raya => BuiltinMode::RayaStrict,
+        SourceKind::Ts | SourceKind::Js => BuiltinMode::NodeCompat,
+    }
+}
+
+fn load_entry_point_with_profile(
     path: &Path,
-    forced_mode: Option<TypeMode>,
+    forced_profile: Option<SemanticProfile>,
 ) -> Result<CompiledModule, RuntimeError> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("ryb") => load_bytecode_file(path),
         Some("raya") => {
             let source = std::fs::read_to_string(path)?;
             let (inferred_profile, ts_options) = infer_semantic_profile_for_path(path)?;
-            let profile = forced_mode
-                .map(TypeMode::semantic_profile)
-                .unwrap_or(inferred_profile);
+            let profile = forced_profile.unwrap_or(inferred_profile);
             let (module, interner) = compile::compile_source_with_profile_and_ts_options(
                 &source,
-                builtin_mode_for_type_mode(match profile.source_kind {
-                    raya_engine::semantics::SourceKind::Raya => TypeMode::Raya,
-                    raya_engine::semantics::SourceKind::Ts => TypeMode::Ts,
-                    raya_engine::semantics::SourceKind::Js => TypeMode::Js,
-                }),
+                builtin_mode_for_profile(profile),
                 profile,
                 ts_options.as_ref(),
             )?;

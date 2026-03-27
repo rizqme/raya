@@ -265,6 +265,22 @@ impl<'a> Compiler<'a> {
         self
     }
 
+    fn build_lowerer(&self, emit_sourcemap: bool) -> lower::Lowerer<'_> {
+        lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
+            .with_type_annotation_types(self.type_annotation_types.clone())
+            .with_sourcemap(emit_sourcemap)
+            .with_semantic_profile(self.semantic_profile)
+            .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
+            .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
+            .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
+            .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
+            .with_js_this_binding_compat(self.js_this_binding_compat)
+            .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
+            .with_track_top_level_completion(self.track_top_level_completion)
+            .with_emit_script_global_bindings(self.emit_script_global_bindings)
+            .with_script_global_bindings_configurable(self.script_global_bindings_configurable)
+    }
+
     /// Compile a module into bytecode
     pub fn compile(&mut self, module: &ast::Module) -> CompileResult<Module> {
         let mut codegen = CodeGenerator::new(&self.type_ctx, self.interner);
@@ -273,19 +289,7 @@ impl<'a> Compiler<'a> {
 
     /// Compile a module to IR (for debugging/inspection)
     pub fn compile_to_ir(&self, module: &ast::Module) -> ir::IrModule {
-        let mut lowerer =
-            lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
-                .with_type_annotation_types(self.type_annotation_types.clone())
-                .with_sourcemap(self.emit_sourcemap)
-                .with_js_this_binding_compat(self.js_this_binding_compat)
-                .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
-                .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
-                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
-                .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
-                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
-                .with_track_top_level_completion(self.track_top_level_completion)
-                .with_emit_script_global_bindings(self.emit_script_global_bindings)
-                .with_script_global_bindings_configurable(self.script_global_bindings_configurable);
+        let mut lowerer = self.build_lowerer(self.emit_sourcemap);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -322,19 +326,7 @@ impl<'a> Compiler<'a> {
         let need_sourcemap = self.emit_sourcemap || dump_ir || dump_bc;
 
         // Step 1: Lower AST to IR
-        let mut lowerer =
-            lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
-                .with_type_annotation_types(self.type_annotation_types.clone())
-                .with_sourcemap(need_sourcemap)
-                .with_js_this_binding_compat(self.js_this_binding_compat)
-                .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
-                .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
-                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
-                .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
-                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
-                .with_track_top_level_completion(self.track_top_level_completion)
-                .with_emit_script_global_bindings(self.emit_script_global_bindings)
-                .with_script_global_bindings_configurable(self.script_global_bindings_configurable);
+        let mut lowerer = self.build_lowerer(need_sourcemap);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -501,19 +493,7 @@ impl<'a> Compiler<'a> {
         let mut debug = String::new();
 
         // Step 1: Lower AST to IR
-        let mut lowerer =
-            lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
-                .with_type_annotation_types(self.type_annotation_types.clone())
-                .with_sourcemap(self.emit_sourcemap)
-                .with_js_this_binding_compat(self.js_this_binding_compat)
-                .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
-                .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
-                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
-                .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
-                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
-                .with_track_top_level_completion(self.track_top_level_completion)
-                .with_emit_script_global_bindings(self.emit_script_global_bindings)
-                .with_script_global_bindings_configurable(self.script_global_bindings_configurable);
+        let mut lowerer = self.build_lowerer(self.emit_sourcemap);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }

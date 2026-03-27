@@ -645,6 +645,59 @@ mod tests {
     }
 
     #[test]
+    fn compile_program_file_uses_per_module_profiles_in_mixed_js_raya_graph() {
+        let temp = TempDir::new().expect("temp dir");
+        let main_path = temp.path().join("main.js");
+        let helper_path = temp.path().join("helper.raya");
+
+        fs::write(
+            &helper_path,
+            r#"
+            export function inc(x: number): number {
+                return x + 1;
+            }
+            "#,
+        )
+        .expect("write helper");
+        fs::write(
+            &main_path,
+            r#"
+            import { inc } from "./helper";
+            let x = 41;
+            return inc(x);
+            "#,
+        )
+        .expect("write main");
+
+        let compiler = ProgramCompiler {
+            builtin_mode: BuiltinMode::NodeCompat,
+            semantic_profile: SemanticProfile::js(),
+            ts_options: None,
+            compile_options: None,
+        };
+
+        let program = compiler
+            .compile_program_file(&main_path)
+            .expect("compile mixed graph");
+
+        assert_eq!(program.module_order.len(), 2);
+        assert_eq!(
+            program.entry.module.metadata.name,
+            main_path
+                .canonicalize()
+                .expect("canonical entry")
+                .to_string_lossy()
+        );
+        assert_eq!(
+            program.dependencies[0].module.metadata.name,
+            helper_path
+                .canonicalize()
+                .expect("canonical helper")
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
     fn compile_program_file_collects_late_link_requirements_for_declaration_imports() {
         let temp = TempDir::new().expect("temp dir");
         let main_path = temp.path().join("main.raya");

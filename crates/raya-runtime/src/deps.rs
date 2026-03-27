@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::error::RuntimeError;
 use crate::loader;
 use crate::CompiledModule;
-use crate::TypeMode;
+use raya_engine::semantics::SemanticProfile;
 
 /// Load all dependencies declared in a package manifest.
 ///
@@ -21,10 +21,10 @@ pub fn load_dependencies(
     manifest_dir: &Path,
 ) -> Result<Vec<CompiledModule>, RuntimeError> {
     let mut deps = Vec::new();
-    let lock_modes = load_lockfile_type_modes(manifest_dir);
+    let lock_profiles = load_lockfile_semantic_profiles(manifest_dir);
 
     for (name, dep) in &manifest.dependencies {
-        let module = load_dependency(name, dep, manifest_dir, lock_modes.get(name).copied())?;
+        let module = load_dependency(name, dep, manifest_dir, lock_profiles.get(name).copied())?;
         deps.push(module);
     }
 
@@ -52,29 +52,29 @@ pub fn load_dependencies_from_package_json(
     })?;
 
     let mut deps = Vec::new();
-    let lock_modes = load_lockfile_type_modes(manifest_dir);
+    let lock_profiles = load_lockfile_semantic_profiles(manifest_dir);
     if let Some(obj) = value.get("dependencies").and_then(|v| v.as_object()) {
         for name in obj.keys() {
             deps.push(load_registry_dep(
                 name,
                 manifest_dir,
-                lock_modes.get(name).copied(),
+                lock_profiles.get(name).copied(),
             )?);
         }
     }
     Ok(deps)
 }
 
-fn parse_type_mode(raw: &str) -> Option<TypeMode> {
+fn parse_semantic_profile(raw: &str) -> Option<SemanticProfile> {
     match raw {
-        "raya" => Some(TypeMode::Raya),
-        "ts" => Some(TypeMode::Ts),
-        "js" => Some(TypeMode::Js),
+        "raya" => Some(SemanticProfile::raya()),
+        "ts" => Some(SemanticProfile::ts_strict()),
+        "js" => Some(SemanticProfile::js()),
         _ => None,
     }
 }
 
-fn load_lockfile_type_modes(manifest_dir: &Path) -> HashMap<String, TypeMode> {
+fn load_lockfile_semantic_profiles(manifest_dir: &Path) -> HashMap<String, SemanticProfile> {
     let mut out = HashMap::new();
     let lock_path = manifest_dir.join("raya.lock");
     if !lock_path.exists() {
@@ -85,8 +85,8 @@ fn load_lockfile_type_modes(manifest_dir: &Path) -> HashMap<String, TypeMode> {
         Err(_) => return out,
     };
     for pkg in lock.packages {
-        if let Some(mode) = pkg.type_mode.as_deref().and_then(parse_type_mode) {
-            out.insert(pkg.name, mode);
+        if let Some(profile) = pkg.type_mode.as_deref().and_then(parse_semantic_profile) {
+            out.insert(pkg.name, profile);
         }
     }
     out
@@ -96,17 +96,17 @@ fn load_dependency(
     name: &str,
     dep: &Dependency,
     manifest_dir: &Path,
-    forced_mode: Option<TypeMode>,
+    forced_profile: Option<SemanticProfile>,
 ) -> Result<CompiledModule, RuntimeError> {
     match dep {
-        Dependency::Simple(_version) => load_registry_dep(name, manifest_dir, forced_mode),
+        Dependency::Simple(_version) => load_registry_dep(name, manifest_dir, forced_profile),
         Dependency::Detailed {
             path: Some(path), ..
-        } => load_path_dep(name, path, manifest_dir, forced_mode),
-        Dependency::Detailed { git: Some(url), .. } => load_url_dep(name, url, forced_mode),
+        } => load_path_dep(name, path, manifest_dir, forced_profile),
+        Dependency::Detailed { git: Some(url), .. } => load_url_dep(name, url, forced_profile),
         Dependency::Detailed {
             version: Some(_), ..
-        } => load_registry_dep(name, manifest_dir, forced_mode),
+        } => load_registry_dep(name, manifest_dir, forced_profile),
         _ => Err(RuntimeError::Dependency(format!(
             "Dependency '{}' has no path, git, or version specified.",
             name
@@ -119,7 +119,7 @@ fn load_path_dep(
     name: &str,
     path: &str,
     manifest_dir: &Path,
-    forced_mode: Option<TypeMode>,
+    forced_profile: Option<SemanticProfile>,
 ) -> Result<CompiledModule, RuntimeError> {
     let dep_dir = manifest_dir.join(path);
     let dep_dir = dep_dir.canonicalize().map_err(|_| {
@@ -130,20 +130,20 @@ fn load_path_dep(
         ))
     })?;
 
-    loader::load_package_dir_with_mode_pub(&dep_dir, name, forced_mode)
+    loader::load_package_dir_with_profile_pub(&dep_dir, name, forced_profile)
 }
 
 /// Load a URL/git dependency from cache.
 fn load_url_dep(
     name: &str,
     url: &str,
-    forced_mode: Option<TypeMode>,
+    forced_profile: Option<SemanticProfile>,
 ) -> Result<CompiledModule, RuntimeError> {
     // Check raya_pm URL cache
     let cache = raya_pm::UrlCache::default_cache();
     if let Some(cached) = cache.is_cached(url, None) {
         if let Some(entry) = cache.find_entry_point(&cached) {
-            return loader::load_entry_point_with_mode_pub(&entry, forced_mode);
+            return loader::load_entry_point_with_profile_pub(&entry, forced_profile);
         }
     }
 
@@ -173,25 +173,25 @@ fn load_url_dep(
 fn load_registry_dep(
     name: &str,
     manifest_dir: &Path,
-    forced_mode: Option<TypeMode>,
+    forced_profile: Option<SemanticProfile>,
 ) -> Result<CompiledModule, RuntimeError> {
     // 1. Project-local: .raya/packages/{name}/
     let local = manifest_dir.join(".raya").join("packages").join(name);
     if local.exists() {
-        return loader::load_package_dir_with_mode_pub(&local, name, forced_mode);
+        return loader::load_package_dir_with_profile_pub(&local, name, forced_profile);
     }
 
     // 2. Legacy project-local: raya_packages/{name}/
     let local = manifest_dir.join("raya_packages").join(name);
     if local.exists() {
-        return loader::load_package_dir_with_mode_pub(&local, name, forced_mode);
+        return loader::load_package_dir_with_profile_pub(&local, name, forced_profile);
     }
 
     // 3. Global: ~/.raya/packages/{name}/
     if let Some(home) = dirs::home_dir() {
         let global = home.join(".raya").join("packages").join(name);
         if global.exists() {
-            return loader::load_package_dir_with_mode_pub(&global, name, forced_mode);
+            return loader::load_package_dir_with_profile_pub(&global, name, forced_profile);
         }
     }
 
@@ -215,5 +215,40 @@ pub fn find_manifest_dir(start: &Path) -> Option<PathBuf> {
         if !dir.pop() {
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn parses_lockfile_type_mode_strings_into_semantic_profiles() {
+        assert_eq!(
+            parse_semantic_profile("raya"),
+            Some(SemanticProfile::raya())
+        );
+        assert_eq!(
+            parse_semantic_profile("ts"),
+            Some(SemanticProfile::ts_strict())
+        );
+        assert_eq!(parse_semantic_profile("js"), Some(SemanticProfile::js()));
+        assert_eq!(parse_semantic_profile("unknown"), None);
+    }
+
+    #[test]
+    fn finds_manifest_directory_from_nested_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let project = temp.path().join("project");
+        let src = project.join("src");
+        std::fs::create_dir_all(&src).expect("create src");
+        std::fs::write(project.join("raya.toml"), "[package]\nname = \"demo\"\n")
+            .expect("write manifest");
+        let nested_file = src.join("main.raya");
+        std::fs::write(&nested_file, "return 1;").expect("write file");
+
+        let found = find_manifest_dir(&nested_file).expect("manifest dir");
+        assert_eq!(found, project);
     }
 }

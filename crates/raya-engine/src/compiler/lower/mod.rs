@@ -18,6 +18,7 @@ use crate::parser::ast::{
 };
 use crate::parser::token::Span;
 use crate::parser::{Interner, Symbol, Type, TypeContext, TypeId};
+use crate::semantics::SemanticProfile;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 fn remap_function_id(func_id: &mut FunctionId, remap: &FxHashMap<u32, u32>) {
@@ -1607,6 +1608,17 @@ impl<'a> Lowerer<'a> {
     /// Provide ambient builtin global names available via runtime native lookup.
     pub fn with_ambient_builtin_globals(mut self, names: FxHashSet<String>) -> Self {
         self.ambient_builtin_globals = names;
+        self
+    }
+
+    /// Configure lowering behavior from a shared semantic profile.
+    pub fn with_semantic_profile(mut self, profile: SemanticProfile) -> Self {
+        let lowering = profile.lowering_semantics();
+        self.js_this_binding_compat = lowering.js_this_binding_compat;
+        self.allow_unresolved_runtime_fallback = lowering.allow_unresolved_runtime_fallback;
+        self.track_top_level_completion = lowering.track_top_level_completion;
+        self.emit_script_global_bindings = lowering.emit_script_global_bindings;
+        self.script_global_bindings_configurable = lowering.script_global_bindings_configurable;
         self
     }
 

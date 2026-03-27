@@ -18,6 +18,7 @@ use crate::parser::checker::{
     ScopeId, TypeChecker, TypeSystemMode,
 };
 use crate::parser::{Parser, TypeContext};
+use crate::semantics::SemanticProfile;
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{ExecutionResult, OpcodeResult, ReturnAction};
@@ -9105,11 +9106,10 @@ impl<'a> Interpreter<'a> {
         );
 
         let mut compiler = Compiler::new(type_ctx, &interner)
+            .with_semantic_profile(SemanticProfile::js())
             .with_expr_types(check_result.expr_types)
             .with_type_annotation_types(check_result.type_annotation_types)
             .with_module_identity(module_identity)
-            .with_js_this_binding_compat(true)
-            .with_allow_unresolved_runtime_fallback(true)
             .with_ambient_builtin_globals(ambient_builtin_globals)
             .with_track_top_level_completion(options.track_top_level_completion)
             .with_emit_script_global_bindings(options.emit_script_global_bindings)
