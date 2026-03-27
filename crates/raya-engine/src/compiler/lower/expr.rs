@@ -753,6 +753,179 @@ impl<'a> Lowerer<'a> {
         Some(dest)
     }
 
+    fn resolve_registry_member_dispatch_type(
+        &mut self,
+        object_expr: &Expression,
+        object: &Register,
+        member_field_metadata: Option<(TypeId, Option<NominalTypeId>)>,
+        method_name: &str,
+        args: &[Register],
+    ) -> (u32, bool) {
+        let mut obj_type_id = {
+            let reg_ty = object.ty.as_u32();
+            let checker_ty = self.get_expr_type(object_expr).as_u32();
+            let field_ty = member_field_metadata
+                .map(|(field_ty, _)| field_ty.as_u32())
+                .unwrap_or(UNRESOLVED_TYPE_ID);
+            let reg_dispatch = self.normalize_type_for_dispatch(reg_ty);
+            let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
+            let field_dispatch = self.normalize_type_for_dispatch(field_ty);
+
+            let usable = |id: u32| id != UNRESOLVED_TYPE_ID && id != 6;
+            let has_dispatch = |id: u32| {
+                self.type_registry.lookup_method(id, method_name).is_some()
+                    || (args.is_empty()
+                        && self
+                            .type_registry
+                            .lookup_property(id, method_name)
+                            .is_some())
+            };
+
+            if usable(reg_dispatch) && has_dispatch(reg_dispatch) {
+                reg_dispatch
+            } else if usable(checker_dispatch) && has_dispatch(checker_dispatch) {
+                checker_dispatch
+            } else if usable(field_dispatch) && has_dispatch(field_dispatch) {
+                field_dispatch
+            } else if usable(reg_dispatch) {
+                reg_dispatch
+            } else if usable(checker_dispatch) {
+                checker_dispatch
+            } else if usable(field_dispatch) {
+                field_dispatch
+            } else {
+                UNRESOLVED_TYPE_ID
+            }
+        };
+        let late_bound_ctor_dispatch_id = if let Expression::Identifier(obj_ident) = object_expr {
+            self.late_bound_object_ctor_map
+                .get(&obj_ident.name)
+                .copied()
+                .or_else(|| self.constructor_value_ctor_map.get(&obj_ident.name).copied())
+                .and_then(|ctor_symbol| {
+                    let ctor_name = self.interner.resolve(ctor_symbol);
+                    self.type_registry
+                        .has_builtin_dispatch_type(ctor_name)
+                        .then_some(ctor_name)
+                })
+                .and_then(|ctor_name| self.type_ctx.lookup_named_type(ctor_name))
+                .map(|ctor_ty| self.normalize_type_for_dispatch(ctor_ty.as_u32()))
+        } else {
+            None
+        };
+        let late_bound_ctor_has_dispatch = late_bound_ctor_dispatch_id.is_some_and(|type_id| {
+            self.type_registry.lookup_method(type_id, method_name).is_some()
+                || (args.is_empty()
+                    && self
+                        .type_registry
+                        .lookup_property(type_id, method_name)
+                        .is_some())
+        });
+        if late_bound_ctor_has_dispatch {
+            if let Some(type_id) = late_bound_ctor_dispatch_id {
+                obj_type_id = type_id;
+            }
+        } else if obj_type_id == UNRESOLVED_TYPE_ID {
+            if let Some(type_id) = late_bound_ctor_dispatch_id {
+                obj_type_id = type_id;
+            }
+        }
+
+        (obj_type_id, late_bound_ctor_has_dispatch)
+    }
+
+    fn try_lower_registry_member_dispatch(
+        &mut self,
+        mut dest: Register,
+        call: &ast::CallExpression,
+        object: Register,
+        obj_type_id: u32,
+        method_name: &str,
+        args: &[Register],
+    ) -> Option<Register> {
+        if args.is_empty() && obj_type_id != UNRESOLVED_TYPE_ID {
+            if let Some(crate::compiler::type_registry::DispatchAction::Opcode(kind)) =
+                self.type_registry.lookup_property(obj_type_id, method_name)
+            {
+                let len_dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
+                match kind {
+                    crate::compiler::type_registry::OpcodeKind::StringLen => {
+                        self.emit(IrInstr::StringLen {
+                            dest: len_dest.clone(),
+                            string: object,
+                        });
+                    }
+                    crate::compiler::type_registry::OpcodeKind::ArrayLen => {
+                        self.emit(IrInstr::ArrayLen {
+                            dest: len_dest.clone(),
+                            array: object,
+                        });
+                    }
+                }
+                return Some(len_dest);
+            }
+        }
+
+        let prefer_js_surface_method_dispatch =
+            self.js_this_binding_compat && matches!(obj_type_id, ARRAY_TYPE_ID | TASK_TYPE_ID);
+        if obj_type_id == UNRESOLVED_TYPE_ID || prefer_js_surface_method_dispatch {
+            return None;
+        }
+
+        let action = self.type_registry.lookup_method(obj_type_id, method_name)?;
+        match action {
+            crate::compiler::type_registry::DispatchAction::NativeCall(mut id) => {
+                let first_arg_is_regexp = if !args.is_empty() {
+                    let reg_ty = self.normalize_type_for_dispatch(args[0].ty.as_u32());
+                    let checker_ty = call
+                        .argument_expression(0)
+                        .map(|arg| self.normalize_type_for_dispatch(self.get_expr_type(arg).as_u32()))
+                        .unwrap_or(reg_ty);
+                    reg_ty == REGEXP_TYPE_ID || checker_ty == REGEXP_TYPE_ID
+                } else {
+                    false
+                };
+                if obj_type_id == STRING_TYPE_ID && first_arg_is_regexp {
+                    use crate::vm::builtin::string as bs;
+                    match method_name {
+                        "replace" => id = bs::REPLACE_REGEXP,
+                        "split" => id = bs::SPLIT_REGEXP,
+                        _ => {}
+                    }
+                }
+
+                let mut native_args = Vec::with_capacity(args.len() + 1);
+                native_args.push(object);
+                native_args.extend(args.iter().cloned());
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: id,
+                    args: native_args,
+                });
+                if let Some(ret_type) = self.type_registry.lookup_return_type(id) {
+                    dest.ty = TypeId::new(ret_type);
+                }
+                Some(dest)
+            }
+            crate::compiler::type_registry::DispatchAction::ClassMethod(
+                ref cm_type,
+                ref cm_method,
+            ) => {
+                let func_id = self.get_or_build_class_method(cm_type, cm_method);
+                let mut call_args = vec![object];
+                call_args.extend(args.iter().cloned());
+                self.emit(IrInstr::Call {
+                    dest: Some(dest.clone()),
+                    func: func_id,
+                    args: call_args,
+                });
+                Some(dest)
+            }
+            crate::compiler::type_registry::DispatchAction::DeclaredField(_) => None,
+            crate::compiler::type_registry::DispatchAction::Opcode(_) => None,
+        }
+    }
+
     fn resolve_identifier_closure_source(
         &mut self,
         ident: &ast::Identifier,
@@ -5048,85 +5221,14 @@ impl<'a> Lowerer<'a> {
             // Fall back to registry-based dispatch
             let object = self.lower_expr(&member.object);
 
-            // Resolve dispatch type: prefer register type (canonical IDs from lowerer),
-            // normalize checker type as fallback (may have dynamic union/generic IDs).
-            // Unknown (6) is treated as useless for dispatch.
-            let mut obj_type_id = {
-                let reg_ty = object.ty.as_u32();
-                let checker_ty = self.get_expr_type(&member.object).as_u32();
-                let field_ty = member_field_metadata
-                    .map(|(field_ty, _)| field_ty.as_u32())
-                    .unwrap_or(UNRESOLVED_TYPE_ID);
-                let reg_dispatch = self.normalize_type_for_dispatch(reg_ty);
-                let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
-                let field_dispatch = self.normalize_type_for_dispatch(field_ty);
-
-                let usable = |id: u32| id != UNRESOLVED_TYPE_ID && id != 6;
-                let has_dispatch = |id: u32| {
-                    self.type_registry.lookup_method(id, method_name).is_some()
-                        || (args.is_empty()
-                            && self
-                                .type_registry
-                                .lookup_property(id, method_name)
-                                .is_some())
-                };
-
-                if usable(reg_dispatch) && has_dispatch(reg_dispatch) {
-                    reg_dispatch
-                } else if usable(checker_dispatch) && has_dispatch(checker_dispatch) {
-                    checker_dispatch
-                } else if usable(field_dispatch) && has_dispatch(field_dispatch) {
-                    field_dispatch
-                } else if usable(reg_dispatch) {
-                    reg_dispatch
-                } else if usable(checker_dispatch) {
-                    checker_dispatch
-                } else if usable(field_dispatch) {
-                    field_dispatch
-                } else {
-                    UNRESOLVED_TYPE_ID
-                }
-            };
-            let late_bound_ctor_dispatch_id =
-                if let Expression::Identifier(obj_ident) = &*member.object {
-                    self.late_bound_object_ctor_map
-                        .get(&obj_ident.name)
-                        .copied()
-                        .or_else(|| {
-                            self.constructor_value_ctor_map
-                                .get(&obj_ident.name)
-                                .copied()
-                        })
-                        .and_then(|ctor_symbol| {
-                            let ctor_name = self.interner.resolve(ctor_symbol);
-                            self.type_registry
-                                .has_builtin_dispatch_type(ctor_name)
-                                .then_some(ctor_name)
-                        })
-                        .and_then(|ctor_name| self.type_ctx.lookup_named_type(ctor_name))
-                        .map(|ctor_ty| self.normalize_type_for_dispatch(ctor_ty.as_u32()))
-                } else {
-                    None
-                };
-            let late_bound_ctor_has_dispatch = late_bound_ctor_dispatch_id.is_some_and(|type_id| {
-                self.type_registry
-                    .lookup_method(type_id, method_name)
-                    .is_some()
-                    || (args.is_empty()
-                        && self
-                            .type_registry
-                            .lookup_property(type_id, method_name)
-                            .is_some())
-            });
-            if late_bound_ctor_has_dispatch {
-                if let Some(type_id) = late_bound_ctor_dispatch_id {
-                    obj_type_id = type_id;
-                }
-            } else if obj_type_id == UNRESOLVED_TYPE_ID {
-                if let Some(type_id) = late_bound_ctor_dispatch_id {
-                    obj_type_id = type_id;
-                }
-            }
+            let (obj_type_id, late_bound_ctor_has_dispatch) =
+                self.resolve_registry_member_dispatch_type(
+                    &member.object,
+                    &object,
+                    member_field_metadata,
+                    method_name,
+                    &args,
+                );
             if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                 if !matches!(&*member.object, Expression::Identifier(_)) {
                     eprintln!(
@@ -5216,114 +5318,15 @@ impl<'a> Lowerer<'a> {
                 return result;
             }
 
-            // For no-arg calls like length(), check registry properties (opcode dispatch)
-            if args.is_empty() && obj_type_id != UNRESOLVED_TYPE_ID {
-                if let Some(crate::compiler::type_registry::DispatchAction::Opcode(kind)) =
-                    self.type_registry.lookup_property(obj_type_id, method_name)
-                {
-                    let len_dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
-                    match kind {
-                        crate::compiler::type_registry::OpcodeKind::StringLen => {
-                            self.emit(IrInstr::StringLen {
-                                dest: len_dest.clone(),
-                                string: object,
-                            });
-                        }
-                        crate::compiler::type_registry::OpcodeKind::ArrayLen => {
-                            self.emit(IrInstr::ArrayLen {
-                                dest: len_dest.clone(),
-                                array: object,
-                            });
-                        }
-                    }
-                    return len_dest;
-                }
-            }
-
-            // Look up method in type registry for native dispatch
-            let prefer_js_surface_method_dispatch = self.js_this_binding_compat
-                && matches!(obj_type_id, ARRAY_TYPE_ID | TASK_TYPE_ID);
-
-            let method_id = if obj_type_id != UNRESOLVED_TYPE_ID
-                && !prefer_js_surface_method_dispatch
-            {
-                if let Some(action) = self.type_registry.lookup_method(obj_type_id, method_name) {
-                    match action {
-                        crate::compiler::type_registry::DispatchAction::NativeCall(mut id) => {
-                            // Special handling: string methods with RegExp argument
-                            let first_arg_is_regexp = if !args.is_empty() {
-                                let reg_ty = self.normalize_type_for_dispatch(args[0].ty.as_u32());
-                                let checker_ty = call
-                                    .argument_expression(0)
-                                    .map(|arg| {
-                                        self.normalize_type_for_dispatch(
-                                            self.get_expr_type(arg).as_u32(),
-                                        )
-                                    })
-                                    .unwrap_or(reg_ty);
-                                reg_ty == REGEXP_TYPE_ID || checker_ty == REGEXP_TYPE_ID
-                            } else {
-                                false
-                            };
-                            if obj_type_id == STRING_TYPE_ID && first_arg_is_regexp {
-                                use crate::vm::builtin::string as bs;
-                                match method_name {
-                                    "replace" => id = bs::REPLACE_REGEXP,
-                                    "split" => id = bs::SPLIT_REGEXP,
-                                    _ => {}
-                                }
-                            }
-                            Some(id)
-                        }
-                        crate::compiler::type_registry::DispatchAction::ClassMethod(
-                            ref cm_type,
-                            ref cm_method,
-                        ) => {
-                            // Build or retrieve the pre-compiled class method function
-                            let func_id = self.get_or_build_class_method(cm_type, cm_method);
-                            // Emit Call with object as first arg (function takes `this` as param[0])
-                            let mut call_args = vec![object];
-                            call_args.extend(args);
-                            self.emit(IrInstr::Call {
-                                dest: Some(dest.clone()),
-                                func: func_id,
-                                args: call_args,
-                            });
-                            return dest;
-                        }
-                        crate::compiler::type_registry::DispatchAction::DeclaredField(_) => None,
-                        crate::compiler::type_registry::DispatchAction::Opcode(_) => None,
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            if let Some(method_id) = method_id {
-                // Registry DispatchAction::NativeCall entries are VM native IDs,
-                // not class vtable slots. Always lower these as NativeCall with
-                // receiver as arg0 to support primitive receivers (number/string)
-                // and handle-backed builtins (Map/Set/Channel/Buffer/Date/Mutex).
-                // Optional member calls on builtin native methods are currently
-                // lowered as eager native calls (same as non-optional).
-                let mut native_args = Vec::with_capacity(args.len() + 1);
-                native_args.push(object);
-                native_args.extend(args);
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(dest.clone()),
-                    native_id: method_id,
-                    args: native_args,
-                });
-
-                // Propagate return type for builtin methods so subsequent operations
-                // use the correct typed opcodes (e.g., Iadd vs Fadd, Seq vs Feq).
-                // Return types are extracted from .raya builtin file method signatures.
-                if let Some(ret_type) = self.type_registry.lookup_return_type(method_id) {
-                    dest.ty = TypeId::new(ret_type);
-                }
-                return dest;
+            if let Some(result) = self.try_lower_registry_member_dispatch(
+                dest.clone(),
+                call,
+                object.clone(),
+                obj_type_id,
+                method_name,
+                &args,
+            ) {
+                return result;
             }
 
             // Last structural fallback: if the receiver is a known object-literal
