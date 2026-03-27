@@ -770,7 +770,7 @@ impl<'a> Interpreter<'a> {
         &mut self,
         caller_task: &Arc<Task>,
         value: Result<Value, Value>,
-    ) -> Value {
+    ) -> PromiseHandle {
         let settled_task = Arc::new(Task::with_args(
             0,
             caller_task.current_module(),
@@ -809,10 +809,10 @@ impl<'a> Interpreter<'a> {
         }
         let task_id = settled_task.id();
         self.tasks.write().insert(task_id, settled_task);
-        PromiseHandle::new(task_id).into_value()
+        PromiseHandle::new(task_id)
     }
 
-    fn pending_task_handle(&mut self, caller_task: &Arc<Task>) -> Value {
+    fn pending_task_handle(&mut self, caller_task: &Arc<Task>) -> PromiseHandle {
         let pending_task = Arc::new(Task::with_args(
             0,
             caller_task.current_module(),
@@ -822,7 +822,7 @@ impl<'a> Interpreter<'a> {
         pending_task.replace_stack(self.stack_pool.acquire());
         let task_id = pending_task.id();
         self.tasks.write().insert(task_id, pending_task);
-        PromiseHandle::new(task_id).into_value()
+        PromiseHandle::new(task_id)
     }
 
     pub(in crate::vm::interpreter) fn promise_handle_from_value(
@@ -865,8 +865,8 @@ impl<'a> Interpreter<'a> {
             return task;
         }
         let settled = self.settled_task_handle(caller_task, Ok(value));
-        self.task_from_handle_value(settled)
-            .expect("settled_task_handle must create a valid task")
+        self.task_from_promise_handle(settled)
+            .expect("settled_task_handle must create a valid PromiseHandle")
     }
 
     fn queue_or_attach_promise_reaction(
@@ -891,10 +891,7 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
     ) -> Value {
         let target_handle = self.pending_task_handle(caller_task);
-        let target_task_id = self
-            .promise_handle_from_value(target_handle)
-            .expect("pending_task_handle must produce a valid PromiseHandle")
-            .task_id();
+        let target_task_id = target_handle.task_id();
         let source_task = self.normalize_promise_source_task(source, caller_task);
         self.queue_or_attach_promise_reaction(
             &source_task,
@@ -905,7 +902,7 @@ impl<'a> Interpreter<'a> {
                 on_rejected,
             },
         );
-        target_handle
+        target_handle.into_value()
     }
 
     fn promise_finally_handle(
@@ -915,10 +912,7 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
     ) -> Value {
         let target_handle = self.pending_task_handle(caller_task);
-        let target_task_id = self
-            .promise_handle_from_value(target_handle)
-            .expect("pending_task_handle must produce a valid PromiseHandle")
-            .task_id();
+        let target_task_id = target_handle.task_id();
         let source_task = self.normalize_promise_source_task(source, caller_task);
         self.queue_or_attach_promise_reaction(
             &source_task,
@@ -929,7 +923,7 @@ impl<'a> Interpreter<'a> {
                 on_rejected: Value::undefined(),
             },
         );
-        target_handle
+        target_handle.into_value()
     }
 
     fn promise_all_state_value(&mut self, count: usize) -> Result<Value, VmError> {
@@ -1022,15 +1016,12 @@ impl<'a> Interpreter<'a> {
             let empty = unsafe {
                 Value::from_ptr(std::ptr::NonNull::new(empty_ptr.as_ptr()).expect("empty array"))
             };
-            return Ok(self.settled_task_handle(caller_task, Ok(empty)));
+            return Ok(self.settled_task_handle(caller_task, Ok(empty)).into_value());
         }
 
         let state = self.promise_all_state_value(array.len())?;
         let target_handle = self.pending_task_handle(caller_task);
-        let target_task_id = self
-            .promise_handle_from_value(target_handle)
-            .expect("pending_task_handle must produce a valid PromiseHandle")
-            .task_id();
+        let target_task_id = target_handle.task_id();
 
         for index in 0..array.len() {
             let source = array.get(index).unwrap_or(Value::undefined());
@@ -1049,7 +1040,7 @@ impl<'a> Interpreter<'a> {
             );
         }
 
-        Ok(target_handle)
+        Ok(target_handle.into_value())
     }
 
     fn promise_race_handle(
@@ -1064,17 +1055,17 @@ impl<'a> Interpreter<'a> {
         };
         let array = unsafe { &*array_ptr.as_ptr() };
         if array.is_empty() {
-            return Ok(self.settled_task_handle(
-                caller_task,
-                Err(self.alloc_string_value("Promise.race requires at least one promise")),
-            ));
+            return Ok(
+                self.settled_task_handle(
+                    caller_task,
+                    Err(self.alloc_string_value("Promise.race requires at least one promise")),
+                )
+                .into_value(),
+            );
         }
 
         let target_handle = self.pending_task_handle(caller_task);
-        let target_task_id = self
-            .promise_handle_from_value(target_handle)
-            .expect("pending_task_handle must produce a valid PromiseHandle")
-            .task_id();
+        let target_task_id = target_handle.task_id();
 
         for index in 0..array.len() {
             let source = array.get(index).unwrap_or(Value::undefined());
@@ -1090,7 +1081,7 @@ impl<'a> Interpreter<'a> {
             );
         }
 
-        Ok(target_handle)
+        Ok(target_handle.into_value())
     }
 
     pub(crate) fn run_promise_reaction(
@@ -1411,12 +1402,13 @@ impl<'a> Interpreter<'a> {
         }
 
         let promise_handle = self.pending_task_handle(caller_task);
+        let promise_value = promise_handle.into_value();
         let resolve = self.alloc_bound_native_value(
-            promise_handle,
+            promise_value,
             crate::compiler::native_id::TASK_RESOLVE_PENDING,
         );
         let reject = self.alloc_bound_native_value(
-            promise_handle,
+            promise_value,
             crate::compiler::native_id::TASK_REJECT_PENDING,
         );
 
@@ -1427,15 +1419,13 @@ impl<'a> Interpreter<'a> {
             caller_task,
             caller_module,
         ) {
-            if let Some(handle) = self.promise_handle_from_value(promise_handle) {
-                if let Some(pending_task) = self.task_from_promise_handle(handle) {
-                    self.ensure_task_exception_for_error(&pending_task, &error);
-                    pending_task.fail();
-                }
+            if let Some(pending_task) = self.task_from_promise_handle(promise_handle) {
+                self.ensure_task_exception_for_error(&pending_task, &error);
+                pending_task.fail();
             }
         }
 
-        Ok(promise_handle)
+        Ok(promise_value)
     }
 
     fn generator_return_signal_value(&self, value: Value) -> Option<Value> {
@@ -18281,7 +18271,7 @@ impl<'a> Interpreter<'a> {
                                 };
                                 let result = self.generator_result_object(value, true);
                                 let result = if generator.is_async {
-                                    self.settled_task_handle(task, Ok(result))
+                                    self.settled_task_handle(task, Ok(result)).into_value()
                                 } else {
                                     result
                                 };
@@ -18392,7 +18382,7 @@ impl<'a> Interpreter<'a> {
                                         let exception = generator_task
                                             .current_exception()
                                             .unwrap_or(Value::undefined());
-                                        self.settled_task_handle(task, Err(exception))
+                                        self.settled_task_handle(task, Err(exception)).into_value()
                                     } else {
                                         if !task.has_exception() {
                                             if let Some(exception) =
@@ -18407,7 +18397,7 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         let result = if is_async {
-                            self.settled_task_handle(task, Ok(result))
+                            self.settled_task_handle(task, Ok(result)).into_value()
                         } else {
                             result
                         };
@@ -18446,7 +18436,7 @@ impl<'a> Interpreter<'a> {
                         if already_closed_or_unstarted {
                             let result = self.generator_result_object(completion_override, true);
                             let result = if is_async {
-                                self.settled_task_handle(task, Ok(result))
+                                self.settled_task_handle(task, Ok(result)).into_value()
                             } else {
                                 result
                             };
@@ -18534,7 +18524,7 @@ impl<'a> Interpreter<'a> {
                                         let exception = generator_task
                                             .current_exception()
                                             .unwrap_or(Value::undefined());
-                                        self.settled_task_handle(task, Err(exception))
+                                        self.settled_task_handle(task, Err(exception)).into_value()
                                     } else {
                                         if !task.has_exception() {
                                             if let Some(exception) =
@@ -18549,7 +18539,7 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         let result = if is_async {
-                            self.settled_task_handle(task, Ok(result))
+                            self.settled_task_handle(task, Ok(result)).into_value()
                         } else {
                             result
                         };
@@ -18919,7 +18909,9 @@ impl<'a> Interpreter<'a> {
                     0x0506u16 => {
                         // TASK_REJECT_NOW: create an already-rejected task handle.
                         let reason = args.first().copied().unwrap_or(Value::undefined());
-                        if let Err(e) = stack.push(self.settled_task_handle(task, Err(reason))) {
+                        if let Err(e) =
+                            stack.push(self.settled_task_handle(task, Err(reason)).into_value())
+                        {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
@@ -18931,7 +18923,9 @@ impl<'a> Interpreter<'a> {
                         let adopted = self
                             .promise_handle_from_value(value)
                             .map(PromiseHandle::into_value)
-                            .unwrap_or_else(|| self.settled_task_handle(task, Ok(value)));
+                            .unwrap_or_else(|| {
+                                self.settled_task_handle(task, Ok(value)).into_value()
+                            });
                         if let Err(e) = stack.push(adopted) {
                             return OpcodeResult::Error(e);
                         }
