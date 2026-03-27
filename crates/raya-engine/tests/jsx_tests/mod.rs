@@ -17,6 +17,7 @@ fn string_lit(interner: &mut Interner, value: &str, span: Span) -> StringLiteral
     StringLiteral {
         value: interner.intern(value),
         span,
+        raw_literal: false,
     }
 }
 

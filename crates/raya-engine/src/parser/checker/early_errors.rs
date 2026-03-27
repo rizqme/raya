@@ -2512,6 +2512,14 @@ mod tests {
         parser.parse().expect("should parse")
     }
 
+    fn parse_module_with_mode(
+        source: &str,
+        mode: TypeSystemMode,
+    ) -> (crate::parser::ast::Module, crate::parser::Interner) {
+        let parser = Parser::new_with_mode(source, mode).expect("should lex");
+        parser.parse().expect("should parse")
+    }
+
     #[test]
     fn test_return_outside_function_is_early_error() {
         let (module, interner) = parse_module("return 1;");
@@ -2577,7 +2585,8 @@ mod tests {
 
     #[test]
     fn test_async_function_forbids_await_binding_name() {
-        let (module, interner) = parse_module("async function f() { var await = 1; }");
+        let (module, interner) =
+            parse_module_with_mode("async function f() { var await = 1; }", TypeSystemMode::Js);
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
             .expect_err("expected early error");
         assert!(errors.iter().any(|error| error
@@ -2587,7 +2596,8 @@ mod tests {
 
     #[test]
     fn test_generator_function_forbids_yield_binding_name() {
-        let (module, interner) = parse_module("function* f() { var yield = 1; }");
+        let (module, interner) =
+            parse_module_with_mode("function* f() { var yield = 1; }", TypeSystemMode::Js);
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
             .expect_err("expected early error");
         assert!(errors.iter().any(|error| error
@@ -2597,7 +2607,8 @@ mod tests {
 
     #[test]
     fn test_async_generator_forbids_await_label_identifier() {
-        let (module, interner) = parse_module("async function* f() { await: ; }");
+        let (module, interner) =
+            parse_module_with_mode("async function* f() { await: ; }", TypeSystemMode::Js);
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
             .expect_err("expected early error");
         assert!(errors
@@ -2619,7 +2630,8 @@ mod tests {
 
     #[test]
     fn test_async_arrow_forbids_await_parameter_binding() {
-        let (module, interner) = parse_module("async (await) => {}");
+        let (module, interner) =
+            parse_module_with_mode("async (await) => {}", TypeSystemMode::Js);
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
             .expect_err("expected early error");
         assert!(errors.iter().any(|error| {
@@ -2631,7 +2643,8 @@ mod tests {
 
     #[test]
     fn test_generator_function_forbids_yield_label_identifier() {
-        let (module, interner) = parse_module("function* f() { yield: ; }");
+        let (module, interner) =
+            parse_module_with_mode("function* f() { yield: ; }", TypeSystemMode::Js);
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
             .expect_err("expected early error");
         assert!(errors

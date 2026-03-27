@@ -35,6 +35,19 @@ fn looks_like_type_alias_declaration(parser: &mut Parser) -> bool {
 
 /// Parse a statement.
 pub fn parse_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
+    parse_statement_with_mode(parser, true)
+}
+
+/// Parse a module-level statement where `{ ... }` should remain an object literal
+/// expression unless the surrounding syntax has already committed to a block.
+pub fn parse_module_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
+    parse_statement_with_mode(parser, false)
+}
+
+fn parse_statement_with_mode(
+    parser: &mut Parser,
+    allow_block_statement: bool,
+) -> Result<Statement, ParseError> {
     // Check depth before entering
     parser.depth += 1;
     if parser.depth > super::guards::MAX_PARSE_DEPTH {
@@ -49,14 +62,17 @@ pub fn parse_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     }
 
     // Use inner function so `?` can be used freely while ensuring depth is always decremented
-    let result = parse_statement_inner(parser);
+    let result = parse_statement_inner(parser, allow_block_statement);
 
     parser.depth -= 1;
     result
 }
 
 /// Inner statement parsing logic - allows use of `?` operator
-fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
+fn parse_statement_inner(
+    parser: &mut Parser,
+    allow_block_statement: bool,
+) -> Result<Statement, ParseError> {
     if looks_like_type_alias_declaration(parser) {
         return parse_type_alias_declaration(parser, Vec::new());
     }
@@ -129,7 +145,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
                 }
                 // Allow annotations before other statements (e.g., //@@builtin_primitive before const)
                 // — annotations are discarded for non-class/type declarations
-                _ => parse_statement(parser),
+                _ => parse_statement_inner(parser, allow_block_statement),
             }
         }
         Token::If => parse_if_statement(parser),
@@ -140,18 +156,40 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
         Token::Switch => parse_switch_statement(parser),
         Token::Try => parse_try_statement(parser),
         Token::Return => parse_return_statement(parser),
-        Token::Yield => parse_yield_statement(parser),
+        Token::Yield => {
+            if parser.is_js_mode() && matches!(parser.peek(), Some(Token::Colon)) {
+                parse_labeled_statement(parser)
+            } else {
+                parse_yield_statement(parser)
+            }
+        }
         Token::Break => parse_break_statement(parser),
         Token::Continue => parse_continue_statement(parser),
         Token::Throw => parse_throw_statement(parser),
         Token::Import => parse_import_declaration(parser),
         Token::Export => parse_export_declaration(parser),
-
-        // In statement position, `{` starts a block. Object literals must be
-        // parenthesized to appear as expression statements.
         Token::LeftBrace => {
-            parser.advance();
-            Ok(Statement::Block(parse_block_statement(parser)?))
+            if allow_block_statement {
+                parser.advance();
+                Ok(Statement::Block(parse_block_statement(parser)?))
+            } else {
+                let checkpoint = parser.checkpoint();
+                let start_span = parser.current_span();
+
+                if let Ok(expression) = super::expr::parse_expression(parser) {
+                    if parser.consume_semicolon_or_asi().is_ok() {
+                        let span = parser.combine_spans(&start_span, expression.span());
+                        return Ok(Statement::Expression(ExpressionStatement {
+                            expression,
+                            span,
+                        }));
+                    }
+                }
+
+                parser.restore(checkpoint);
+                parser.advance();
+                Ok(Statement::Block(parse_block_statement(parser)?))
+            }
         }
 
         Token::Debugger => {
@@ -2642,7 +2680,7 @@ const value = {
         };
         assert!(
             err.iter()
-                .any(|e| e.message.contains("Duplicate rest parameter")),
+                .any(|e| e.message.contains("Rest parameter must be last")),
             "expected duplicate-rest parse error, got {err:?}"
         );
     }
@@ -2822,7 +2860,10 @@ class Foo {
         let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[0] else {
             panic!("Expected variable declaration");
         };
-        let Some(crate::parser::ast::Expression::Object(object)) = &decl.initializer else {
+        let Some(crate::parser::ast::Expression::Parenthesized(paren)) = &decl.initializer else {
+            panic!("Expected parenthesized object initializer");
+        };
+        let crate::parser::ast::Expression::Object(object) = paren.expression.as_ref() else {
             panic!("Expected object initializer");
         };
         assert_eq!(object.properties.len(), 1);
@@ -2834,7 +2875,10 @@ class Foo {
         let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[0] else {
             panic!("Expected variable declaration");
         };
-        let Some(crate::parser::ast::Expression::Array(array)) = &decl.initializer else {
+        let Some(crate::parser::ast::Expression::Parenthesized(paren)) = &decl.initializer else {
+            panic!("Expected parenthesized array initializer");
+        };
+        let crate::parser::ast::Expression::Array(array) = paren.expression.as_ref() else {
             panic!("Expected array initializer");
         };
         assert_eq!(array.elements.len(), 3);

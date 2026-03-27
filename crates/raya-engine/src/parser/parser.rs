@@ -190,7 +190,7 @@ impl Parser {
 
         // Parse top-level statements until EOF
         while !self.at_eof() {
-            match self.parse_statement() {
+            match stmt::parse_module_statement(&mut self) {
                 Ok(stmt) => statements.push(stmt),
                 Err(err) => {
                     self.errors.push(err);
@@ -874,8 +874,10 @@ mod tests {
         let expr = parser.parse_single_expression().unwrap();
 
         match expr {
-            Expression::Object(_) => {}
-            other => panic!("Expected object expression, got {:?}", other),
+            Expression::Parenthesized(paren) => {
+                assert!(matches!(*paren.expression, Expression::Object(_)));
+            }
+            other => panic!("Expected grouped object expression, got {:?}", other),
         }
     }
 
@@ -887,8 +889,10 @@ mod tests {
         let expr = parser.parse_single_expression().unwrap();
 
         match expr {
-            Expression::Array(_) => {}
-            other => panic!("Expected array expression, got {:?}", other),
+            Expression::Parenthesized(paren) => {
+                assert!(matches!(*paren.expression, Expression::Array(_)));
+            }
+            other => panic!("Expected grouped array expression, got {:?}", other),
         }
     }
 
@@ -926,8 +930,10 @@ mod tests {
         let expr = parser.parse_single_expression().unwrap();
 
         match expr {
-            Expression::Assignment(_) => {}
-            other => panic!("Expected assignment expression, got {:?}", other),
+            Expression::Parenthesized(paren) => {
+                assert!(matches!(*paren.expression, Expression::Assignment(_)));
+            }
+            other => panic!("Expected grouped assignment expression, got {:?}", other),
         }
     }
 
@@ -970,7 +976,10 @@ mod tests {
         let mut parser = Parser::new("(p = eval(\"1\"), arguments)").unwrap();
         let expr = parser.parse_single_expression().unwrap();
 
-        let Expression::Binary(binary) = expr else {
+        let Expression::Parenthesized(paren) = expr else {
+            panic!("Expected grouped comma expression");
+        };
+        let Expression::Binary(binary) = *paren.expression else {
             panic!("Expected comma expression");
         };
         assert!(matches!(binary.operator, BinaryOperator::Comma));

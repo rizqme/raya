@@ -3,6 +3,18 @@
 use raya_engine::parser::ast::{ClassMember, Statement, Visibility};
 use raya_engine::parser::Parser;
 
+fn property_key_name<'a>(
+    interner: &'a raya_engine::parser::Interner,
+    key: &'a raya_engine::parser::ast::PropertyKey,
+) -> &'a str {
+    match key {
+        raya_engine::parser::ast::PropertyKey::Identifier(id) => interner.resolve(id.name),
+        raya_engine::parser::ast::PropertyKey::StringLiteral(lit) => interner.resolve(lit.value),
+        raya_engine::parser::ast::PropertyKey::IntLiteral(_) => "<int>",
+        raya_engine::parser::ast::PropertyKey::Computed(_) => "<computed>",
+    }
+}
+
 // ============================================================================
 // Field Visibility Tests
 // ============================================================================
@@ -21,7 +33,7 @@ fn test_parse_private_field() {
             match &decl.members[0] {
                 ClassMember::Field(field) => {
                     assert_eq!(field.visibility, Visibility::Private);
-                    assert_eq!(interner.resolve(field.name.name), "x");
+                    assert_eq!(property_key_name(&interner, &field.name), "x");
                 }
                 _ => panic!("Expected field member"),
             }
@@ -43,7 +55,7 @@ fn test_parse_protected_field() {
             match &decl.members[0] {
                 ClassMember::Field(field) => {
                     assert_eq!(field.visibility, Visibility::Protected);
-                    assert_eq!(interner.resolve(field.name.name), "name");
+                    assert_eq!(property_key_name(&interner, &field.name), "name");
                 }
                 _ => panic!("Expected field member"),
             }
@@ -65,7 +77,7 @@ fn test_parse_public_field_explicit() {
             match &decl.members[0] {
                 ClassMember::Field(field) => {
                     assert_eq!(field.visibility, Visibility::Public);
-                    assert_eq!(interner.resolve(field.name.name), "value");
+                    assert_eq!(property_key_name(&interner, &field.name), "value");
                 }
                 _ => panic!("Expected field member"),
             }
@@ -113,7 +125,7 @@ fn test_parse_private_method() {
             match &decl.members[0] {
                 ClassMember::Method(method) => {
                     assert_eq!(method.visibility, Visibility::Private);
-                    assert_eq!(interner.resolve(method.name.name), "calculate");
+                    assert_eq!(property_key_name(&interner, &method.name), "calculate");
                 }
                 _ => panic!("Expected method member"),
             }
@@ -135,7 +147,7 @@ fn test_parse_protected_method() {
             match &decl.members[0] {
                 ClassMember::Method(method) => {
                     assert_eq!(method.visibility, Visibility::Protected);
-                    assert_eq!(interner.resolve(method.name.name), "process");
+                    assert_eq!(property_key_name(&interner, &method.name), "process");
                 }
                 _ => panic!("Expected method member"),
             }
@@ -157,7 +169,7 @@ fn test_parse_public_method_explicit() {
             match &decl.members[0] {
                 ClassMember::Method(method) => {
                     assert_eq!(method.visibility, Visibility::Public);
-                    assert_eq!(interner.resolve(method.name.name), "greet");
+                    assert_eq!(property_key_name(&interner, &method.name), "greet");
                 }
                 _ => panic!("Expected method member"),
             }
@@ -184,7 +196,7 @@ fn test_parse_private_static_field() {
                 ClassMember::Field(field) => {
                     assert_eq!(field.visibility, Visibility::Private);
                     assert!(field.is_static);
-                    assert_eq!(interner.resolve(field.name.name), "instance");
+                    assert_eq!(property_key_name(&interner, &field.name), "instance");
                 }
                 _ => panic!("Expected field member"),
             }
@@ -207,7 +219,7 @@ fn test_parse_protected_static_method() {
                 ClassMember::Method(method) => {
                     assert_eq!(method.visibility, Visibility::Protected);
                     assert!(method.is_static);
-                    assert_eq!(interner.resolve(method.name.name), "create");
+                    assert_eq!(property_key_name(&interner, &method.name), "create");
                 }
                 _ => panic!("Expected method member"),
             }
@@ -230,7 +242,7 @@ fn test_parse_public_static_field() {
                 ClassMember::Field(field) => {
                     assert_eq!(field.visibility, Visibility::Public);
                     assert!(field.is_static);
-                    assert_eq!(interner.resolve(field.name.name), "version");
+                    assert_eq!(property_key_name(&interner, &field.name), "version");
                     assert!(field.initializer.is_some());
                 }
                 _ => panic!("Expected field member"),
@@ -256,7 +268,7 @@ fn test_parse_protected_abstract_method() {
                     assert_eq!(method.visibility, Visibility::Protected);
                     assert!(method.is_abstract);
                     assert!(method.body.is_none());
-                    assert_eq!(interner.resolve(method.name.name), "area");
+                    assert_eq!(property_key_name(&interner, &method.name), "area");
                 }
                 _ => panic!("Expected method member"),
             }
@@ -279,7 +291,7 @@ fn test_parse_private_async_method() {
                 ClassMember::Method(method) => {
                     assert_eq!(method.visibility, Visibility::Private);
                     assert!(method.is_async);
-                    assert_eq!(interner.resolve(method.name.name), "fetch");
+                    assert_eq!(property_key_name(&interner, &method.name), "fetch");
                 }
                 _ => panic!("Expected method member"),
             }
@@ -318,21 +330,21 @@ fn test_parse_class_with_mixed_visibility() {
             match &decl.members[0] {
                 ClassMember::Field(field) => {
                     assert_eq!(field.visibility, Visibility::Private);
-                    assert_eq!(interner.resolve(field.name.name), "balance");
+                    assert_eq!(property_key_name(&interner, &field.name), "balance");
                 }
                 _ => panic!("Expected field"),
             }
             match &decl.members[1] {
                 ClassMember::Field(field) => {
                     assert_eq!(field.visibility, Visibility::Protected);
-                    assert_eq!(interner.resolve(field.name.name), "accountNumber");
+                    assert_eq!(property_key_name(&interner, &field.name), "accountNumber");
                 }
                 _ => panic!("Expected field"),
             }
             match &decl.members[2] {
                 ClassMember::Field(field) => {
                     assert_eq!(field.visibility, Visibility::Public);
-                    assert_eq!(interner.resolve(field.name.name), "owner");
+                    assert_eq!(property_key_name(&interner, &field.name), "owner");
                 }
                 _ => panic!("Expected field"),
             }
@@ -341,21 +353,21 @@ fn test_parse_class_with_mixed_visibility() {
             match &decl.members[3] {
                 ClassMember::Method(method) => {
                     assert_eq!(method.visibility, Visibility::Public);
-                    assert_eq!(interner.resolve(method.name.name), "deposit");
+                    assert_eq!(property_key_name(&interner, &method.name), "deposit");
                 }
                 _ => panic!("Expected method"),
             }
             match &decl.members[4] {
                 ClassMember::Method(method) => {
                     assert_eq!(method.visibility, Visibility::Private);
-                    assert_eq!(interner.resolve(method.name.name), "validateAmount");
+                    assert_eq!(property_key_name(&interner, &method.name), "validateAmount");
                 }
                 _ => panic!("Expected method"),
             }
             match &decl.members[5] {
                 ClassMember::Method(method) => {
                     assert_eq!(method.visibility, Visibility::Protected);
-                    assert_eq!(interner.resolve(method.name.name), "logTransaction");
+                    assert_eq!(property_key_name(&interner, &method.name), "logTransaction");
                 }
                 _ => panic!("Expected method"),
             }

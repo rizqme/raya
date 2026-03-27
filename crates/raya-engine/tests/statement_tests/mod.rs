@@ -3,6 +3,18 @@
 use raya_engine::parser::ast::*;
 use raya_engine::parser::parser::Parser;
 
+fn property_key_name<'a>(
+    interner: &'a raya_engine::parser::Interner,
+    key: &'a PropertyKey,
+) -> &'a str {
+    match key {
+        PropertyKey::Identifier(id) => interner.resolve(id.name),
+        PropertyKey::StringLiteral(lit) => interner.resolve(lit.value),
+        PropertyKey::IntLiteral(_) => "<int>",
+        PropertyKey::Computed(_) => "<computed>",
+    }
+}
+
 // ============================================================================
 // Variable Declarations
 // ============================================================================
@@ -563,7 +575,7 @@ fn test_parse_class_with_method() {
             assert_eq!(decl.members.len(), 1);
             match &decl.members[0] {
                 ClassMember::Method(method) => {
-                    assert_eq!(interner.resolve(method.name.name), "add");
+                    assert_eq!(property_key_name(&interner, &method.name), "add");
                     assert_eq!(method.params.len(), 2);
                     assert!(method.return_type.is_some());
                     assert!(method.body.is_some());

@@ -592,10 +592,16 @@ fn test_parse_grouped_expression() {
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+            Expression::Parenthesized(paren) => match &*paren.expression {
+                Expression::Binary(bin) => {
+                    assert!(matches!(bin.operator, BinaryOperator::Add));
+                }
+                _ => panic!("Expected grouped binary expression"),
+            },
             Expression::Binary(bin) => {
                 assert!(matches!(bin.operator, BinaryOperator::Add));
             }
-            _ => panic!("Expected binary expression"),
+            _ => panic!("Expected binary or parenthesized expression"),
         },
         _ => panic!("Expected expression statement"),
     }

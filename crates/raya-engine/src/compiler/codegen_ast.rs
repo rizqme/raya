@@ -160,6 +160,7 @@ impl<'a> CodeGenerator<'a> {
             Expression::Binary(binary) => self.compile_binary(func, binary),
             Expression::Unary(unary) => self.compile_unary(func, unary),
             Expression::Assignment(assign) => self.compile_assign(func, assign),
+            Expression::Parenthesized(paren) => self.compile_expr(func, &paren.expression),
             _ => Err(CompileError::UnsupportedFeature {
                 feature: format!("Expression: {:?}", expr),
             }),

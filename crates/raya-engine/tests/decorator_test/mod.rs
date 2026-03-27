@@ -3,6 +3,18 @@
 use raya_engine::parser::ast::{ClassMember, Expression, Statement};
 use raya_engine::parser::Parser;
 
+fn property_key_name<'a>(
+    interner: &'a raya_engine::parser::Interner,
+    key: &'a raya_engine::parser::ast::PropertyKey,
+) -> &'a str {
+    match key {
+        raya_engine::parser::ast::PropertyKey::Identifier(id) => interner.resolve(id.name),
+        raya_engine::parser::ast::PropertyKey::StringLiteral(lit) => interner.resolve(lit.value),
+        raya_engine::parser::ast::PropertyKey::IntLiteral(_) => "<int>",
+        raya_engine::parser::ast::PropertyKey::Computed(_) => "<computed>",
+    }
+}
+
 // ============================================================================
 // Class Decorator Tests
 // ============================================================================
@@ -151,7 +163,7 @@ fn test_parse_method_decorator() {
             assert_eq!(decl.members.len(), 1);
             match &decl.members[0] {
                 ClassMember::Method(method) => {
-                    assert_eq!(interner.resolve(method.name.name), "calculate");
+                    assert_eq!(property_key_name(&interner, &method.name), "calculate");
                     assert_eq!(method.decorators.len(), 1);
                     match &method.decorators[0].expression {
                         Expression::Identifier(id) => {
@@ -184,7 +196,7 @@ fn test_parse_method_decorator_with_args() {
             assert_eq!(decl.members.len(), 1);
             match &decl.members[0] {
                 ClassMember::Method(method) => {
-                    assert_eq!(interner.resolve(method.name.name), "handleClick");
+                    assert_eq!(property_key_name(&interner, &method.name), "handleClick");
                     assert_eq!(method.decorators.len(), 1);
                     match &method.decorators[0].expression {
                         Expression::Call(call) => {
@@ -221,7 +233,7 @@ fn test_parse_field_decorator() {
             assert_eq!(decl.members.len(), 1);
             match &decl.members[0] {
                 ClassMember::Field(field) => {
-                    assert_eq!(interner.resolve(field.name.name), "name");
+                    assert_eq!(property_key_name(&interner, &field.name), "name");
                     assert_eq!(field.decorators.len(), 1);
                     match &field.decorators[0].expression {
                         Expression::Identifier(id) => {
@@ -254,7 +266,7 @@ fn test_parse_field_decorator_with_args() {
             assert_eq!(decl.members.len(), 1);
             match &decl.members[0] {
                 ClassMember::Field(field) => {
-                    assert_eq!(interner.resolve(field.name.name), "username");
+                    assert_eq!(property_key_name(&interner, &field.name), "username");
                     assert_eq!(field.decorators.len(), 1);
                     match &field.decorators[0].expression {
                         Expression::Call(call) => {
@@ -300,7 +312,7 @@ fn test_parse_class_with_decorated_members() {
             // Check field decorator
             match &decl.members[0] {
                 ClassMember::Field(field) => {
-                    assert_eq!(interner.resolve(field.name.name), "client");
+                    assert_eq!(property_key_name(&interner, &field.name), "client");
                     assert_eq!(field.decorators.len(), 1); // @inject
                 }
                 _ => panic!("Expected field"),
@@ -309,7 +321,7 @@ fn test_parse_class_with_decorated_members() {
             // Check method decorator
             match &decl.members[1] {
                 ClassMember::Method(method) => {
-                    assert_eq!(interner.resolve(method.name.name), "getData");
+                    assert_eq!(property_key_name(&interner, &method.name), "getData");
                     assert_eq!(method.decorators.len(), 1); // @cached(60)
                 }
                 _ => panic!("Expected method"),
@@ -337,7 +349,7 @@ fn test_parse_multiple_decorators_on_member() {
             assert_eq!(decl.members.len(), 1);
             match &decl.members[0] {
                 ClassMember::Field(field) => {
-                    assert_eq!(interner.resolve(field.name.name), "name");
+                    assert_eq!(property_key_name(&interner, &field.name), "name");
                     assert_eq!(field.decorators.len(), 2);
                 }
                 _ => panic!("Expected field"),

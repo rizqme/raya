@@ -5,7 +5,7 @@
 use raya_engine::compiler::bytecode::VERSION;
 use raya_engine::compiler::Opcode;
 use raya_engine::compiler::{
-    module_id_from_name, Function, Import, Module, ModuleId, SymbolScope, SymbolType,
+    module_id_from_name, Function, Import, Method, Module, ModuleId, SymbolScope, SymbolType,
 };
 use raya_engine::vm::Vm;
 
@@ -606,6 +606,7 @@ fn test_e2e_load_module_with_class_hierarchy() {
             name: "greet".to_string(),
             function_id: 0,
             slot: 0,
+            kind: raya_engine::compiler::bytecode::MethodKind::Normal,
         }],
 
         ..Default::default()
@@ -620,6 +621,7 @@ fn test_e2e_load_module_with_class_hierarchy() {
             name: "greet".to_string(),
             function_id: 1,
             slot: 0, // same vtable slot as parent
+            kind: raya_engine::compiler::bytecode::MethodKind::Normal,
         }],
 
         ..Default::default()

@@ -96,6 +96,7 @@ fn make_module(name: &str, functions: Vec<Function>) -> Module {
             mono_debug_map: vec![],
             structural_shapes: vec![],
             structural_layouts: vec![],
+            js_global_bindings: vec![],
         },
         exports: vec![],
         imports: vec![],

@@ -12,6 +12,27 @@ fn ident(interner: &mut Interner, name: &str, span: Span) -> Identifier {
     Identifier::new(interner.intern(name), span)
 }
 
+fn prop_ident(interner: &mut Interner, name: &str, span: Span) -> PropertyKey {
+    PropertyKey::Identifier(ident(interner, name, span))
+}
+
+fn int_lit(value: i64, span: Span) -> IntLiteral {
+    IntLiteral {
+        value,
+        is_bigint: false,
+        raw_text: None,
+        span,
+    }
+}
+
+fn string_lit(interner: &mut Interner, value: &str, span: Span) -> StringLiteral {
+    StringLiteral {
+        value: interner.intern(value),
+        span,
+        raw_literal: false,
+    }
+}
+
 // ============================================================================
 // Module Tests
 // ============================================================================
@@ -47,10 +68,7 @@ fn test_variable_decl_let() {
         kind: VariableKind::Let,
         pattern: Pattern::Identifier(ident(&mut interner, "x", Span::new(4, 5, 1, 5))),
         type_annotation: None,
-        initializer: Some(Expression::IntLiteral(IntLiteral {
-            value: 42,
-            span: Span::new(8, 10, 1, 9),
-        })),
+        initializer: Some(Expression::IntLiteral(int_lit(42, Span::new(8, 10, 1, 9)))),
         span: Span::new(0, 11, 1, 1),
     };
 
@@ -70,10 +88,7 @@ fn test_variable_decl_const() {
             ty: Type::Primitive(PrimitiveType::Number),
             span: Span::new(9, 15, 1, 10),
         }),
-        initializer: Some(Expression::IntLiteral(IntLiteral {
-            value: 10,
-            span: Span::new(18, 20, 1, 19),
-        })),
+        initializer: Some(Expression::IntLiteral(int_lit(10, Span::new(18, 20, 1, 19)))),
         span: Span::new(0, 21, 1, 1),
     };
 
@@ -177,12 +192,13 @@ fn test_class_decl_simple() {
         name: ident(&mut interner, "Point", Span::new(6, 11, 1, 7)),
         type_params: None,
         extends: None,
+        extends_expr: None,
         implements: vec![],
         members: vec![
             ClassMember::Field(FieldDecl {
                 decorators: vec![],
                 visibility: Visibility::Public,
-                name: ident(&mut interner, "x", Span::new(18, 19, 2, 5)),
+                name: prop_ident(&mut interner, "x", Span::new(18, 19, 2, 5)),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
                     span: Span::new(21, 27, 2, 8),
@@ -196,7 +212,7 @@ fn test_class_decl_simple() {
             ClassMember::Field(FieldDecl {
                 decorators: vec![],
                 visibility: Visibility::Public,
-                name: ident(&mut interner, "y", Span::new(33, 34, 3, 5)),
+                name: prop_ident(&mut interner, "y", Span::new(33, 34, 3, 5)),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
                     span: Span::new(36, 42, 3, 8),
@@ -233,6 +249,7 @@ fn test_class_with_extends() {
             }),
             span: Span::new(21, 26, 1, 22),
         }),
+        extends_expr: None,
         implements: vec![],
         members: vec![],
         annotations: vec![],
@@ -293,16 +310,10 @@ fn test_while_statement() {
 #[test]
 fn test_switch_statement() {
     let switch_stmt = SwitchStatement {
-        discriminant: Expression::IntLiteral(IntLiteral {
-            value: 1,
-            span: Span::new(8, 9, 1, 9),
-        }),
+        discriminant: Expression::IntLiteral(int_lit(1, Span::new(8, 9, 1, 9))),
         cases: vec![
             SwitchCase {
-                test: Some(Expression::IntLiteral(IntLiteral {
-                    value: 1,
-                    span: Span::new(21, 22, 2, 10),
-                })),
+                test: Some(Expression::IntLiteral(int_lit(1, Span::new(21, 22, 2, 10)))),
                 consequent: vec![Statement::Break(BreakStatement {
                     label: None,
                     span: Span::new(24, 30, 2, 13),
@@ -348,10 +359,7 @@ fn test_statement_is_declaration() {
 fn test_expression_is_literal() {
     let mut interner = Interner::new();
 
-    let int_lit = Expression::IntLiteral(IntLiteral {
-        value: 42,
-        span: Span::new(0, 2, 1, 1),
-    });
+    let int_lit = Expression::IntLiteral(int_lit(42, Span::new(0, 2, 1, 1)));
 
     let id = Expression::Identifier(ident(&mut interner, "x", Span::new(0, 1, 1, 1)));
 
@@ -378,10 +386,7 @@ fn test_import_named() {
                 alias: Some(ident(&mut interner, "baz", Span::new(21, 24, 1, 22))),
             },
         ],
-        source: StringLiteral {
-            value: intern(&mut interner, "./module"),
-            span: Span::new(31, 41, 1, 32),
-        },
+        source: string_lit(&mut interner, "./module", Span::new(31, 41, 1, 32)),
         span: Span::new(0, 42, 1, 1),
     };
 
