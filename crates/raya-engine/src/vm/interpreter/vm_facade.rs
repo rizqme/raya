@@ -933,11 +933,12 @@ impl Vm {
         }
         let result = self.execute_main_task(runtime_module.clone(), entry_main_fn_id)?;
 
-        // Legacy compatibility: if the entry main returned null and the module
-        // also contains a user-declared `main`, run the first `main`.
+        // Legacy compatibility: if the synthetic entry main produced no
+        // meaningful completion value and the module also contains a
+        // user-declared `main`, run the first user `main`.
         //
         // Runtime/CLI tests and script semantics still expect this behavior.
-        if allow_user_main_fallback && result.is_null() {
+        if allow_user_main_fallback && (result.is_null() || result.is_undefined()) {
             if let Some(user_main_fn_id) = module.functions.iter().position(|f| f.name == "main") {
                 if user_main_fn_id != entry_main_fn_id {
                     let entry_calls_user_main =

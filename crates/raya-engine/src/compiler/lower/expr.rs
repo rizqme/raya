@@ -2528,6 +2528,12 @@ impl<'a> Lowerer<'a> {
 
     fn write_back_direct_eval_environment(&mut self, env_object: Register) {
         for symbol in self.collect_visible_direct_eval_symbols() {
+            if !self.identifier_has_static_assignment_target(symbol)
+                && !self.module_var_globals.contains_key(&symbol)
+                && !self.js_script_lexical_globals.contains_key(&symbol)
+            {
+                continue;
+            }
             let name = self.interner.resolve(symbol).to_string();
             if self.direct_eval_binding_is_outer_snapshot(symbol) {
                 let has_marker = self.emit_direct_eval_hidden_flag_has(
@@ -3401,8 +3407,10 @@ impl<'a> Lowerer<'a> {
             return self.emit_direct_eval_binding_get(name, false);
         }
 
-        if let Some(&global_idx) = self.js_script_lexical_globals.get(&ident.name) {
-            return self.emit_load_js_script_lexical_global(ident, global_idx);
+        if self.js_this_binding_compat {
+            if let Some(&global_idx) = self.js_script_lexical_globals.get(&ident.name) {
+                return self.emit_load_js_script_lexical_global(ident, global_idx);
+            }
         }
 
         // Check module-level variables (stored as globals)
@@ -10393,7 +10401,7 @@ impl<'a> Lowerer<'a> {
         ir_func.is_generator = Self::callable_is_generator(callable_kind);
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
-        ir_func.uses_js_runtime_semantics = true;
+        ir_func.uses_js_runtime_semantics = self.semantic_plan.uses_js_async_runtime_semantics();
         if self.emit_sourcemap {
             ir_func.source_span = func.span;
         }
@@ -10698,6 +10706,7 @@ impl<'a> Lowerer<'a> {
         arrow: &ast::ArrowFunction,
         preassigned_func_id: Option<crate::ir::FunctionId>,
     ) -> Register {
+        let saved_function_map = self.function_map.clone();
         // Generate unique name for the arrow function
         let arrow_name = format!("__arrow_{}", self.arrow_counter);
         self.arrow_counter += 1;
@@ -11017,7 +11026,7 @@ impl<'a> Lowerer<'a> {
         ir_func.is_async = Self::callable_is_async(callable_kind);
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
-        ir_func.uses_js_runtime_semantics = true;
+        ir_func.uses_js_runtime_semantics = self.semantic_plan.uses_js_async_runtime_semantics();
         if self.emit_sourcemap {
             ir_func.source_span = arrow.span;
         }
@@ -11159,6 +11168,7 @@ impl<'a> Lowerer<'a> {
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
         self.body_scope_eval_mode = saved_body_scope_eval_mode;
         self.closure_locals = saved_closure_locals;
+        self.function_map = saved_function_map;
         self.function_depth = saved_function_depth;
 
         for sym in propagate_callable_invalidations {

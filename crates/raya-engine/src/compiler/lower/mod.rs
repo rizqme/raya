@@ -2274,57 +2274,59 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            for raw_stmt in &module.statements {
-                let stmt = Self::unwrap_export(raw_stmt);
-                match stmt {
-                    Statement::VariableDecl(decl)
-                        if decl.kind != crate::parser::ast::VariableKind::Var =>
-                    {
-                        let mut names = FxHashSet::default();
-                        collect_pattern_names(&decl.pattern, &mut names);
-                        for ident in names {
-                            if !self.semantic_plan.is_top_level_lexical(ident) {
-                                continue;
+            if self.js_this_binding_compat && !self.builtin_this_coercion_compat {
+                for raw_stmt in &module.statements {
+                    let stmt = Self::unwrap_export(raw_stmt);
+                    match stmt {
+                        Statement::VariableDecl(decl)
+                            if decl.kind != crate::parser::ast::VariableKind::Var =>
+                        {
+                            let mut names = FxHashSet::default();
+                            collect_pattern_names(&decl.pattern, &mut names);
+                            for ident in names {
+                                if !self.semantic_plan.is_top_level_lexical(ident) {
+                                    continue;
+                                }
+                                if self.semantic_plan.is_top_level_const_lexical(ident) {
+                                    self.js_script_const_globals.insert(ident);
+                                }
+                                self.js_script_lexical_globals
+                                    .entry(ident)
+                                    .or_insert_with(|| {
+                                        let global_index = self.next_global_index;
+                                        self.next_global_index += 1;
+                                        global_index
+                                    });
+                                self.js_script_lexical_init_globals
+                                    .entry(ident)
+                                    .or_insert_with(|| {
+                                        let global_index = self.next_global_index;
+                                        self.next_global_index += 1;
+                                        global_index
+                                    });
                             }
-                            if self.semantic_plan.is_top_level_const_lexical(ident) {
-                                self.js_script_const_globals.insert(ident);
+                        }
+                        Statement::ClassDecl(class) => {
+                            if self.semantic_plan.is_top_level_class(class.name.name) {
+                                self.js_top_level_class_globals.insert(class.name.name);
+                                self.js_script_lexical_globals
+                                    .entry(class.name.name)
+                                    .or_insert_with(|| {
+                                        let global_index = self.next_global_index;
+                                        self.next_global_index += 1;
+                                        global_index
+                                    });
+                                self.js_script_lexical_init_globals
+                                    .entry(class.name.name)
+                                    .or_insert_with(|| {
+                                        let global_index = self.next_global_index;
+                                        self.next_global_index += 1;
+                                        global_index
+                                    });
                             }
-                            self.js_script_lexical_globals
-                                .entry(ident)
-                                .or_insert_with(|| {
-                                    let global_index = self.next_global_index;
-                                    self.next_global_index += 1;
-                                    global_index
-                                });
-                            self.js_script_lexical_init_globals
-                                .entry(ident)
-                                .or_insert_with(|| {
-                                    let global_index = self.next_global_index;
-                                    self.next_global_index += 1;
-                                    global_index
-                                });
                         }
+                        _ => {}
                     }
-                    Statement::ClassDecl(class) => {
-                        if self.semantic_plan.is_top_level_class(class.name.name) {
-                            self.js_top_level_class_globals.insert(class.name.name);
-                            self.js_script_lexical_globals
-                                .entry(class.name.name)
-                                .or_insert_with(|| {
-                                    let global_index = self.next_global_index;
-                                    self.next_global_index += 1;
-                                    global_index
-                                });
-                            self.js_script_lexical_init_globals
-                                .entry(class.name.name)
-                                .or_insert_with(|| {
-                                    let global_index = self.next_global_index;
-                                    self.next_global_index += 1;
-                                    global_index
-                                });
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
@@ -4186,7 +4188,7 @@ impl<'a> Lowerer<'a> {
         ir_func.is_generator = Self::callable_is_generator(callable_kind);
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
-        ir_func.uses_js_runtime_semantics = true;
+        ir_func.uses_js_runtime_semantics = self.semantic_plan.uses_js_async_runtime_semantics();
         if let Some(type_params) = &func.type_params {
             ir_func.type_param_ids = type_params
                 .iter()
@@ -5036,7 +5038,8 @@ impl<'a> Lowerer<'a> {
                     ir_func.is_generator = Self::callable_is_generator(callable_kind);
                     ir_func.visible_length = visible_length;
                     ir_func.is_strict_js = true;
-                    ir_func.uses_js_runtime_semantics = true;
+                    ir_func.uses_js_runtime_semantics =
+                        self.semantic_plan.uses_js_async_runtime_semantics();
                     ir_func.uses_builtin_this_coercion = self.builtin_this_coercion_compat;
                     let mut type_param_ids = Vec::new();
                     if let Some(class_type_params) = &class.type_params {

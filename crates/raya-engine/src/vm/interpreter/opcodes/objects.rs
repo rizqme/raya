@@ -160,19 +160,18 @@ impl<'a> Interpreter<'a> {
                 let target_module = co
                     .callable_module()
                     .unwrap_or_else(|| task.current_module());
-                let (is_async, is_generator, uses_explicit_js_this) = target_module
+                let (is_async, is_generator, uses_js_this_slot) = target_module
                     .functions
                     .get(*func_id)
                     .map(|function| {
                         (
                             function.is_async,
                             function.is_generator,
-                            explicit_this.is_some() && !function.name.starts_with("__arrow_"),
+                            function.uses_js_this_slot,
                         )
                     })
                     .unwrap_or((false, false, false));
-                let this_arg = if self.callable_uses_js_this_slot(callable) || uses_explicit_js_this
-                {
+                let this_arg = if self.callable_uses_js_this_slot(callable) || uses_js_this_slot {
                     Some(self.js_this_value_for_callable(callable, explicit_this)?)
                 } else {
                     None

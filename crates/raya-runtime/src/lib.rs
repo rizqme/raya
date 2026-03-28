@@ -1242,17 +1242,7 @@ impl Runtime {
         resolved: &ResolvedSymbol,
     ) -> Result<Value, RuntimeError> {
         let value = Self::materialize_export_value(vm, &resolved.module, &resolved.export)?;
-        match resolved.export.symbol_type {
-            SymbolType::Constant => Self::register_structural_constant_slot_view(
-                vm,
-                consumer_module,
-                value,
-                import,
-                resolved,
-            ),
-            SymbolType::Class => Ok(value),
-            SymbolType::Function => Ok(value),
-        }
+        Self::register_structural_import_slot_view(vm, consumer_module, value, import, resolved)
     }
 
     fn materialize_namespace_import_value(
@@ -1522,7 +1512,7 @@ impl Runtime {
         )))
     }
 
-    fn register_structural_constant_slot_view(
+    fn register_structural_import_slot_view(
         vm: &mut raya_engine::vm::Vm,
         consumer_module: &Module,
         value: Value,
@@ -1532,14 +1522,7 @@ impl Runtime {
         let Some(expected_sig) = import.type_signature.as_deref() else {
             return Ok(value);
         };
-        let Some(actual_sig) = resolved.export.type_signature.as_deref() else {
-            return Ok(value);
-        };
         let Some(expected_layout) = Self::structural_member_layout_from_signature(expected_sig)
-        else {
-            return Ok(value);
-        };
-        let Some(actual_sig_layout) = Self::structural_member_layout_from_signature(actual_sig)
         else {
             return Ok(value);
         };
@@ -1568,12 +1551,18 @@ impl Runtime {
                 "structural export value is missing a physical layout id".to_string(),
             )));
         }
+        let export_sig_layout = resolved
+            .export
+            .type_signature
+            .as_deref()
+            .and_then(Self::structural_member_layout_from_signature);
         let actual_layout = if nominal_type_id.is_none() {
             vm.shared_state()
                 .structural_layout_names(provider_layout)
-                .unwrap_or(actual_sig_layout)
+                .or(export_sig_layout.clone())
+                .unwrap_or_else(|| expected_layout.clone())
         } else {
-            actual_sig_layout
+            export_sig_layout.unwrap_or_else(|| expected_layout.clone())
         };
         if nominal_type_id.is_none() {
             vm.shared_state()
@@ -1818,7 +1807,10 @@ impl Runtime {
     }
 
     fn shape_id_for_member_names(names: &[String]) -> u64 {
-        raya_engine::vm::object::shape_id_from_member_names(names)
+        let mut canonical = names.to_vec();
+        canonical.sort_unstable();
+        canonical.dedup();
+        raya_engine::vm::object::shape_id_from_member_names(&canonical)
     }
 
     fn maybe_enable_jit(&self, vm: &mut raya_engine::vm::Vm) {

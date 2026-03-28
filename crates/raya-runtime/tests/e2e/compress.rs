@@ -46,3 +46,47 @@ fn test_compress_zlib_roundtrip() {
         true,
     );
 }
+
+#[test]
+fn test_compress_named_import_roundtrip() {
+    expect_bool_with_builtins(
+        r#"
+        import { gzip, gunzip } from "std:compress";
+        import crypto from "std:crypto";
+        const src: Buffer = crypto.fromHex("68656c6c6f2072617961");
+        const gz: Buffer = gzip(src);
+        const out: Buffer = gunzip(gz);
+        return crypto.toHex(out) == "68656c6c6f2072617961";
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_mixed_compress_and_crypto_imports_preserve_crypto_default_methods() {
+    expect_bool_with_builtins(
+        r#"
+        import { gzip } from "std:compress";
+        import crypto from "std:crypto";
+        const src: Buffer = crypto.fromHex("68656c6c6f2072617961");
+        const untouched: Buffer = crypto.fromHex("00010203");
+        const hex: string = crypto.toHex(untouched);
+        const gz: Buffer = gzip(src);
+        return gz != null && hex == "00010203";
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_importing_compress_does_not_break_crypto_default_methods() {
+    expect_bool_with_builtins(
+        r#"
+        import { gzip } from "std:compress";
+        import crypto from "std:crypto";
+        const untouched: Buffer = crypto.fromHex("00010203");
+        return crypto.toHex(untouched) == "00010203";
+    "#,
+        true,
+    );
+}

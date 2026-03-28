@@ -196,6 +196,7 @@ pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
         if ty == std::any::TypeId::of::<RayaString>() {
             return match key {
                 "charAt" => Some(string::CHAR_AT),
+                "charCodeAt" => Some(string::CHAR_CODE_AT),
                 "substring" => Some(string::SUBSTRING),
                 "toUpperCase" => Some(string::TO_UPPER_CASE),
                 "toLowerCase" => Some(string::TO_LOWER_CASE),

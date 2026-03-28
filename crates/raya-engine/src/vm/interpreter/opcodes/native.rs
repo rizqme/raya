@@ -916,13 +916,14 @@ impl<'a> Interpreter<'a> {
             .expect("settled_task_handle must create a valid PromiseHandle")
     }
 
-    fn queue_or_attach_promise_reaction(&self, source_task: &Arc<Task>, reaction: PromiseReaction) {
+    fn queue_or_attach_promise_reaction(
+        &mut self,
+        source_task: &Arc<Task>,
+        reaction: PromiseReaction,
+    ) {
         source_task.mark_rejection_observed();
         if !source_task.add_reaction_if_incomplete(reaction) {
-            self.enqueue_promise_microtask(PromiseMicrotask::RunReaction {
-                source_task_id: source_task.id(),
-                reaction,
-            });
+            self.run_promise_reaction(source_task, reaction);
         }
     }
 
@@ -4069,6 +4070,49 @@ impl<'a> Interpreter<'a> {
                     );
                 }
             } else if self.resolve_own_property_shape(current, key).is_some() {
+                if self.direct_eval_binding_is_outer_snapshot(current, key) {
+                    if self.set_shared_js_global_binding_value(key, value, task, module)? {
+                        let written = self.set_property_value_via_js_semantics(
+                            current, key, value, current, task, module,
+                        )?;
+                        if written {
+                            self.clear_direct_eval_binding_outer_snapshot(
+                                current, key, task, module,
+                            )?;
+                            if self.direct_eval_binding_is_uninitialized(current, key) {
+                                self.clear_direct_eval_binding_uninitialized(current, key)?;
+                            }
+                        }
+                        return Ok(written);
+                    }
+
+                    if let Some(global_this) = self.builtin_global_value("globalThis") {
+                        if self.has_property_via_js_semantics(global_this, key) {
+                            let wrote_global = self.set_property_value_via_js_semantics(
+                                global_this,
+                                key,
+                                value,
+                                global_this,
+                                task,
+                                module,
+                            )?;
+                            let wrote_snapshot = self.set_property_value_via_js_semantics(
+                                current, key, value, current, task, module,
+                            )?;
+                            let written = wrote_global || wrote_snapshot;
+                            if written {
+                                self.clear_direct_eval_binding_outer_snapshot(
+                                    current, key, task, module,
+                                )?;
+                                if self.direct_eval_binding_is_uninitialized(current, key) {
+                                    self.clear_direct_eval_binding_uninitialized(current, key)?;
+                                }
+                            }
+                            return Ok(written);
+                        }
+                    }
+                }
+
                 let written = self.set_property_value_via_js_semantics(
                     current, key, value, current, task, module,
                 )?;
@@ -4459,6 +4503,31 @@ impl<'a> Interpreter<'a> {
     }
 
     fn raise_unresolved_identifier_error(&mut self, task: &Arc<Task>, name: &str) -> VmError {
+        if std::env::var("RAYA_DEBUG_IDENT_ERRORS").is_ok() {
+            let module = task.current_module();
+            let func_id = task.current_func_id();
+            let func_name = module
+                .functions
+                .get(func_id)
+                .map(|function| function.name.as_str())
+                .unwrap_or("<unknown>");
+            eprintln!(
+                "[ident-error] unresolved name={name} in {}::{}#{}",
+                module.metadata.name, func_name, func_id
+            );
+            for (index, frame) in task.get_execution_frames().iter().rev().take(8).enumerate() {
+                let frame_name = frame
+                    .module
+                    .functions
+                    .get(frame.func_id)
+                    .map(|function| function.name.as_str())
+                    .unwrap_or("<unknown>");
+                eprintln!(
+                    "[ident-error] frame[{index}]={}::{}#{}",
+                    frame.module.metadata.name, frame_name, frame.func_id
+                );
+            }
+        }
         self.raise_task_builtin_error(task, "ReferenceError", format!("{name} is not defined"))
     }
 
@@ -10234,7 +10303,10 @@ impl<'a> Interpreter<'a> {
     }
 
     fn is_public_string_property_name(name: &str) -> bool {
-        !name.starts_with("Symbol.") && !name.starts_with(SYMBOL_KEY_PREFIX)
+        !name.starts_with("Symbol.")
+            && !name.starts_with(SYMBOL_KEY_PREFIX)
+            && name != SUPER_THIS_INITIALIZED_KEY
+            && name != FIELD_PRESENT_MASK_KEY
     }
 
     fn invoke_proxy_property_trap_with_context(

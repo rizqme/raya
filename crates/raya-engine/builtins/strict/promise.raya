@@ -67,12 +67,12 @@ class Promise<T> {
         return __NATIVE_CALL<Promise<U>>(PROMISE_REJECT_NOW, reason);
     }
 
-    static all<U>(values: Promise<U>[]): Promise<U[]> {
-        return __NATIVE_CALL<Promise<U[]>>(PROMISE_ALL, values);
+    static all(values: any[]): Promise<any[]> {
+        return __NATIVE_CALL<Promise<any[]>>(PROMISE_ALL, values);
     }
 
-    static race<U>(values: Promise<U>[]): Promise<U> {
-        return __NATIVE_CALL<Promise<U>>(PROMISE_RACE, values);
+    static race(values: any[]): Promise<any> {
+        return __NATIVE_CALL<Promise<any>>(PROMISE_RACE, values);
     }
 }
 

@@ -20,7 +20,7 @@ use crate::parser::ast::{
 };
 use crate::parser::checker::{
     check_early_errors_with_options, Binder, CheckerPolicy, EarlyErrorOptions, ScopeId, ScopeKind,
-    Symbol, SymbolFlags, SymbolKind, TypeChecker, TypeSystemMode,
+    Symbol, SymbolFlags, SymbolKind, TsTypeFlags, TypeChecker, TypeSystemMode,
 };
 use crate::parser::{Interner, Parser, Span, TypeContext};
 use crate::semantics::{SemanticProfile, SourceKind, TypingDiscipline};
@@ -123,6 +123,8 @@ pub struct ModuleCompiler {
     late_link_requirements: HashMap<u64, LateLinkRequirement>,
     /// Shared semantic profile for graph compilation.
     semantic_profile: SemanticProfile,
+    /// Optional TS checker flags for strict-TS profile compilation.
+    ts_type_flags: Option<TsTypeFlags>,
     /// Whether non-entry modules infer their profile from the source path.
     use_path_profiles: bool,
     /// Builtin declaration surface used for global symbol seeding.
@@ -221,6 +223,7 @@ impl ModuleCompiler {
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
             semantic_profile: SemanticProfile::raya(),
+            ts_type_flags: None,
             use_path_profiles: false,
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
             builtin_globals_override: None,
@@ -244,6 +247,7 @@ impl ModuleCompiler {
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
             semantic_profile: SemanticProfile::raya(),
+            ts_type_flags: None,
             use_path_profiles: false,
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
             builtin_globals_override: None,
@@ -292,6 +296,12 @@ impl ModuleCompiler {
     pub fn with_semantic_profile(mut self, profile: SemanticProfile) -> Self {
         self.semantic_profile = profile;
         self.use_path_profiles = true;
+        self
+    }
+
+    /// Configure strict-TS checker flags for profile-driven graph compilation.
+    pub fn with_ts_type_flags(mut self, flags: Option<TsTypeFlags>) -> Self {
+        self.ts_type_flags = flags;
         self
     }
 
@@ -907,18 +917,24 @@ impl ModuleCompiler {
     }
 
     fn parser_mode_for_path(&self, path: &Path) -> TypeSystemMode {
+        if self.is_virtual_module(path) {
+            return self.semantic_profile.parser_mode();
+        }
         let is_entry = self
             .root_entry_path
             .as_ref()
             .is_some_and(|entry| entry == path);
         if self.use_path_profiles && is_entry {
-            self.semantic_profile.type_system_mode()
+            self.semantic_profile.parser_mode()
         } else {
-            SemanticProfile::from_path(path).type_system_mode()
+            SemanticProfile::from_path(path).parser_mode()
         }
     }
 
     fn semantic_profile_for_path(&self, path: &Path) -> SemanticProfile {
+        if self.is_virtual_module(path) {
+            return self.semantic_profile;
+        }
         if !self.use_path_profiles {
             return self.semantic_profile;
         }
@@ -944,6 +960,14 @@ impl ModuleCompiler {
             options.allow_top_level_return = true;
         }
         options
+    }
+
+    fn checker_policy_for_path(&self, path: &Path) -> CheckerPolicy {
+        let profile = self.semantic_profile_for_path(path);
+        let ts_flags = matches!(profile.typing, TypingDiscipline::StrictTs)
+            .then_some(self.ts_type_flags)
+            .flatten();
+        profile.checker_policy(ts_flags)
     }
 
     fn inject_builtin_globals(
@@ -1019,8 +1043,8 @@ impl ModuleCompiler {
         // Bind
         let mut type_ctx = TypeContext::new();
         let semantic_profile = self.semantic_profile_for_path(path);
-        let checker_mode = semantic_profile.type_system_mode();
-        let checker_policy = semantic_profile.checker_policy(None);
+        let checker_mode = semantic_profile.checker_mode();
+        let checker_policy = self.checker_policy_for_path(path);
         let mut binder = Binder::new(&mut type_ctx, &interner)
             .with_mode(checker_mode)
             .with_policy(checker_policy);

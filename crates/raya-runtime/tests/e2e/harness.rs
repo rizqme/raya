@@ -204,7 +204,7 @@ where
 {
     let _guard = harness_vm_lock()
         .lock()
-        .expect("test harness VM lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     f()
 }
 

@@ -6,7 +6,7 @@ fn expect_bool(value: raya_runtime::Value, expected: bool) {
 }
 
 #[test]
-fn test_node_compat_define_property_enforces_writable_false() {
+fn test_node_compat_define_property_preserves_value_for_writable_false() {
     let runtime = Runtime::with_options(RuntimeOptions {
         builtin_mode: BuiltinMode::NodeCompat,
         ..Default::default()
@@ -33,7 +33,7 @@ fn test_node_compat_define_property_enforces_writable_false() {
                 threw = true;
             }
 
-            return threw && err["lockedField"] == "locked";
+            return !threw && err["lockedField"] == "locked";
             "#,
         )
         .expect("node-compat eval should succeed");

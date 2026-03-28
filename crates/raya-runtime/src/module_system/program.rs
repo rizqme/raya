@@ -8,6 +8,7 @@ use raya_engine::compiler::module::{
 use raya_engine::compiler::module::{ModuleCompileError, ModuleCompiler as BinaryModuleCompiler};
 use raya_engine::compiler::{module_id_from_name, SymbolType};
 use raya_engine::parser::{Interner, Parser};
+use raya_engine::parser::checker::TsTypeFlags;
 use raya_engine::semantics::{SemanticProfile, SourceKind};
 use raya_engine::vm::module::ModuleLinker;
 use std::collections::HashMap;
@@ -73,6 +74,11 @@ impl ProgramCompiler {
 
         let mut compiler = BinaryModuleCompiler::new(project_root)
             .with_semantic_profile(self.semantic_profile)
+            .with_ts_type_flags(
+                self.ts_options
+                    .as_ref()
+                    .map(TsCompilerOptions::effective_typecheck_flags),
+            )
             .with_builtin_surface_mode(self.builtin_surface_mode())
             .with_builtin_globals_override(builtin_globals);
         let mut compiled_modules = compiler.compile(&entry_path)?;
@@ -148,6 +154,11 @@ impl ProgramCompiler {
 
         let mut compiler = BinaryModuleCompiler::new(project_root)
             .with_semantic_profile(self.semantic_profile)
+            .with_ts_type_flags(
+                self.ts_options
+                    .as_ref()
+                    .map(TsCompilerOptions::effective_typecheck_flags),
+            )
             .with_builtin_surface_mode(self.builtin_surface_mode())
             .with_builtin_globals_override(builtin_globals);
         let mut compiled_modules =
@@ -479,7 +490,7 @@ fn looks_like_dynamic_import(source: &str) -> bool {
 fn parse_interner(source: &str, virtual_entry_path: &Path) -> Result<Interner, RuntimeError> {
     let parser = Parser::new_with_mode(
         source,
-        SemanticProfile::from_path(virtual_entry_path).type_system_mode(),
+        SemanticProfile::from_path(virtual_entry_path).parser_mode(),
     )
     .map_err(|errors| {
         RuntimeError::Lex(

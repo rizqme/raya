@@ -208,9 +208,9 @@ impl<'a> Interpreter<'a> {
                         "Expected closure or bound method".to_string(),
                     ));
                 };
-                if is_generator || !is_async {
+                if is_generator {
                     return OpcodeResult::Error(VmError::TypeError(
-                        "Expected async closure or bound method".to_string(),
+                        "Expected non-generator closure or bound method".to_string(),
                     ));
                 }
 

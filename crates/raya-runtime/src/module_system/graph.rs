@@ -175,7 +175,7 @@ impl ProgramGraphBuilder {
     ) -> Result<Vec<ImportResolution>, RuntimeError> {
         let parser = Parser::new_with_mode(
             source,
-            semantic_profile_for_module_key(importer).type_system_mode(),
+            semantic_profile_for_module_key(importer).parser_mode(),
         )
         .map_err(|errors| {
             RuntimeError::Lex(

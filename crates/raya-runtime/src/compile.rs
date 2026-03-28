@@ -69,7 +69,7 @@ impl TsCompilerOptions {
 pub fn default_semantic_profile_for_builtin(mode: BuiltinMode) -> SemanticProfile {
     match mode {
         BuiltinMode::RayaStrict => SemanticProfile::raya(),
-        BuiltinMode::NodeCompat => SemanticProfile::js(),
+        BuiltinMode::NodeCompat => SemanticProfile::node_compat(),
     }
 }
 
@@ -83,7 +83,7 @@ fn checker_policy_for_profile(
 }
 
 fn parser_for_profile(source: &str, profile: SemanticProfile) -> Result<Parser, Vec<LexError>> {
-    Parser::new_with_mode(source, profile.type_system_mode())
+    Parser::new_with_mode(source, profile.parser_mode())
 }
 
 struct GraphFrontend {
@@ -133,7 +133,14 @@ impl GraphFrontend {
         ts_options: Option<&TsCompilerOptions>,
     ) -> Result<Self, RuntimeError> {
         validate_profile_constraints(builtin_mode, profile, ts_options)?;
-        precheck_user_top_level_duplicates(source)?;
+        if matches!(profile.typing, raya_engine::semantics::TypingDiscipline::StrictTs)
+            && ts_options.is_some_and(|options| options.strict == Some(false))
+        {
+            return Err(RuntimeError::TypeCheck(
+                "TypeScript semantic profile requires strict TS compiler options.".to_string(),
+            ));
+        }
+        precheck_user_top_level_duplicates(source, profile)?;
         precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
         let full_source = source.to_string();
@@ -187,7 +194,7 @@ impl GraphFrontend {
         } = self;
 
         let mut binder = Binder::new(&mut type_ctx, &interner)
-            .with_mode(profile.type_system_mode())
+            .with_mode(profile.checker_mode())
             .with_policy(policy);
         binder.register_builtins(&[]);
         let builtin_exports = crate::Runtime::builtin_global_exports_for_mode(builtin_mode)
@@ -244,7 +251,7 @@ impl GraphFrontend {
 impl BoundGraphFrontend {
     fn check(mut self) -> Result<CheckedGraphFrontend, Vec<CheckError>> {
         let checker = TypeChecker::new(&mut self.type_ctx, &self.symbols, &self.interner)
-            .with_mode(self.profile.type_system_mode())
+            .with_mode(self.profile.checker_mode())
             .with_policy(self.policy);
         let check_result = checker.check_module(&self.ast)?;
 
@@ -393,7 +400,7 @@ pub fn compile_source_with_profile_and_ts_options(
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
     validate_profile_constraints(builtin_mode, profile, ts_options)?;
-    precheck_user_top_level_duplicates(source)?;
+    precheck_user_top_level_duplicates(source, profile)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
     use crate::module_system::ProgramCompiler;
@@ -582,22 +589,7 @@ fn validate_profile_constraints(
             "JS and TS semantic profiles require node-compat builtin mode.".to_string(),
         ));
     }
-    if matches!(profile.source_kind, SourceKind::Ts)
-        && ts_options.is_some_and(|options| {
-            let flags = options.effective_typecheck_flags();
-            !(flags.strict
-                && flags.no_implicit_any
-                && flags.no_implicit_this
-                && flags.strict_null_checks
-                && flags.strict_property_initialization
-                && flags.use_unknown_in_catch_variables
-                && flags.strict_function_types)
-        })
-    {
-        return Err(RuntimeError::TypeCheck(
-            "TypeScript semantic profile requires strict TS compiler options.".to_string(),
-        ));
-    }
+    let _ = ts_options;
     Ok(())
 }
 
@@ -685,8 +677,11 @@ fn format_parse_errors(errors: &[ParseError], prefix_lines: usize) -> String {
 }
 
 /// Detect duplicate top-level declarations in the submitted source.
-fn precheck_user_top_level_duplicates(source: &str) -> Result<(), RuntimeError> {
-    let parser = Parser::new(source).map_err(|errors| {
+fn precheck_user_top_level_duplicates(
+    source: &str,
+    profile: SemanticProfile,
+) -> Result<(), RuntimeError> {
+    let parser = parser_for_profile(source, profile).map_err(|errors| {
         RuntimeError::Lex(
             errors
                 .iter()

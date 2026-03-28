@@ -170,6 +170,27 @@ impl SemanticProfile {
         }
     }
 
+    /// Node-compat inline/profile default: JS runtime semantics with dynamic typing,
+    /// while still accepting TS syntax commonly used in embedded snippets/tests.
+    pub const fn node_compat() -> Self {
+        Self {
+            source_kind: SourceKind::Ts,
+            runtime: RuntimeSemanticsBase::EcmaScript,
+            typing: TypingDiscipline::DynamicJs,
+            concurrency: ConcurrencySemantics::StandardJsAsync,
+            optimization: OptimizationProfile::Compatibility,
+            js_this_binding_compat: true,
+            allow_unresolved_runtime_fallback: true,
+            track_top_level_completion: true,
+            emit_script_global_bindings: true,
+            script_global_bindings_configurable: true,
+            allow_top_level_return: false,
+            allow_await_outside_async: true,
+            allow_typescript_syntax: true,
+            allow_raya_syntax: false,
+        }
+    }
+
     /// Raya profile sharing the JS core but enabling coroutine-first behavior.
     pub const fn raya() -> Self {
         Self {
@@ -181,7 +202,7 @@ impl SemanticProfile {
             js_this_binding_compat: false,
             allow_unresolved_runtime_fallback: false,
             track_top_level_completion: false,
-            emit_script_global_bindings: true,
+            emit_script_global_bindings: false,
             script_global_bindings_configurable: false,
             allow_top_level_return: true,
             allow_await_outside_async: true,
@@ -204,12 +225,21 @@ impl SemanticProfile {
         Self::for_source_kind(SourceKind::from_path(path))
     }
 
-    /// Parser/checker mode used for syntax-specific parsing.
-    pub const fn type_system_mode(self) -> TypeSystemMode {
+    /// Parser mode used for syntax-specific parsing.
+    pub const fn parser_mode(self) -> TypeSystemMode {
         match self.source_kind {
             SourceKind::Js => TypeSystemMode::Js,
             SourceKind::Ts => TypeSystemMode::Ts,
             SourceKind::Raya => TypeSystemMode::Raya,
+        }
+    }
+
+    /// Binder/checker mode used for semantic analysis.
+    pub const fn checker_mode(self) -> TypeSystemMode {
+        match self.typing {
+            TypingDiscipline::DynamicJs => TypeSystemMode::Js,
+            TypingDiscipline::StrictTs => TypeSystemMode::Ts,
+            TypingDiscipline::RayaStrict => TypeSystemMode::Raya,
         }
     }
 
@@ -226,7 +256,7 @@ impl SemanticProfile {
 
     /// Early-error options derived from the profile.
     pub fn early_error_options(self) -> EarlyErrorOptions {
-        let mut options = EarlyErrorOptions::for_mode(self.type_system_mode());
+        let mut options = EarlyErrorOptions::for_mode(self.parser_mode());
         options.allow_top_level_return = self.allow_top_level_return;
         options.allow_await_outside_async = self.allow_await_outside_async;
         options
@@ -241,6 +271,12 @@ impl SemanticProfile {
             emit_script_global_bindings: self.emit_script_global_bindings,
             script_global_bindings_configurable: self.script_global_bindings_configurable,
         }
+    }
+
+    /// Whether async callables in this profile should use ECMAScript Promise-style
+    /// eager-start/runtime settlement semantics instead of scheduler-first coroutines.
+    pub const fn uses_js_async_runtime_semantics(self) -> bool {
+        matches!(self.concurrency, ConcurrencySemantics::StandardJsAsync)
     }
 }
 
@@ -354,6 +390,10 @@ impl SemanticLoweringPlan {
 
     pub fn lowering_semantics(&self) -> LoweringSemantics {
         self.hir.profile.lowering_semantics()
+    }
+
+    pub fn uses_js_async_runtime_semantics(&self) -> bool {
+        self.hir.profile.uses_js_async_runtime_semantics()
     }
 
     pub fn callable_kind_at_span(&self, span_start: usize) -> Option<CallableKind> {
