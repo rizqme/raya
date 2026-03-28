@@ -130,6 +130,8 @@ pub struct ExecutionFrame {
     pub return_action: ReturnAction,
     /// Argument count for the current call (for rest parameters)
     pub arg_count: usize,
+    /// Snapshot of raw call arguments before local/register slots can overwrite them.
+    pub arg_values: Vec<Value>,
 }
 
 impl OpcodeResult {

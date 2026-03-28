@@ -1801,6 +1801,7 @@ impl<'a> Interpreter<'a> {
         let mut code: &[u8] = &module.functions[current_func_id].code;
         let mut locals_base = task.current_locals_base();
         let mut current_arg_count = 0usize; // Track current function's arg count (for rest parameters)
+        let mut current_arg_values: Vec<Value> = Vec::new();
         #[cfg(feature = "jit")]
         let mut entry_initial_args_snapshot: Option<Vec<Value>> = None;
 
@@ -1876,6 +1877,7 @@ impl<'a> Interpreter<'a> {
                     ip = frame.ip;
                     locals_base = frame.locals_base;
                     current_arg_count = frame.arg_count;
+                    current_arg_values = frame.arg_values;
                     task.set_current_func_id(current_func_id);
                     task.set_current_locals_base(locals_base);
                     task.set_current_arg_count(current_arg_count);
@@ -1903,6 +1905,7 @@ impl<'a> Interpreter<'a> {
             {
                 entry_initial_args_snapshot = Some(initial_args.clone());
             }
+            current_arg_values = initial_args.clone();
             current_arg_count = initial_args.len();
             let initial_slot_count = entry_local_count.max(current_arg_count);
 
@@ -2180,6 +2183,7 @@ impl<'a> Interpreter<'a> {
                     ip = frame.ip;
                     locals_base = frame.locals_base;
                     current_arg_count = frame.arg_count;
+                    current_arg_values = frame.arg_values;
                     task.set_current_func_id(current_func_id);
                     task.set_current_locals_base(locals_base);
                     task.set_current_arg_count(current_arg_count);
@@ -2399,6 +2403,7 @@ impl<'a> Interpreter<'a> {
                 locals_base,
                 frames.len(),
                 current_arg_count,
+                &current_arg_values,
             ) {
                 OpcodeResult::Continue => {
                     // Continue to next instruction
@@ -2696,6 +2701,7 @@ impl<'a> Interpreter<'a> {
                         is_closure,
                         return_action,
                         arg_count: current_arg_count, // Save caller's arg count
+                        arg_values: current_arg_values.clone(),
                     });
 
                     // Push call frame for stack traces
@@ -2709,6 +2715,9 @@ impl<'a> Interpreter<'a> {
                     // Set up callee's frame on the same stack
                     // Args are already on the stack from the caller
                     locals_base = stack_guard.depth() - arg_count;
+                    current_arg_values = (0..arg_count)
+                        .map(|i| stack_guard.peek_at(locals_base + i).unwrap_or(Value::undefined()))
+                        .collect();
 
                     // Allocate remaining slots. Missing parameter slots must materialize as
                     // `undefined` in JS-compatible code; non-parameter locals stay `null`.
@@ -2924,6 +2933,7 @@ impl<'a> Interpreter<'a> {
                             ip = frame.ip;
                             locals_base = frame.locals_base;
                             current_arg_count = frame.arg_count; // Restore caller's arg count
+                            current_arg_values = frame.arg_values;
                             task.set_current_func_id(current_func_id);
                             task.set_current_locals_base(locals_base);
                             task.set_current_arg_count(current_arg_count);
@@ -2957,6 +2967,7 @@ impl<'a> Interpreter<'a> {
         locals_base: usize,
         frame_depth: usize,
         current_arg_count: usize,
+        current_arg_values: &[Value],
     ) -> OpcodeResult {
         match opcode {
             // =========================================================
@@ -2998,6 +3009,7 @@ impl<'a> Interpreter<'a> {
                 locals_base,
                 opcode,
                 current_arg_count,
+                current_arg_values,
             ),
 
             // =========================================================

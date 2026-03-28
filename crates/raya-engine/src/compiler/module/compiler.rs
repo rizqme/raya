@@ -2375,6 +2375,48 @@ mod tests {
     }
 
     #[test]
+    fn test_js_module_named_and_default_exports_use_runtime_slots() {
+        let temp_dir = create_test_project();
+        let dep_path = temp_dir.path().join("dep.js");
+
+        fs::write(
+            &dep_path,
+            r#"
+            const foo = 123;
+            export const ok = 123;
+            export default foo;
+            "#,
+        )
+        .unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf())
+            .with_semantic_profile(SemanticProfile::js());
+        let compiled = compiler.compile(&dep_path).expect("compile");
+        let dep = compiled
+            .iter()
+            .find(|module| module.path == dep_path.canonicalize().unwrap())
+            .expect("dep module");
+
+        let ok_export = dep
+            .bytecode
+            .exports
+            .iter()
+            .find(|export| export.name == "ok")
+            .expect("named export");
+        assert_eq!(ok_export.symbol_type, SymbolType::Constant);
+        assert_eq!(ok_export.runtime_global_slot, Some(ok_export.index as u32));
+
+        let default_export = dep
+            .bytecode
+            .exports
+            .iter()
+            .find(|export| export.name == "default")
+            .expect("default export");
+        assert_eq!(default_export.symbol_type, SymbolType::Constant);
+        assert!(default_export.runtime_global_slot.is_some());
+    }
+
+    #[test]
     fn test_strict_default_import_rejects_unknown_signature_without_dynamic_fallback() {
         let temp_dir = create_test_project();
         let main_path = temp_dir.path().join("main.raya");

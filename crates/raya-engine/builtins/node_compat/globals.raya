@@ -243,6 +243,13 @@ class __NodeCompatReflect {
         return __NATIVE_CALL<boolean>(NC_REFLECT_HAS, target, key);
     }
 
+    apply(target: any, thisArg: any, args: any = null): any {
+        if (typeof target != "function") {
+            throw new TypeError("Reflect.apply target must be callable");
+        }
+        return target.apply(thisArg, args);
+    }
+
     construct(target: any, args: any = null, newTarget: any = null): Object {
         return __NATIVE_CALL<Object>(NC_REFLECT_CONSTRUCT, target, args, newTarget);
     }

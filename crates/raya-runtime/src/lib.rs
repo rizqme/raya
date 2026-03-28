@@ -225,6 +225,21 @@ impl Default for Runtime {
 }
 
 impl Runtime {
+    fn ensure_runtime_module_identity(module: &Module) -> Result<Arc<Module>, RuntimeError> {
+        if module.checksum.iter().any(|byte| *byte != 0) {
+            return Ok(Arc::new(module.clone()));
+        }
+
+        let encoded = module.encode();
+        let finalized = Module::decode(&encoded).map_err(|error| {
+            RuntimeError::Dependency(format!(
+                "Failed to materialize runtime module identity for '{}': {}",
+                module.metadata.name, error
+            ))
+        })?;
+        Ok(Arc::new(finalized))
+    }
+
     fn is_source_file_extension(extension: &str) -> bool {
         matches!(
             extension,
@@ -1119,30 +1134,33 @@ impl Runtime {
         deps: &[CompiledModule],
     ) -> Result<Value, RuntimeError> {
         self.ensure_ambient_builtin_globals_seeded(vm)?;
+        let finalized_deps = deps
+            .iter()
+            .map(|dep| Self::ensure_runtime_module_identity(&dep.module))
+            .collect::<Result<Vec<_>, _>>()?;
+        let finalized_entry = Self::ensure_runtime_module_identity(&module.module)?;
+
         // Register dependency modules.
-        for dep in deps {
+        for dep in &finalized_deps {
             vm.shared_state()
-                .register_module(Arc::new(dep.module.clone()))
+                .register_module(dep.clone())
                 .map_err(RuntimeError::Dependency)?;
         }
         vm.shared_state()
-            .register_module(Arc::new(module.module.clone()))
+            .register_module(finalized_entry.clone())
             .map_err(RuntimeError::Dependency)?;
 
-        let mut modules = deps
-            .iter()
-            .map(|dep| Arc::new(dep.module.clone()))
-            .collect::<Vec<_>>();
-        modules.push(Arc::new(module.module.clone()));
+        let mut modules = finalized_deps;
+        modules.push(finalized_entry.clone());
         let linker = self.build_module_linker(&modules)?;
         let entry_module = modules
             .iter()
-            .find(|loaded| loaded.metadata.name == module.module.metadata.name)
+            .find(|loaded| loaded.metadata.name == finalized_entry.metadata.name)
             .cloned()
             .ok_or_else(|| {
                 RuntimeError::Dependency(format!(
                     "Entry module '{}' missing from runtime module set",
-                    module.module.metadata.name
+                    finalized_entry.metadata.name
                 ))
             })?;
         let init_order = self.compute_module_init_order(&linker, &entry_module)?;

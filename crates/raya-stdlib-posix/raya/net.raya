@@ -25,17 +25,18 @@ class TcpListener {
         return __NATIVE_CALL<string>("net.tcpListenerAddr", this._handle);
     }
 
-    async serve(handler: (stream: TcpStream) => Promise<void>): Promise<void> {
-        while (true) {
-            const acceptTask = async this.accept();
-            const stream = await acceptTask;
-            if (stream == null) {
-                break;
+    serve(handler: (stream: TcpStream) => Promise<void>): Promise<void> {
+        return async {
+            while (true) {
+                const stream = this.accept();
+                if (stream == null) {
+                    break;
+                }
+                // Spawn-style behavior: invoking async handler starts a Promise immediately.
+                // We intentionally do not await to keep connection handling concurrent.
+                const _promise = handler(stream);
             }
-            // Spawn-style behavior: invoking async handler starts a Promise immediately.
-            // We intentionally do not await to keep connection handling concurrent.
-            const _promise = handler(stream);
-        }
+        };
     }
 }
 

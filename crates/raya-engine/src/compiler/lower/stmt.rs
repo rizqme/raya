@@ -105,24 +105,14 @@ impl<'a> Lowerer<'a> {
         nominal_type_id: crate::compiler::ir::NominalTypeId,
         class_value: Register,
     ) {
-        let publish_runtime_instance_methods = class.members.iter().any(|member| {
-            matches!(
-                member,
-                ast::ClassMember::Method(method)
-                    if !method.is_static
-                        && method.body.is_some()
-                        && matches!(method.name, ast::PropertyKey::Computed(_))
-            )
-        });
-        let publish_runtime_static_methods = class.members.iter().any(|member| {
-            matches!(
-                member,
-                ast::ClassMember::Method(method)
-                    if method.is_static
-                        && method.body.is_some()
-                        && matches!(method.name, ast::PropertyKey::Computed(_))
-            )
-        });
+        let publish_runtime_instance_methods = self
+            .class_info_map
+            .get(&nominal_type_id)
+            .is_some_and(|info| info.publish_runtime_instance_methods);
+        let publish_runtime_static_methods = self
+            .class_info_map
+            .get(&nominal_type_id)
+            .is_some_and(|info| info.publish_runtime_static_methods);
         let mut prototype_value = None;
         if self.js_this_binding_compat {
             if let Some(extends_expr) = &class.extends_expr {
@@ -1740,68 +1730,76 @@ impl<'a> Lowerer<'a> {
                         .unwrap_or(UNRESOLVED);
                     let destructuring_field_ty = UNRESOLVED;
 
-                    let field_reg = if let (Some(layout), Some(prop_name)) =
-                        (field_layout.as_ref(), static_prop_name.as_ref())
-                    {
+                    let field_reg = if property.default.is_none() {
+                        if let (Some(layout), Some(prop_name)) =
+                            (field_layout.as_ref(), static_prop_name.as_ref())
+                        {
                         // Statically known layout: use direct field slot when present.
-                        let Some(field_index) = layout
-                            .iter()
-                            .find(|(name, _)| name == prop_name)
-                            .map(|(_, idx)| *idx as u16)
-                        else {
-                            if let Some(default_expr) = &property.default {
-                                let default_val = self.lower_expr(default_expr);
-                                self.maybe_assign_anonymous_binding_name(
-                                    &property.value,
-                                    default_expr,
-                                    &default_val,
-                                );
-                                self.bind_pattern(&property.value, default_val);
-                            } else {
-                                let undefined_reg = self.alloc_register(TypeId::new(0));
-                                self.emit(IrInstr::Assign {
-                                    dest: undefined_reg.clone(),
-                                    value: IrValue::Constant(crate::ir::IrConstant::Undefined),
+                            let Some(field_index) = layout
+                                .iter()
+                                .find(|(name, _)| name == prop_name)
+                                .map(|(_, idx)| *idx as u16)
+                            else {
+                                if let Some(default_expr) = &property.default {
+                                    let default_val = self.lower_expr(default_expr);
+                                    self.maybe_assign_anonymous_binding_name(
+                                        &property.value,
+                                        default_expr,
+                                        &default_val,
+                                    );
+                                    self.bind_pattern(&property.value, default_val);
+                                } else {
+                                    let undefined_reg = self.alloc_register(TypeId::new(0));
+                                    self.emit(IrInstr::Assign {
+                                        dest: undefined_reg.clone(),
+                                        value: IrValue::Constant(crate::ir::IrConstant::Undefined),
+                                    });
+                                    self.bind_pattern(&property.value, undefined_reg);
+                                }
+                                continue;
+                            };
+                            let loaded = self.alloc_register(destructuring_field_ty);
+                            if let Some(shape_id) = projected_shape_id {
+                                self.emit(IrInstr::LoadFieldShape {
+                                    dest: loaded.clone(),
+                                    object: value_reg.clone(),
+                                    shape_id,
+                                    field: field_index,
+                                    optional: false,
                                 });
-                                self.bind_pattern(&property.value, undefined_reg);
+                            } else {
+                                self.emit(IrInstr::LoadFieldExact {
+                                    dest: loaded.clone(),
+                                    object: value_reg.clone(),
+                                    field: field_index,
+                                    optional: false,
+                                });
                             }
-                            continue;
-                        };
-                        let loaded = self.alloc_register(destructuring_field_ty);
-                        if let Some(shape_id) = projected_shape_id {
-                            self.emit(IrInstr::LoadFieldShape {
-                                dest: loaded.clone(),
-                                object: value_reg.clone(),
-                                shape_id,
-                                field: field_index,
-                                optional: false,
-                            });
+                            if let Some(nested_layout) = self
+                                .register_nested_object_fields
+                                .get(&(value_reg.id, field_index))
+                                .cloned()
+                            {
+                                self.register_object_fields.insert(loaded.id, nested_layout);
+                            }
+                            if let Some(elem_layout) = self
+                                .register_nested_array_element_object_fields
+                                .get(&(value_reg.id, field_index))
+                                .cloned()
+                            {
+                                self.register_array_element_object_fields
+                                    .insert(loaded.id, elem_layout);
+                            }
+                            loaded
                         } else {
-                            self.emit(IrInstr::LoadFieldExact {
-                                dest: loaded.clone(),
-                                object: value_reg.clone(),
-                                field: field_index,
-                                optional: false,
-                            });
+                            // Dynamic layout or computed key: read through keyed property access.
+                            self.emit_destructuring_property_load(
+                                value_reg.clone(),
+                                key_reg.clone(),
+                                destructuring_field_ty,
+                            )
                         }
-                        if let Some(nested_layout) = self
-                            .register_nested_object_fields
-                            .get(&(value_reg.id, field_index))
-                            .cloned()
-                        {
-                            self.register_object_fields.insert(loaded.id, nested_layout);
-                        }
-                        if let Some(elem_layout) = self
-                            .register_nested_array_element_object_fields
-                            .get(&(value_reg.id, field_index))
-                            .cloned()
-                        {
-                            self.register_array_element_object_fields
-                                .insert(loaded.id, elem_layout);
-                        }
-                        loaded
                     } else {
-                        // Dynamic layout or computed key: read through keyed property access.
                         self.emit_destructuring_property_load(
                             value_reg.clone(),
                             key_reg.clone(),
@@ -2225,7 +2223,9 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
-        if self.js_this_binding_compat && decl.kind != crate::parser::ast::VariableKind::Var {
+        let is_js_lexical = self.js_this_binding_compat
+            && decl.kind != crate::parser::ast::VariableKind::Var;
+        if is_js_lexical {
             super::collect_pattern_names(&decl.pattern, &mut self.visible_js_lexical_symbols);
         }
         if decl.kind == crate::parser::ast::VariableKind::Const {
@@ -2238,8 +2238,21 @@ impl<'a> Lowerer<'a> {
             ast::Pattern::Array(_) | ast::Pattern::Object(_) => {
                 // Destructuring: evaluate initializer, then bind pattern
                 if let Some(init) = &decl.initializer {
+                    let saved_local_tdz_symbols = if is_js_lexical {
+                        let mut names = FxHashSet::default();
+                        super::collect_pattern_names(&decl.pattern, &mut names);
+                        let saved = std::mem::take(&mut self.local_tdz_symbols);
+                        self.local_tdz_symbols = saved.clone();
+                        self.local_tdz_symbols.extend(names);
+                        Some(saved)
+                    } else {
+                        None
+                    };
                     let value = self
                         .lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
+                    if let Some(saved_local_tdz_symbols) = saved_local_tdz_symbols {
+                        self.local_tdz_symbols = saved_local_tdz_symbols;
+                    }
                     self.bind_pattern(&decl.pattern, value);
                 }
                 return;
@@ -2755,12 +2768,51 @@ impl<'a> Lowerer<'a> {
             self.allocate_local(name)
         };
 
-        // Check if this variable needs RefCell wrapping (captured by closure)
-        let needs_refcell = self.refcell_vars.contains(&name);
+        // Check if this variable needs RefCell wrapping (captured by closure).
+        // JS lexical bindings with function-valued initializers can become observable
+        // from nested direct eval during their own initialization, so preallocate
+        // them as live cells rather than snapshotting a pre-init value.
+        let lexical_initializer_refcell =
+            is_js_lexical && self.function_depth > 0 && decl.initializer.is_some();
+        let needs_refcell = self.refcell_vars.contains(&name) || lexical_initializer_refcell;
+
+        if lexical_initializer_refcell
+            && !reuses_hoisted_local
+            && !reuses_preallocated_capture
+            && !self.refcell_registers.contains_key(&local_idx)
+        {
+            let undefined = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Assign {
+                dest: undefined.clone(),
+                value: IrValue::Constant(IrConstant::Undefined),
+            });
+            let refcell_ty = TypeId::new(0);
+            let refcell_reg = self.alloc_register(refcell_ty);
+            self.emit(IrInstr::NewRefCell {
+                dest: refcell_reg.clone(),
+                initial_value: undefined,
+            });
+            self.local_registers.insert(local_idx, refcell_reg.clone());
+            self.refcell_registers
+                .insert(local_idx, refcell_reg.clone());
+            self.refcell_inner_types.insert(local_idx, UNRESOLVED);
+            self.emit(IrInstr::StoreLocal {
+                index: local_idx,
+                value: refcell_reg,
+            });
+        }
 
         // If there's an initializer, evaluate and store
         // The register from lowering the expression will have the correct inferred type
         if let Some(init) = &decl.initializer {
+            let saved_local_tdz_symbols = if is_js_lexical {
+                let saved = std::mem::take(&mut self.local_tdz_symbols);
+                self.local_tdz_symbols = saved.clone();
+                self.local_tdz_symbols.insert(name);
+                Some(saved)
+            } else {
+                None
+            };
             let explicit_dynamic_any_annotation =
                 decl.type_annotation.as_ref().is_some_and(|type_ann| {
                     self.type_is_dynamic_any_like(
@@ -3093,6 +3145,9 @@ impl<'a> Lowerer<'a> {
                     index: local_idx,
                     value,
                 });
+            }
+            if let Some(saved_local_tdz_symbols) = saved_local_tdz_symbols {
+                self.local_tdz_symbols = saved_local_tdz_symbols;
             }
         } else {
             // No initializer: still honor type-annotation hints for later dispatch.

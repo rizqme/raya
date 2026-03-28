@@ -108,6 +108,10 @@ pub enum TypeGuard {
 /// - `x !== null` → Nullish guard (negated)
 /// - `x === null` → Nullish guard
 pub fn extract_type_guard(expr: &Expression, interner: &Interner) -> Option<TypeGuard> {
+    if let Expression::Parenthesized(paren) = expr {
+        return extract_type_guard(&paren.expression, interner);
+    }
+
     // Negated guards: !(...)
     if let Expression::Unary(unary) = expr {
         if matches!(unary.operator, UnaryOperator::Not) {
@@ -183,6 +187,10 @@ pub fn extract_type_guard(expr: &Expression, interner: &Interner) -> Option<Type
 /// - `Number.isFinite(x)`
 /// - `!Array.isArray(x)` (negated)
 pub fn extract_call_type_guard(expr: &Expression, interner: &Interner) -> Option<TypeGuard> {
+    if let Expression::Parenthesized(paren) = expr {
+        return extract_call_type_guard(&paren.expression, interner);
+    }
+
     // Handle negation: !Array.isArray(x)
     let (call_expr, negated) = match expr {
         Expression::Unary(unary)
@@ -563,6 +571,21 @@ mod tests {
                 var: "x".to_string(),
                 field: None,
                 negated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_extract_negated_parenthesized_nullish_guard() {
+        let (expr, interner) = parse_expr("!(x === null)");
+        let guard = extract_type_guard(&expr, &interner).unwrap();
+
+        assert_eq!(
+            guard,
+            TypeGuard::Nullish {
+                var: "x".to_string(),
+                field: None,
+                negated: true,
             }
         );
     }

@@ -770,6 +770,9 @@ fn jit_execute_sync_frame(
     let mut current_func_id = initial_func_id;
     let mut ip = 0usize;
     let mut current_arg_count = initial_arg_count;
+    let mut current_arg_values: Vec<Value> = (0..initial_arg_count)
+        .map(|i| stack.peek_at(stack.depth().saturating_sub(initial_arg_count) + i).unwrap_or(Value::undefined()))
+        .collect();
     let mut current_is_closure = initial_is_closure;
     let mut current_return_action = initial_return_action;
 
@@ -831,6 +834,7 @@ fn jit_execute_sync_frame(
                 current_is_closure = frame.is_closure;
                 current_return_action = frame.return_action;
                 current_arg_count = frame.arg_count;
+                current_arg_values = frame.arg_values;
                 task.set_current_func_id(current_func_id);
                 task.set_current_locals_base(locals_base);
                 task.set_current_arg_count(current_arg_count);
@@ -868,6 +872,7 @@ fn jit_execute_sync_frame(
             locals_base,
             frame_depth,
             current_arg_count,
+            &current_arg_values,
         ) {
             crate::vm::interpreter::OpcodeResult::Continue => {}
             crate::vm::interpreter::OpcodeResult::Return(return_value) => {
@@ -895,6 +900,7 @@ fn jit_execute_sync_frame(
                     current_is_closure = frame.is_closure;
                     current_return_action = frame.return_action;
                     current_arg_count = frame.arg_count;
+                    current_arg_values = frame.arg_values;
                     task.set_current_func_id(current_func_id);
                     task.set_current_locals_base(locals_base);
                     task.set_current_arg_count(current_arg_count);
@@ -943,11 +949,15 @@ fn jit_execute_sync_frame(
                     is_closure: current_is_closure,
                     return_action: current_return_action,
                     arg_count: current_arg_count,
+                    arg_values: current_arg_values.clone(),
                 });
                 task.push_call_frame(func_id);
                 if let Some(cv) = closure_val {
                     task.push_closure(cv);
                 }
+                current_arg_values = (0..arg_count)
+                    .map(|i| stack.peek_at(stack.depth().saturating_sub(arg_count) + i).unwrap_or(Value::undefined()))
+                    .collect();
 
                 locals_base = stack.depth().saturating_sub(arg_count);
                 let local_count = callee_module

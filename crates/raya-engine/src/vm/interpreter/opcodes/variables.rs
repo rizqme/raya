@@ -22,6 +22,7 @@ impl<'a> Interpreter<'a> {
         locals_base: usize,
         opcode: Opcode,
         current_arg_count: usize,
+        current_arg_values: &[Value],
     ) -> OpcodeResult {
         match opcode {
             Opcode::LoadLocal => {
@@ -121,10 +122,10 @@ impl<'a> Interpreter<'a> {
                     }
                 };
                 let value = if index < current_arg_count {
-                    match stack.peek_at(locals_base + index) {
-                        Ok(v) => v,
-                        Err(e) => return OpcodeResult::Error(e),
-                    }
+                    current_arg_values
+                        .get(index)
+                        .copied()
+                        .unwrap_or(Value::undefined())
                 } else {
                     Value::undefined()
                 };

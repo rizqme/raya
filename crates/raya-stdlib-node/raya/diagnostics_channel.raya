@@ -44,36 +44,37 @@ class DiagChannel {
     }
 }
 
-class DiagnosticsChannel {
-    channel(name: string): DiagChannel {
-        // Return existing or create new
-        let i = 0;
-        while (i < _channelNames.length) {
-            if (_channelNames[i] == name) {
-                return _channels[i];
-            }
-            i = i + 1;
-        }
-        const ch = new DiagChannel(name);
-        _channelNames.push(name);
-        _channels.push(ch);
-        return ch;
-    }
-
-    hasSubscribers(name: string): boolean {
-        let i = 0;
-        while (i < _channelNames.length) {
-            if (_channelNames[i] == name) {
-                return _channels[i].hasSubscribers();
-            }
-            i = i + 1;
-        }
-        return false;
-    }
-}
-
 const _channels: DiagChannel[] = [];
 const _channelNames: string[] = [];
-const diagnosticsChannel = new DiagnosticsChannel();
+
+function channel(name: string): DiagChannel {
+    let i = 0;
+    while (i < _channelNames.length) {
+        if (_channelNames[i] == name) {
+            return _channels[i];
+        }
+        i = i + 1;
+    }
+    const ch = new DiagChannel(name);
+    _channelNames.push(name);
+    _channels.push(ch);
+    return ch;
+}
+
+function hasSubscribers(name: string): boolean {
+    let i = 0;
+    while (i < _channelNames.length) {
+        if (_channelNames[i] == name) {
+            return _channels[i].hasSubscribers();
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+const diagnosticsChannel = {
+    channel,
+    hasSubscribers,
+};
 export { DiagChannel };
 export default diagnosticsChannel;

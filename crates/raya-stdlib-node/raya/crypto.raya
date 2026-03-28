@@ -62,8 +62,7 @@ class NodeCrypto {
         return new Hmac(algorithm, key);
     }
 
-    randomBytes(sizeOrSelf: number | unknown, maybeSize?: number): Buffer {
-        const size: number = Number(maybeSize != null ? maybeSize : sizeOrSelf);
+    randomBytes(size: number): Buffer {
         return __NATIVE_CALL<Buffer>("crypto.randomBytes", size);
     }
 
@@ -71,9 +70,7 @@ class NodeCrypto {
         return __NATIVE_CALL<string>("crypto.randomUUID");
     }
 
-    randomInt(minOrSelf: number | unknown, maxOrMin: number, maybeMax?: number): number {
-        const min: number = Number(maybeMax != null ? maxOrMin : minOrSelf);
-        const max: number = Number(maybeMax != null ? maybeMax : maxOrMin);
+    randomInt(min: number, max: number): number {
         return __NATIVE_CALL<number>("crypto.randomInt", min, max);
     }
 
@@ -120,8 +117,7 @@ function createHmac(algorithm: string, key: string): Hmac {
     return new Hmac(algorithm, key);
 }
 
-function randomBytes(sizeOrSelf: number | unknown, maybeSize?: number): Buffer {
-    const size: number = Number(maybeSize != null ? maybeSize : sizeOrSelf);
+function randomBytes(size: number): Buffer {
     return __NATIVE_CALL<Buffer>("crypto.randomBytes", size);
 }
 
@@ -129,9 +125,7 @@ function randomUUID(): string {
     return __NATIVE_CALL<string>("crypto.randomUUID");
 }
 
-function randomInt(minOrSelf: number | unknown, maxOrMin: number, maybeMax?: number): number {
-    const min: number = Number(maybeMax != null ? maxOrMin : minOrSelf);
-    const max: number = Number(maybeMax != null ? maybeMax : maxOrMin);
+function randomInt(min: number, max: number): number {
     return __NATIVE_CALL<number>("crypto.randomInt", min, max);
 }
 

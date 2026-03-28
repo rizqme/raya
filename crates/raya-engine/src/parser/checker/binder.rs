@@ -3790,8 +3790,8 @@ impl<'a> Binder<'a> {
     ) -> Result<(), BindError> {
         let mut seen_optional = false;
         for param in params {
-            let is_optional = param.optional;
-            if is_optional {
+            let is_optional_like = param.optional || param.default_value.is_some();
+            if is_optional_like {
                 seen_optional = true;
             } else if seen_optional {
                 let name = if let crate::parser::ast::Pattern::Identifier(ident) = &param.pattern {

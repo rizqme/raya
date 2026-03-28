@@ -106,18 +106,20 @@ class HttpServer {
         return __NATIVE_CALL<number>("http.serverPort", this._handle);
     }
 
-    async serve(handler: (req: HttpRequest, server: HttpServer) => Promise<void>): Promise<void> {
-        while (true) {
-            let req: HttpRequest;
-            try {
-                req = await async this.accept();
-            } catch (_err) {
-                break;
+    serve(handler: (req: HttpRequest, server: HttpServer) => Promise<void>): Promise<void> {
+        return async {
+            while (true) {
+                let req: HttpRequest;
+                try {
+                    req = this.accept();
+                } catch (_err) {
+                    break;
+                }
+                // Spawn-style behavior: invoking async handler starts a Promise immediately.
+                // We intentionally do not await to keep request handling concurrent.
+                const _promise = handler(req, this);
             }
-            // Spawn-style behavior: invoking async handler starts a Promise immediately.
-            // We intentionally do not await to keep request handling concurrent.
-            const _promise = handler(req, this);
-        }
+        };
     }
 }
 

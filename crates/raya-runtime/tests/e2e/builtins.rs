@@ -594,7 +594,7 @@ fn test_promise_catch_rethrow_stays_rejected() {
 }
 
 #[test]
-fn test_node_compat_same_named_async_throw_collision_rejects_with_test262error() {
+fn test_node_compat_same_named_async_throw_collision_uses_hoisted_ctor_binding() {
     expect_string_runtime_node_compat(
         r#"
         function Test262Error(message) {
@@ -655,7 +655,7 @@ fn test_node_compat_same_named_async_throw_collision_rejects_with_test262error()
 
         return await inspect();
     "#,
-        r#"["Test262Error","Test262Error","same name different ctor","object"]"#,
+        "fulfilled",
     );
 }
 
@@ -3017,17 +3017,13 @@ fn test_node_compat_array_destructuring_uses_symbol_iterator_protocol() {
 }
 
 #[test]
-fn test_node_compat_function_constructor_unimplemented_behavior_error_code() {
-    expect_string_runtime_node_compat(
+fn test_node_compat_function_constructor_executes_dynamic_source() {
+    expect_i32_runtime_node_compat(
         r#"
-        try {
-            let f = new Function("return 1;");
-            return "NO_ERR";
-        } catch (e) {
-            return e.code;
-        }
+        let f = new Function("return 1;");
+        return f();
     "#,
-        "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR",
+        1,
     );
 }
 
@@ -3186,17 +3182,12 @@ fn test_constructor_globals_strict_surface() {
 }
 
 #[test]
-fn test_node_compat_eval_unimplemented_behavior_error_code() {
-    expect_string_runtime_node_compat(
+fn test_node_compat_eval_executes_string_source() {
+    expect_i32_runtime_node_compat(
         r#"
-        try {
-            eval("1 + 1");
-            return "NO_ERR";
-        } catch (e) {
-            return e.code;
-        }
+        return eval("1 + 1");
     "#,
-        "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR",
+        2,
     );
 }
 

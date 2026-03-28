@@ -65,20 +65,29 @@ function testCase(name: string, fn: () => void): void {
     it(name, fn);
 }
 
-class Test {
-    describe(name: string, fn: () => void): void { describe(name, fn); }
-    it(name: string, fn: () => void): void { it(name, fn); }
-    test(name: string, fn: () => void): void { testCase(name, fn); }
-    before(fn: () => void): void { before(fn); }
-    after(fn: () => void): void { after(fn); }
-    beforeEach(fn: () => void): void { beforeEach(fn); }
-    afterEach(fn: () => void): void { afterEach(fn); }
-
-    passed(): number { return _passed; }
-    failed(): number { return _failed; }
-    total(): number { return _passed + _failed; }
+function passed(): number {
+    return _passed;
 }
 
-const testRunner = new Test();
+function failed(): number {
+    return _failed;
+}
+
+function total(): number {
+    return _passed + _failed;
+}
+
+const testRunner = {
+    describe,
+    it,
+    test: testCase,
+    before,
+    after,
+    beforeEach,
+    afterEach,
+    passed,
+    failed,
+    total,
+};
 export { describe, it, testCase as test, before, after, beforeEach, afterEach };
 export default testRunner;

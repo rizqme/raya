@@ -317,7 +317,23 @@ impl<'a> Interpreter<'a> {
         }
         drop(classes);
 
-        let mut callable = Object::new_bound_method(receiver, func_id, method_module);
+        let mut callable = if method_module
+            .as_ref()
+            .and_then(|module| module.functions.get(func_id))
+            .is_some_and(|function| function.uses_js_this_slot)
+        {
+            Object::new_closure_with_module(
+                func_id,
+                Vec::new(),
+                method_module.clone().ok_or_else(|| {
+                    VmError::RuntimeError(
+                        "Missing module for JS method materialization".to_string(),
+                    )
+                })?,
+            )
+        } else {
+            Object::new_bound_method(receiver, func_id, method_module)
+        };
         self.attach_bound_method_home_object(&mut callable, receiver, method_owner_id);
         let gc_ptr = self.gc.lock().allocate(callable);
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })

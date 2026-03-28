@@ -42,6 +42,12 @@ pub fn call_crypto_method(
     }
 }
 
+fn js_int_arg(value: NativeValue) -> Option<i32> {
+    value
+        .as_i32()
+        .or_else(|| value.as_f64().map(|f| f as i32))
+}
+
 // ============================================================================
 // Method Implementations
 // ============================================================================
@@ -156,7 +162,7 @@ fn random_bytes(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
         return NativeCallResult::Error("crypto.randomBytes requires 1 argument".to_string());
     }
 
-    let size = match args[0].as_i32() {
+    let size = match js_int_arg(args[0]) {
         Some(n) => n as usize,
         None => return NativeCallResult::Error("Expected number for size".to_string()),
     };
@@ -180,12 +186,12 @@ fn random_int(args: &[NativeValue]) -> NativeCallResult {
         return NativeCallResult::Error("crypto.randomInt requires 2 arguments".to_string());
     }
 
-    let min = match args[0].as_i32() {
+    let min = match js_int_arg(args[0]) {
         Some(n) => n,
         None => return NativeCallResult::Error("Expected number for min".to_string()),
     };
 
-    let max = match args[1].as_i32() {
+    let max = match js_int_arg(args[1]) {
         Some(n) => n,
         None => return NativeCallResult::Error("Expected number for max".to_string()),
     };
@@ -346,7 +352,7 @@ fn generate_key(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
         return NativeCallResult::Error("crypto.generateKey requires 1 argument".to_string());
     }
 
-    let bits = match args[0].as_i32() {
+    let bits = match js_int_arg(args[0]) {
         Some(n) => n,
         None => return NativeCallResult::Error("Expected number for bits".to_string()),
     };
@@ -491,7 +497,7 @@ fn hkdf(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
         Err(e) => return NativeCallResult::Error(format!("Invalid info: {}", e)),
     };
 
-    let length = match args[4].as_i32() {
+    let length = match js_int_arg(args[4]) {
         Some(n) => n as usize,
         None => return NativeCallResult::Error("Expected number for length".to_string()),
     };
@@ -522,12 +528,12 @@ fn pbkdf2(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
         Err(e) => return NativeCallResult::Error(format!("Invalid salt: {}", e)),
     };
 
-    let iterations = match args[2].as_i32() {
+    let iterations = match js_int_arg(args[2]) {
         Some(n) => n as u32,
         None => return NativeCallResult::Error("Expected number for iterations".to_string()),
     };
 
-    let length = match args[3].as_i32() {
+    let length = match js_int_arg(args[3]) {
         Some(n) => n as usize,
         None => return NativeCallResult::Error("Expected number for length".to_string()),
     };

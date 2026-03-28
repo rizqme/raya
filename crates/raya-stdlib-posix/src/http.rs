@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net;
 use std::os::fd::AsRawFd;
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
 /// Server entry: TcpListener + optional TLS config
 struct HttpServerEntry {
@@ -128,30 +129,46 @@ pub fn server_accept(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
                 }
             };
 
-            match listener.accept() {
-                Ok((stream, addr)) => {
-                    if CLOSED_HTTP_SERVERS.contains(&handle) {
-                        return IoCompletion::Primitive(NativeValue::f64(0.0));
-                    }
-                    let remote = addr.to_string();
-                    let result = if let Some(ref tls) = tls_config {
-                        accept_tls_request(stream, tls.clone(), &remote)
-                    } else {
-                        accept_plain_request(stream, &remote)
-                    };
-                    match result {
-                        Ok(req) => {
-                            let req_handle = HTTP_REQUESTS.insert(req);
-                            IoCompletion::Primitive(NativeValue::f64(req_handle as f64))
-                        }
-                        Err(e) => IoCompletion::Error(format!("http.serverAccept: {}", e)),
-                    }
+            if let Err(e) = listener.set_nonblocking(true) {
+                return IoCompletion::Error(format!("http.serverAccept: {}", e));
+            }
+
+            loop {
+                if CLOSED_HTTP_SERVERS.contains(&handle) {
+                    return IoCompletion::Primitive(NativeValue::f64(0.0));
                 }
-                Err(e) => {
-                    if CLOSED_HTTP_SERVERS.contains(&handle) {
-                        IoCompletion::Primitive(NativeValue::f64(0.0))
-                    } else {
-                        IoCompletion::Error(format!("http.serverAccept: {}", e))
+
+                match listener.accept() {
+                    Ok((stream, addr)) => {
+                        if CLOSED_HTTP_SERVERS.contains(&handle) {
+                            return IoCompletion::Primitive(NativeValue::f64(0.0));
+                        }
+                        let remote = addr.to_string();
+                        let result = if let Some(ref tls) = tls_config {
+                            accept_tls_request(stream, tls.clone(), &remote)
+                        } else {
+                            accept_plain_request(stream, &remote)
+                        };
+                        match result {
+                            Ok(req) => {
+                                let req_handle = HTTP_REQUESTS.insert(req);
+                                return IoCompletion::Primitive(NativeValue::f64(req_handle as f64));
+                            }
+                            Err(e) => {
+                                return IoCompletion::Error(format!("http.serverAccept: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => {
+                        return if CLOSED_HTTP_SERVERS.contains(&handle) {
+                            IoCompletion::Primitive(NativeValue::f64(0.0))
+                        } else {
+                            IoCompletion::Error(format!("http.serverAccept: {}", e))
+                        };
                     }
                 }
             }

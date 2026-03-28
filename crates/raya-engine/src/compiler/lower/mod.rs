@@ -108,6 +108,10 @@ struct GeneratorRequirementCollector {
     requires_snapshot: bool,
 }
 
+struct YieldPresenceCollector {
+    has_yield: bool,
+}
+
 impl Visitor for GeneratorRequirementCollector {
     fn visit_statement(&mut self, stmt: &Statement) {
         if let Statement::Yield(yield_stmt) = stmt {
@@ -125,6 +129,29 @@ impl Visitor for GeneratorRequirementCollector {
                 self.requires_snapshot = true;
                 return;
             }
+        }
+        walk_expression(self, expr);
+    }
+
+    fn visit_function_decl(&mut self, _decl: &ast::FunctionDecl) {}
+    fn visit_function_expression(&mut self, _func: &ast::FunctionExpression) {}
+    fn visit_arrow_function(&mut self, _func: &ast::ArrowFunction) {}
+    fn visit_class_decl(&mut self, _decl: &ast::ClassDecl) {}
+}
+
+impl Visitor for YieldPresenceCollector {
+    fn visit_statement(&mut self, stmt: &Statement) {
+        if matches!(stmt, Statement::Yield(_)) {
+            self.has_yield = true;
+            return;
+        }
+        walk_statement(self, stmt);
+    }
+
+    fn visit_expression(&mut self, expr: &Expression) {
+        if matches!(expr, Expression::Yield(_)) {
+            self.has_yield = true;
+            return;
         }
         walk_expression(self, expr);
     }
@@ -449,6 +476,10 @@ struct ClassInfo {
     static_methods: Vec<StaticMethodInfo>,
     /// Runtime class method/accessor publication order.
     runtime_method_elements: Vec<RuntimeClassMethodElement>,
+    /// Whether instance methods must be published via runtime class property helpers.
+    publish_runtime_instance_methods: bool,
+    /// Whether static methods must be published via runtime class property helpers.
+    publish_runtime_static_methods: bool,
     /// Parent class (for inheritance)
     parent_class: Option<NominalTypeId>,
     /// Runtime parent class name for ambient/imported parents not declared locally.
@@ -859,6 +890,8 @@ pub struct Lowerer<'a> {
     parameter_scope_eval_mode: bool,
     /// Parameter names that are currently in the JS parameter TDZ while initializers run.
     parameter_tdz_symbols: FxHashSet<Symbol>,
+    /// Lexical names currently being initialized and not yet readable in JS mode.
+    local_tdz_symbols: FxHashSet<Symbol>,
     /// Whether pattern binding should reuse preallocated parameter locals.
     parameter_binding_mode: bool,
     /// Whether the current function body is an arrow-compatible body where `arguments`
@@ -1578,6 +1611,7 @@ impl<'a> Lowerer<'a> {
             in_direct_eval_function: false,
             parameter_scope_eval_mode: false,
             parameter_tdz_symbols: FxHashSet::default(),
+            local_tdz_symbols: FxHashSet::default(),
             parameter_binding_mode: false,
             body_scope_eval_arguments_mode: false,
             body_scope_eval_mode: false,
@@ -1711,6 +1745,22 @@ impl<'a> Lowerer<'a> {
         )
     }
 
+    fn callable_uses_runtime_generator_semantics(&self, kind: CallableKind) -> bool {
+        self.semantic_plan.uses_js_async_runtime_semantics() && Self::callable_is_generator(kind)
+    }
+
+    fn callable_collects_yields_eagerly(
+        &self,
+        kind: CallableKind,
+        body: &ast::BlockStatement,
+    ) -> bool {
+        if self.semantic_plan.uses_js_async_runtime_semantics() {
+            Self::callable_is_generator(kind) && self.function_uses_generator_snapshot(body)
+        } else {
+            Self::callable_is_generator(kind) || self.function_uses_yield(body)
+        }
+    }
+
     /// Report an unresolved type error at a dispatch point.
     /// Mimics TypeScript's strict type errors — never silently emit incorrect bytecode.
     fn report_unresolved_type(&mut self, context: &str, property: &str) {
@@ -1730,10 +1780,20 @@ impl<'a> Lowerer<'a> {
 
     pub fn module_global_slots(&self) -> std::collections::HashMap<String, u32> {
         let mut slots = std::collections::HashMap::with_capacity(
-            self.module_var_globals.len() + usize::from(self.default_export_global.is_some()),
+            self.module_var_globals.len()
+                + self.js_script_lexical_globals.len()
+                + usize::from(self.default_export_global.is_some()),
         );
-        for (&name, &slot) in &self.module_var_globals {
+        // JS top-level lexical bindings reserve both a generic module-global slot and
+        // a JS lexical slot during lowering, but runtime initialization writes the
+        // lexical slot. Export/import metadata must therefore prefer the lexical slot.
+        for (&name, &slot) in &self.js_script_lexical_globals {
             slots.insert(self.interner.resolve(name).to_string(), slot as u32);
+        }
+        for (&name, &slot) in &self.module_var_globals {
+            slots
+                .entry(self.interner.resolve(name).to_string())
+                .or_insert(slot as u32);
         }
         if let Some(slot) = self.default_export_global {
             slots.entry("default".to_string()).or_insert(slot as u32);
@@ -1860,25 +1920,39 @@ impl<'a> Lowerer<'a> {
         collector.requires_snapshot
     }
 
+    pub(super) fn function_uses_yield(&self, body: &ast::BlockStatement) -> bool {
+        let mut collector = YieldPresenceCollector { has_yield: false };
+        walk_block_statement(&mut collector, body);
+        collector.has_yield
+    }
+
     pub(super) fn emit_function_return(&mut self, value: Option<Register>) {
         let return_value = if let Some(yield_array) = self.load_generator_yield_array() {
-            let completion = if let Some(value) = value {
-                value
+            if !self.semantic_plan.uses_js_async_runtime_semantics() {
+                if let Some(value) = value {
+                    Some(value)
+                } else {
+                    Some(yield_array)
+                }
             } else {
-                let undefined = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::Assign {
-                    dest: undefined.clone(),
-                    value: IrValue::Constant(IrConstant::Undefined),
+                let completion = if let Some(value) = value {
+                    value
+                } else {
+                    let undefined = self.alloc_register(UNRESOLVED);
+                    self.emit(IrInstr::Assign {
+                        dest: undefined.clone(),
+                        value: IrValue::Constant(IrConstant::Undefined),
+                    });
+                    undefined
+                };
+                let iterator = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(iterator.clone()),
+                    native_id: crate::compiler::native_id::OBJECT_GENERATOR_SNAPSHOT_NEW,
+                    args: vec![yield_array, completion],
                 });
-                undefined
-            };
-            let iterator = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::NativeCall {
-                dest: Some(iterator.clone()),
-                native_id: crate::compiler::native_id::OBJECT_GENERATOR_SNAPSHOT_NEW,
-                args: vec![yield_array, completion],
-            });
-            Some(iterator)
+                Some(iterator)
+            }
         } else {
             value
         };
@@ -3632,6 +3706,24 @@ impl<'a> Lowerer<'a> {
         let mut methods = Vec::new();
         let mut static_methods_vec = Vec::new();
         let mut runtime_method_elements = Vec::new();
+        let publish_runtime_instance_methods = class.members.iter().any(|member| {
+            matches!(
+                member,
+                ast::ClassMember::Method(method)
+                    if !method.is_static
+                        && method.body.is_some()
+                        && matches!(method.name, ast::PropertyKey::Computed(_))
+            )
+        });
+        let publish_runtime_static_methods = class.members.iter().any(|member| {
+            matches!(
+                member,
+                ast::ClassMember::Method(method)
+                    if method.is_static
+                        && method.body.is_some()
+                        && matches!(method.name, ast::PropertyKey::Computed(_))
+            )
+        });
         for (member_idx, member) in class.members.iter().enumerate() {
             if let ast::ClassMember::Method(method) = member {
                 if method.body.is_some() {
@@ -3904,6 +3996,8 @@ impl<'a> Lowerer<'a> {
                 static_blocks,
                 static_methods: static_methods_vec,
                 runtime_method_elements,
+                publish_runtime_instance_methods,
+                publish_runtime_static_methods,
                 parent_class,
                 parent_runtime_name,
                 parent_constructor_symbol,
@@ -3970,6 +4064,7 @@ impl<'a> Lowerer<'a> {
         self.eval_completion_local = None;
         self.parameter_symbols.clear();
         self.visible_js_lexical_symbols.clear();
+        self.local_tdz_symbols.clear();
         // closure_locals maps local-slot indices to async func IDs.  It is
         // strictly per-function: stale entries from a previously-lowered
         // function (e.g. std:math init code registering `wrapped` at slot 2)
@@ -4181,11 +4276,12 @@ impl<'a> Lowerer<'a> {
         // Create function with fixed parameter count only
         let callable_kind =
             self.callable_kind_for_span(func.span.start, func.is_async, func.is_generator, false);
+        let runtime_generator = self.callable_uses_runtime_generator_semantics(callable_kind);
         let mut ir_func = IrFunction::new(name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
         ir_func.is_constructible = !Self::callable_is_generator(callable_kind);
         ir_func.is_async = Self::callable_is_async(callable_kind);
-        ir_func.is_generator = Self::callable_is_generator(callable_kind);
+        ir_func.is_generator = runtime_generator;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
         ir_func.uses_js_runtime_semantics = self.semantic_plan.uses_js_async_runtime_semantics();
@@ -4206,6 +4302,7 @@ impl<'a> Lowerer<'a> {
         let saved_in_direct_eval_function = self.in_direct_eval_function;
         let saved_parameter_symbols = self.parameter_symbols.clone();
         let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
+        let saved_local_tdz_symbols = self.local_tdz_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
@@ -4298,12 +4395,10 @@ impl<'a> Lowerer<'a> {
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
-        if Self::callable_is_generator(callable_kind)
-            && self.function_uses_generator_snapshot(&func.body)
-        {
+        if self.callable_collects_yields_eagerly(callable_kind, &func.body) {
             self.init_generator_yield_array();
         }
-        if Self::callable_is_generator(callable_kind) {
+        if runtime_generator {
             self.emit(IrInstr::GeneratorInitSuspend);
         }
 
@@ -4326,6 +4421,7 @@ impl<'a> Lowerer<'a> {
         self.in_direct_eval_function = saved_in_direct_eval_function;
         self.parameter_symbols = saved_parameter_symbols;
         self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
+        self.local_tdz_symbols = saved_local_tdz_symbols;
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
@@ -4358,6 +4454,7 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = None;
         self.parameter_symbols.clear();
         self.eval_completion_local = None;
+        self.local_tdz_symbols.clear();
         self.pending_constructor_prologue = None;
         self.current_method_env_globals = None;
         self.pending_class_method_env_globals = None;
@@ -4619,24 +4716,12 @@ impl<'a> Lowerer<'a> {
             )
         });
         let class_info = self.class_info_map.get(&nominal_type_id).cloned();
-        let runtime_instance_publication = class.members.iter().any(|member| {
-            matches!(
-                member,
-                ast::ClassMember::Method(method)
-                    if !method.is_static
-                        && method.body.is_some()
-                        && matches!(method.name, ast::PropertyKey::Computed(_))
-            )
-        });
-        let runtime_static_publication = class.members.iter().any(|member| {
-            matches!(
-                member,
-                ast::ClassMember::Method(method)
-                    if method.is_static
-                        && method.body.is_some()
-                        && matches!(method.name, ast::PropertyKey::Computed(_))
-            )
-        });
+        let runtime_instance_publication = class_info
+            .as_ref()
+            .is_some_and(|info| info.publish_runtime_instance_methods);
+        let runtime_static_publication = class_info
+            .as_ref()
+            .is_some_and(|info| info.publish_runtime_static_methods);
         ir_class.runtime_instance_publication = runtime_instance_publication;
         ir_class.runtime_static_publication = runtime_static_publication;
 
@@ -5031,11 +5116,13 @@ impl<'a> Lowerer<'a> {
                         method.is_generator,
                         true,
                     );
+                    let runtime_generator =
+                        self.callable_uses_runtime_generator_semantics(callable_kind);
                     let mut ir_func = IrFunction::new(&full_name, params, return_ty);
                     ir_func.uses_js_this_slot = method_has_js_this_slot;
                     ir_func.is_constructible = false;
                     ir_func.is_async = Self::callable_is_async(callable_kind);
-                    ir_func.is_generator = Self::callable_is_generator(callable_kind);
+                    ir_func.is_generator = runtime_generator;
                     ir_func.visible_length = visible_length;
                     ir_func.is_strict_js = true;
                     ir_func.uses_js_runtime_semantics =
@@ -5151,12 +5238,10 @@ impl<'a> Lowerer<'a> {
                     self.emit_js_function_captured_lexical_prebindings(&body.statements);
                     self.emit_js_function_decl_hoists(&body.statements);
 
-                    if Self::callable_is_generator(callable_kind)
-                        && self.function_uses_generator_snapshot(body)
-                    {
+                    if self.callable_collects_yields_eagerly(callable_kind, body) {
                         self.init_generator_yield_array();
                     }
-                    if Self::callable_is_generator(callable_kind) {
+                    if runtime_generator {
                         self.emit(IrInstr::GeneratorInitSuspend);
                     }
 
@@ -5267,6 +5352,7 @@ impl<'a> Lowerer<'a> {
                 self.next_capture_slot = 0;
                 self.this_captured_idx = None;
                 self.js_arguments_local = None;
+                self.local_tdz_symbols.clear();
                 self.closure_locals.clear();
                 self.current_method_env_globals = class_method_env_globals.clone();
 

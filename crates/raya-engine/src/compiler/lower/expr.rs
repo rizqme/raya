@@ -102,6 +102,13 @@ enum ResolvedIdentifierClosure {
 #[derive(Clone)]
 enum PreparedDestructuringTarget {
     Identifier(Symbol),
+    StaticFieldGlobal {
+        global_index: u16,
+    },
+    Field {
+        object: Register,
+        field: u16,
+    },
     Member {
         object: Register,
         property: String,
@@ -1268,6 +1275,12 @@ impl<'a> Lowerer<'a> {
         callee_expr: &Expression,
         missing_local_context: &str,
     ) -> Result<Option<ResolvedIdentifierClosure>, ()> {
+        if self.js_this_binding_compat && self.local_tdz_symbols.contains(&ident.name) {
+            let name = self.interner.resolve(ident.name).to_string();
+            let _ = self.emit_parameter_tdz_reference_error(&name);
+            return Err(());
+        }
+
         if self.should_resolve_from_direct_eval_env(ident) {
             let closure =
                 self.emit_direct_eval_binding_get(self.interner.resolve(ident.name), false);
@@ -1409,11 +1422,7 @@ impl<'a> Lowerer<'a> {
     ) -> bool {
         self.class_info_map
             .get(&nominal_type_id)
-            .is_some_and(|info| {
-                info.runtime_method_elements
-                    .iter()
-                    .any(|element| !element.is_static)
-            })
+            .is_some_and(|info| info.publish_runtime_instance_methods)
     }
 
     pub(super) fn js_receiver_rebinding_call_expr(&self, expr: &Expression) -> bool {
@@ -2405,9 +2414,10 @@ impl<'a> Lowerer<'a> {
                 self.parameter_scope_eval_mode && self.parameter_symbols.contains(&symbol);
             let is_uninitialized_parameter =
                 is_parameter_binding && self.parameter_tdz_symbols.contains(&symbol);
+            let is_uninitialized_local = self.local_tdz_symbols.contains(&symbol);
             let value = if name == "arguments" {
                 self.lower_js_arguments_object()
-            } else if is_uninitialized_parameter {
+            } else if is_uninitialized_parameter || is_uninitialized_local {
                 let undefined = self.alloc_register(UNRESOLVED);
                 self.emit(IrInstr::Assign {
                     dest: undefined.clone(),
@@ -2432,7 +2442,7 @@ impl<'a> Lowerer<'a> {
                     env_object.clone(),
                     format!("{DIRECT_EVAL_LEXICAL_MARKER_PREFIX}{name}"),
                 );
-                if is_uninitialized_parameter {
+                if is_uninitialized_parameter || is_uninitialized_local {
                     self.emit_direct_eval_hidden_flag_set(
                         env_object.clone(),
                         format!("{DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX}{name}"),
@@ -2477,9 +2487,10 @@ impl<'a> Lowerer<'a> {
                 self.parameter_symbols.contains(&symbol) && self.local_map.contains_key(&symbol);
             let is_uninitialized_parameter =
                 is_parameter_binding && self.parameter_tdz_symbols.contains(&symbol);
+            let is_uninitialized_local = self.local_tdz_symbols.contains(&symbol);
             let value = if name == "arguments" {
                 self.lower_js_arguments_object()
-            } else if is_uninitialized_parameter {
+            } else if is_uninitialized_parameter || is_uninitialized_local {
                 let undefined = self.alloc_register(UNRESOLVED);
                 self.emit(IrInstr::Assign {
                     dest: undefined.clone(),
@@ -2504,7 +2515,7 @@ impl<'a> Lowerer<'a> {
                     env_object.clone(),
                     format!("{DIRECT_EVAL_LEXICAL_MARKER_PREFIX}{name}"),
                 );
-                if is_uninitialized_parameter {
+                if is_uninitialized_parameter || is_uninitialized_local {
                     self.emit_direct_eval_hidden_flag_set(
                         env_object.clone(),
                         format!("{DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX}{name}"),
@@ -3136,6 +3147,9 @@ impl<'a> Lowerer<'a> {
         if self.parameter_scope_eval_mode && self.parameter_tdz_symbols.contains(&ident.name) {
             return self.emit_parameter_tdz_reference_error(name);
         }
+        if self.js_this_binding_compat && self.local_tdz_symbols.contains(&ident.name) {
+            return self.emit_parameter_tdz_reference_error(name);
+        }
 
         // Look up the variable in the local map (current function's locals)
         if let Some(&local_idx) = self.local_map.get(&ident.name) {
@@ -3199,7 +3213,13 @@ impl<'a> Lowerer<'a> {
             if name == "arguments" {
                 return self.lower_parameter_scope_eval_arguments();
             }
-            return self.emit_direct_eval_binding_get(name, false);
+            let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
+            return self.lower_eval_shadowable_identifier(name, |this| {
+                this.parameter_scope_eval_mode = false;
+                let value = this.lower_identifier(ident);
+                this.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
+                value
+            });
         }
 
         if self.body_scope_eval_mode && !self.function_map.contains_key(&ident.name) {
@@ -3564,6 +3584,31 @@ impl<'a> Lowerer<'a> {
         // instead of a hard compile error.  The runtime will throw ReferenceError if
         // the identifier is truly absent.
         if self.allow_unresolved_runtime_fallback {
+            if std::env::var("RAYA_DEBUG_UNRESOLVED_IDENT").is_ok() {
+                let fn_name = self
+                    .current_function
+                    .as_ref()
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| "<none>".to_string());
+                let has_local = self.local_map.contains_key(&ident.name);
+                let has_capture = self.captures.iter().any(|c| c.symbol == ident.name);
+                let has_ancestor = self
+                    .ancestor_variables
+                    .as_ref()
+                    .is_some_and(|m| m.contains_key(&ident.name));
+                let has_module_global = self.shared_script_binding_slot(ident.name).is_some();
+                let has_direct_eval = self.direct_eval_binding_enabled(name);
+                eprintln!(
+                    "[lower][runtime-fallback-ident] name={} fn={} local={} capture={} ancestor={} module_global={} direct_eval={}",
+                    self.interner.resolve(ident.name),
+                    fn_name,
+                    has_local,
+                    has_capture,
+                    has_ancestor,
+                    has_module_global,
+                    has_direct_eval,
+                );
+            }
             if self.in_direct_eval_function {
                 return self.emit_direct_eval_binding_get(name, false);
             }
@@ -4132,7 +4177,10 @@ impl<'a> Lowerer<'a> {
         if self.js_this_binding_compat {
             if let Expression::Member(member) = &*call.callee {
                 let helper_name = self.interner.resolve(member.property.name);
-                if helper_name == "call" {
+                let target_ty = self.get_expr_type(&member.object);
+                let target_may_be_callable = self.type_is_callable(target_ty)
+                    || self.expression_result_may_be_callable_at_runtime(&member.object, target_ty);
+                if helper_name == "call" && target_may_be_callable {
                     let target_callable = self.lower_expr(&member.object);
                     let lowered_args = self.lower_call_argument_values(&call.arguments);
                     let receiver = lowered_args
@@ -4157,7 +4205,8 @@ impl<'a> Lowerer<'a> {
                     self.propagate_type_projection_to_register(dest.ty, &dest);
                     return dest;
                 }
-                if helper_name == "apply" && !call.has_spread_arguments() {
+                if helper_name == "apply" && target_may_be_callable && !call.has_spread_arguments()
+                {
                     let target_callable = self.lower_expr(&member.object);
                     let lowered_args = self.lower_call_argument_values(&call.arguments);
                     let receiver = lowered_args
@@ -4188,7 +4237,10 @@ impl<'a> Lowerer<'a> {
         if self.js_this_binding_compat {
             if let Expression::Member(member) = &*call.callee {
                 let helper_name = self.interner.resolve(member.property.name);
-                if helper_name == "call" || helper_name == "apply" {
+                let target_ty = self.get_expr_type(&member.object);
+                let target_may_be_callable = self.type_is_callable(target_ty)
+                    || self.expression_result_may_be_callable_at_runtime(&member.object, target_ty);
+                if target_may_be_callable && (helper_name == "call" || helper_name == "apply") {
                     // Rebinding `this` through Function.prototype.call/apply invalidates
                     // optimistic direct-call return typing. Keep the result dynamic so
                     // later property reads don't miscompile to receiver-specific opcodes.
@@ -4227,6 +4279,12 @@ impl<'a> Lowerer<'a> {
                         native_id: crate::compiler::native_id::OBJECT_SUPER_CONSTRUCT,
                         args: native_args,
                     });
+                    if self.this_register.is_some() {
+                        self.emit(IrInstr::StoreLocal {
+                            index: 0,
+                            value: this_reg.clone(),
+                        });
+                    }
                     self.emit_pending_constructor_prologue_if_needed();
                     return this_reg;
                 }
@@ -8272,6 +8330,11 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
+        if self.js_this_binding_compat && self.local_tdz_symbols.contains(&symbol) {
+            let _ = self.emit_parameter_tdz_reference_error(&name);
+            return;
+        }
+
         if self.emit_store_js_script_lexical_global(symbol, value.clone()) {
             return;
         }
@@ -8477,9 +8540,68 @@ impl<'a> Lowerer<'a> {
                         receiver: self.lower_this(),
                         property,
                     })
+                } else if let Some(nominal_type_id) =
+                    self.static_member_owner_nominal_type(&member.object)
+                {
+                    self.class_info_map
+                        .get(&nominal_type_id)
+                        .and_then(|info| {
+                            info.static_fields
+                                .iter()
+                                .find(|field| self.interner.resolve(field.name) == property)
+                                .map(|field| PreparedDestructuringTarget::StaticFieldGlobal {
+                                    global_index: field.global_index,
+                                })
+                        })
+                        .or_else(|| {
+                            let object = self.lower_expr(&member.object);
+                            if !self.prefers_structural_member_projection(&member.object) {
+                                if let Some(nominal_type_id) = self
+                                    .infer_nominal_type_id(&member.object)
+                                    .or_else(|| self.nominal_type_id_from_type_id(object.ty))
+                                {
+                                    if let Some(field) = self
+                                        .get_all_fields(nominal_type_id)
+                                        .iter()
+                                        .rev()
+                                        .find(|field| {
+                                            self.interner.resolve(field.name) == property
+                                        })
+                                    {
+                                        return Some(PreparedDestructuringTarget::Field {
+                                            object,
+                                            field: field.index,
+                                        });
+                                    }
+                                }
+                            }
+                            Some(PreparedDestructuringTarget::Member {
+                                object,
+                                property,
+                            })
+                        })
                 } else {
+                    let object = self.lower_expr(&member.object);
+                    if !self.prefers_structural_member_projection(&member.object) {
+                        if let Some(nominal_type_id) = self
+                            .infer_nominal_type_id(&member.object)
+                            .or_else(|| self.nominal_type_id_from_type_id(object.ty))
+                        {
+                            if let Some(field) = self
+                                .get_all_fields(nominal_type_id)
+                                .iter()
+                                .rev()
+                                .find(|field| self.interner.resolve(field.name) == property)
+                            {
+                                return Some(PreparedDestructuringTarget::Field {
+                                    object,
+                                    field: field.index,
+                                });
+                            }
+                        }
+                    }
                     Some(PreparedDestructuringTarget::Member {
-                        object: self.lower_expr(&member.object),
+                        object,
                         property,
                     })
                 }
@@ -8561,6 +8683,19 @@ impl<'a> Lowerer<'a> {
         match target {
             PreparedDestructuringTarget::Identifier(symbol) => {
                 self.store_identifier_value(symbol, value);
+            }
+            PreparedDestructuringTarget::StaticFieldGlobal { global_index } => {
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_index,
+                    value,
+                });
+            }
+            PreparedDestructuringTarget::Field { object, field } => {
+                self.emit(IrInstr::StoreFieldExact {
+                    object,
+                    field,
+                    value,
+                });
             }
             PreparedDestructuringTarget::Member { object, property } => {
                 if self.js_this_binding_compat {
@@ -10192,6 +10327,7 @@ impl<'a> Lowerer<'a> {
         let saved_closure_locals = std::mem::take(&mut self.closure_locals);
         let saved_parameter_symbols = self.parameter_symbols.clone();
         let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
+        let saved_local_tdz_symbols = self.local_tdz_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
@@ -10238,6 +10374,7 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = None;
         self.parameter_symbols.clear();
         self.visible_js_lexical_symbols.clear();
+        self.local_tdz_symbols.clear();
         self.eval_completion_local = None;
 
         self.next_register = 0;
@@ -10394,11 +10531,12 @@ impl<'a> Lowerer<'a> {
 
         let callable_kind =
             self.callable_kind_for_span(func.span.start, func.is_async, func.is_generator, false);
+        let runtime_generator = self.callable_uses_runtime_generator_semantics(callable_kind);
         let mut ir_func = crate::ir::IrFunction::new(&function_name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
         ir_func.is_constructible = !Self::callable_is_generator(callable_kind);
         ir_func.is_async = Self::callable_is_async(callable_kind);
-        ir_func.is_generator = Self::callable_is_generator(callable_kind);
+        ir_func.is_generator = runtime_generator;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
         ir_func.uses_js_runtime_semantics = self.semantic_plan.uses_js_async_runtime_semantics();
@@ -10478,12 +10616,10 @@ impl<'a> Lowerer<'a> {
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
-        if Self::callable_is_generator(callable_kind)
-            && self.function_uses_generator_snapshot(&func.body)
-        {
+        if self.callable_collects_yields_eagerly(callable_kind, &func.body) {
             self.init_generator_yield_array();
         }
-        if Self::callable_is_generator(callable_kind) {
+        if runtime_generator {
             self.emit(IrInstr::GeneratorInitSuspend);
         }
 
@@ -10542,6 +10678,7 @@ impl<'a> Lowerer<'a> {
         self.generator_yield_array_local = saved_generator_yield_array_local;
         self.parameter_symbols = saved_parameter_symbols;
         self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
+        self.local_tdz_symbols = saved_local_tdz_symbols;
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
@@ -10761,6 +10898,7 @@ impl<'a> Lowerer<'a> {
         let saved_generator_yield_array_local = self.generator_yield_array_local.take();
         let saved_parameter_symbols = self.parameter_symbols.clone();
         let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
+        let saved_local_tdz_symbols = self.local_tdz_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
@@ -10836,6 +10974,7 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = None;
         self.parameter_symbols.clear();
         self.visible_js_lexical_symbols.clear();
+        self.local_tdz_symbols.clear();
         self.eval_completion_local = None;
 
         // Reset per-function state
@@ -11163,6 +11302,7 @@ impl<'a> Lowerer<'a> {
         self.generator_yield_array_local = saved_generator_yield_array_local;
         self.parameter_symbols = saved_parameter_symbols;
         self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
+        self.local_tdz_symbols = saved_local_tdz_symbols;
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;

@@ -2,70 +2,76 @@
 // Usage: import timers from "node:timers";
 // Implements setTimeout/setInterval/setImmediate via async + native sleep.
 
-class Timers {
-    setTimeout(callback: () => void, delayMs: number): number {
-        const id = _nextId;
-        _nextId = _nextId + 1;
-        while (_cancelled.length <= id) { _cancelled.push(false); }
-        const cancelled = _cancelled;
-        async {
+let _nextId = 1;
+let _cancelled: boolean[] = [false];
+
+function setTimeout(callback: () => void, delayMs: number): number {
+    const id = _nextId;
+    _nextId = _nextId + 1;
+    while (_cancelled.length <= id) { _cancelled.push(false); }
+    const cancelled = _cancelled;
+    async {
+        __NATIVE_CALL("time.sleep", delayMs);
+        if (!cancelled[id]) {
+            callback();
+        }
+    };
+    return id;
+}
+
+function clearTimeout(id: number): void {
+    if (id > 0 && id < _cancelled.length) {
+        _cancelled[id] = true;
+    }
+}
+
+function setInterval(callback: () => void, delayMs: number): number {
+    const id = _nextId;
+    _nextId = _nextId + 1;
+    while (_cancelled.length <= id) { _cancelled.push(false); }
+    const cancelled = _cancelled;
+    async {
+        while (!cancelled[id]) {
             __NATIVE_CALL("time.sleep", delayMs);
             if (!cancelled[id]) {
                 callback();
             }
-        };
-        return id;
-    }
-
-    clearTimeout(id: number): void {
-        if (id > 0 && id < _cancelled.length) {
-            _cancelled[id] = true;
         }
-    }
+    };
+    return id;
+}
 
-    setInterval(callback: () => void, delayMs: number): number {
-        const id = _nextId;
-        _nextId = _nextId + 1;
-        while (_cancelled.length <= id) { _cancelled.push(false); }
-        const cancelled = _cancelled;
-        async {
-            while (!cancelled[id]) {
-                __NATIVE_CALL("time.sleep", delayMs);
-                if (!cancelled[id]) {
-                    callback();
-                }
-            }
-        };
-        return id;
-    }
-
-    clearInterval(id: number): void {
-        if (id > 0 && id < _cancelled.length) {
-            _cancelled[id] = true;
-        }
-    }
-
-    setImmediate(callback: () => void): number {
-        const id = _nextId;
-        _nextId = _nextId + 1;
-        while (_cancelled.length <= id) { _cancelled.push(false); }
-        const cancelled = _cancelled;
-        async {
-            if (!cancelled[id]) {
-                callback();
-            }
-        };
-        return id;
-    }
-
-    clearImmediate(id: number): void {
-        if (id > 0 && id < _cancelled.length) {
-            _cancelled[id] = true;
-        }
+function clearInterval(id: number): void {
+    if (id > 0 && id < _cancelled.length) {
+        _cancelled[id] = true;
     }
 }
 
-let _nextId = 1;
-let _cancelled: boolean[] = [false];
-const timers = new Timers();
+function setImmediate(callback: () => void): number {
+    const id = _nextId;
+    _nextId = _nextId + 1;
+    while (_cancelled.length <= id) { _cancelled.push(false); }
+    const cancelled = _cancelled;
+    async {
+        if (!cancelled[id]) {
+            callback();
+        }
+    };
+    return id;
+}
+
+function clearImmediate(id: number): void {
+    if (id > 0 && id < _cancelled.length) {
+        _cancelled[id] = true;
+    }
+}
+
+const timers = {
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    setImmediate,
+    clearImmediate,
+};
 export default timers;

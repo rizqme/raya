@@ -10,10 +10,35 @@ use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexId, SemaphoreId};
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 impl<'a> Interpreter<'a> {
+    fn cancel_task_and_await_chain(&self, root_task: Arc<Task>) {
+        let mut pending = vec![root_task];
+        let mut seen = HashSet::new();
+
+        while let Some(task) = pending.pop() {
+            if !seen.insert(task.id()) {
+                continue;
+            }
+
+            task.cancel();
+
+            if let Some(SuspendReason::AwaitTask(awaited_id)) = task.suspend_reason() {
+                if let Some(awaited_task) = self.tasks.read().get(&awaited_id).cloned() {
+                    pending.push(awaited_task);
+                }
+            }
+
+            if task.resume_if_pending() {
+                task.clear_suspend_reason();
+                self.injector.push(task);
+            }
+        }
+    }
+
     pub(in crate::vm::interpreter) fn spawn_async_task_handle(
         &mut self,
         func_index: usize,
@@ -656,7 +681,7 @@ impl<'a> Interpreter<'a> {
 
                 // Look up the task and cancel it
                 if let Some(target_task) = self.tasks.read().get(&target_id).cloned() {
-                    target_task.cancel();
+                    self.cancel_task_and_await_chain(target_task);
                 }
                 // Silently ignore if task not found (may have already completed)
 
