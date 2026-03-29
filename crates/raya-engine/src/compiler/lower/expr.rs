@@ -1637,55 +1637,53 @@ impl<'a> Lowerer<'a> {
             .unwrap_or(UNRESOLVED);
         let dest = self.alloc_register(self.effective_identifier_value_type(ident, slot_ty));
 
-        if self.function_depth > 0 {
-            if let Some(&init_idx) = self.js_script_lexical_init_globals.get(&ident.name) {
-                let init_state = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::LoadGlobal {
-                    dest: init_state.clone(),
-                    index: init_idx,
-                });
-                let tdz_block = self.alloc_block();
-                let load_block = self.alloc_block();
-                let exit_block = self.alloc_block();
-                self.set_terminator(Terminator::BranchIfNull {
-                    value: init_state,
-                    null_block: tdz_block,
-                    not_null_block: load_block,
-                });
+        if let Some(&init_idx) = self.js_script_lexical_init_globals.get(&ident.name) {
+            let init_state = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::LoadGlobal {
+                dest: init_state.clone(),
+                index: init_idx,
+            });
+            let tdz_block = self.alloc_block();
+            let load_block = self.alloc_block();
+            let exit_block = self.alloc_block();
+            self.set_terminator(Terminator::BranchIfNull {
+                value: init_state,
+                null_block: tdz_block,
+                not_null_block: load_block,
+            });
 
-                self.current_function_mut()
-                    .add_block(BasicBlock::with_label(tdz_block, "script.lexical.load.tdz"));
-                self.current_block = tdz_block;
-                let _ = self.emit_parameter_tdz_reference_error(&name);
-                self.set_terminator(Terminator::Jump(exit_block));
+            self.current_function_mut()
+                .add_block(BasicBlock::with_label(tdz_block, "script.lexical.load.tdz"));
+            self.current_block = tdz_block;
+            let _ = self.emit_parameter_tdz_reference_error(&name);
+            self.set_terminator(Terminator::Jump(exit_block));
 
-                self.current_function_mut()
-                    .add_block(BasicBlock::with_label(
-                        load_block,
-                        "script.lexical.load.value",
-                    ));
-                self.current_block = load_block;
-                self.emit(IrInstr::LoadGlobal {
-                    dest: dest.clone(),
-                    index: global_idx,
-                });
-                self.set_terminator(Terminator::Jump(exit_block));
+            self.current_function_mut()
+                .add_block(BasicBlock::with_label(
+                    load_block,
+                    "script.lexical.load.value",
+                ));
+            self.current_block = load_block;
+            self.emit(IrInstr::LoadGlobal {
+                dest: dest.clone(),
+                index: global_idx,
+            });
+            self.set_terminator(Terminator::Jump(exit_block));
 
-                self.current_function_mut()
-                    .add_block(BasicBlock::with_label(
-                        exit_block,
-                        "script.lexical.load.exit",
-                    ));
-                self.current_block = exit_block;
-                self.propagate_variable_projection_to_register(ident.name, &dest);
-                if !self.identifier_requires_late_bound_dispatch(ident.name) {
-                    self.propagate_type_projection_to_register(
-                        self.effective_identifier_value_type(ident, slot_ty),
-                        &dest,
-                    );
-                }
-                return dest;
+            self.current_function_mut()
+                .add_block(BasicBlock::with_label(
+                    exit_block,
+                    "script.lexical.load.exit",
+                ));
+            self.current_block = exit_block;
+            self.propagate_variable_projection_to_register(ident.name, &dest);
+            if !self.identifier_requires_late_bound_dispatch(ident.name) {
+                self.propagate_type_projection_to_register(
+                    self.effective_identifier_value_type(ident, slot_ty),
+                    &dest,
+                );
             }
+            return dest;
         }
 
         self.emit(IrInstr::LoadGlobal {
@@ -1781,6 +1779,473 @@ impl<'a> Lowerer<'a> {
             ));
         self.current_block = exit_block;
         true
+    }
+
+    fn env_handle_for_binding(
+        &self,
+        direct_eval: bool,
+        global: bool,
+        object_with: bool,
+    ) -> super::EnvHandle {
+        super::EnvHandle {
+            kind: if object_with {
+                super::EnvRecordKind::ObjectWith
+            } else if direct_eval {
+                super::EnvRecordKind::DirectEval
+            } else if global {
+                super::EnvRecordKind::Global
+            } else {
+                super::EnvRecordKind::Declarative
+            },
+        }
+    }
+
+    fn resolve_identifier_binding(&mut self, symbol: Symbol) -> Option<super::ResolvedBinding> {
+        let name = self.interner.resolve(symbol);
+
+        if let Some(&local_idx) = self.local_map.get(&symbol) {
+            return Some(super::ResolvedBinding::Local {
+                env: self.env_handle_for_binding(false, false, self.with_scope_depth > 0),
+                symbol,
+                local_idx,
+                is_refcell: self.refcell_registers.contains_key(&local_idx),
+            });
+        }
+
+        if let Some(idx) = self.captures.iter().position(|capture| capture.symbol == symbol) {
+            let capture = &self.captures[idx];
+            return Some(super::ResolvedBinding::Capture {
+                env: self.env_handle_for_binding(false, false, self.with_scope_depth > 0),
+                symbol,
+                capture_idx: capture.capture_idx,
+                is_refcell: capture.is_refcell,
+                is_immutable: capture.is_immutable,
+            });
+        }
+
+        if let Some(ref ancestors) = self.ancestor_variables.clone() {
+            if let Some(ancestor_var) = ancestors.get(&symbol) {
+                let capture_idx = self.next_capture_slot;
+                self.next_capture_slot += 1;
+                self.captures.push(super::CaptureInfo {
+                    symbol,
+                    source: ancestor_var.source,
+                    capture_idx,
+                    ty: ancestor_var.ty,
+                    is_refcell: ancestor_var.is_refcell,
+                    is_immutable: ancestor_var.is_immutable,
+                });
+                return Some(super::ResolvedBinding::Capture {
+                    env: self.env_handle_for_binding(false, false, self.with_scope_depth > 0),
+                    symbol,
+                    capture_idx,
+                    is_refcell: ancestor_var.is_refcell,
+                    is_immutable: ancestor_var.is_immutable,
+                });
+            }
+        }
+
+        if self.js_this_binding_compat && self.js_script_lexical_globals.contains_key(&symbol) {
+            return Some(super::ResolvedBinding::ScriptLexicalGlobal {
+                env: self.env_handle_for_binding(false, true, self.with_scope_depth > 0),
+                symbol,
+            });
+        }
+
+        if let Some(global_idx) = self.shared_script_binding_slot(symbol) {
+            return Some(super::ResolvedBinding::SharedGlobal {
+                env: self.env_handle_for_binding(false, true, self.with_scope_depth > 0),
+                symbol,
+                global_idx,
+            });
+        }
+
+        if let Some(binding) = self
+            .current_method_env_globals
+            .as_ref()
+            .and_then(|globals| globals.get(&symbol))
+            .copied()
+        {
+            return Some(super::ResolvedBinding::MethodEnvGlobal {
+                env: self.env_handle_for_binding(false, true, self.with_scope_depth > 0),
+                symbol,
+                binding,
+            });
+        }
+
+        if self.direct_eval_binding_enabled(name) || self.in_direct_eval_function {
+            return Some(super::ResolvedBinding::DirectEval {
+                env: self.env_handle_for_binding(true, false, self.with_scope_depth > 0),
+                symbol,
+            });
+        }
+
+        if self.allow_unresolved_runtime_fallback {
+            return Some(super::ResolvedBinding::AmbientGlobal {
+                env: self.env_handle_for_binding(false, true, self.with_scope_depth > 0),
+                symbol,
+            });
+        }
+
+        None
+    }
+
+    fn emit_load_identifier_binding(
+        &mut self,
+        binding: super::ResolvedBinding,
+        ty: TypeId,
+    ) -> Register {
+        match binding {
+            super::ResolvedBinding::Local {
+                symbol,
+                local_idx,
+                is_refcell,
+                ..
+            } => {
+                if is_refcell {
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadLocal {
+                        dest: refcell_reg.clone(),
+                        index: local_idx,
+                    });
+                    let dest = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: dest.clone(),
+                        refcell: refcell_reg,
+                    });
+                    self.propagate_variable_projection_to_register(symbol, &dest);
+                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                        self.propagate_type_projection_to_register(ty, &dest);
+                    }
+                    dest
+                } else {
+                    let dest = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadLocal {
+                        dest: dest.clone(),
+                        index: local_idx,
+                    });
+                    self.propagate_variable_projection_to_register(symbol, &dest);
+                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                        self.propagate_type_projection_to_register(ty, &dest);
+                    }
+                    dest
+                }
+            }
+            super::ResolvedBinding::Capture {
+                symbol,
+                capture_idx,
+                is_refcell,
+                ..
+            } => {
+                if is_refcell {
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadCaptured {
+                        dest: refcell_reg.clone(),
+                        index: capture_idx,
+                    });
+                    let dest = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: dest.clone(),
+                        refcell: refcell_reg,
+                    });
+                    self.propagate_variable_projection_to_register(symbol, &dest);
+                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                        self.propagate_type_projection_to_register(ty, &dest);
+                    }
+                    dest
+                } else {
+                    let dest = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadCaptured {
+                        dest: dest.clone(),
+                        index: capture_idx,
+                    });
+                    self.propagate_variable_projection_to_register(symbol, &dest);
+                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                        self.propagate_type_projection_to_register(ty, &dest);
+                    }
+                    dest
+                }
+            }
+            super::ResolvedBinding::ScriptLexicalGlobal { symbol, .. } => {
+                let ident = ast::Identifier {
+                    name: symbol,
+                    span: crate::parser::token::Span::new(0, 0, 0, 0),
+                };
+                let global_idx = self.js_script_lexical_globals[&symbol];
+                self.emit_load_js_script_lexical_global(&ident, global_idx)
+            }
+            super::ResolvedBinding::SharedGlobal {
+                symbol,
+                global_idx,
+                ..
+            } => {
+                let dest = self.alloc_register(ty);
+                self.emit(IrInstr::LoadGlobal {
+                    dest: dest.clone(),
+                    index: global_idx,
+                });
+                self.propagate_variable_projection_to_register(symbol, &dest);
+                if !self.identifier_requires_late_bound_dispatch(symbol) {
+                    self.propagate_type_projection_to_register(ty, &dest);
+                }
+                dest
+            }
+            super::ResolvedBinding::MethodEnvGlobal {
+                symbol, binding, ..
+            } => {
+                if binding.is_refcell {
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadGlobal {
+                        dest: refcell_reg.clone(),
+                        index: binding.global_idx,
+                    });
+                    let dest = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: dest.clone(),
+                        refcell: refcell_reg,
+                    });
+                    self.propagate_variable_projection_to_register(symbol, &dest);
+                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                        self.propagate_type_projection_to_register(ty, &dest);
+                    }
+                    dest
+                } else {
+                    let dest = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadGlobal {
+                        dest: dest.clone(),
+                        index: binding.global_idx,
+                    });
+                    self.propagate_variable_projection_to_register(symbol, &dest);
+                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                        self.propagate_type_projection_to_register(ty, &dest);
+                    }
+                    dest
+                }
+            }
+            super::ResolvedBinding::DirectEval { symbol, .. } => {
+                self.emit_direct_eval_binding_get(self.interner.resolve(symbol), false)
+            }
+            super::ResolvedBinding::AmbientGlobal { symbol, .. } => {
+                let name = self.interner.resolve(symbol);
+                let dest = self.alloc_register(UNRESOLVED);
+                let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(name.to_string())),
+                });
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: if self.skip_with_scope_runtime_lookup {
+                        crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL_NO_WITH
+                    } else {
+                        crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL
+                    },
+                    args: vec![name_reg],
+                });
+                dest
+            }
+        }
+    }
+
+    fn emit_store_identifier_binding(
+        &mut self,
+        binding: super::ResolvedBinding,
+        value: Register,
+    ) -> Register {
+        match binding {
+            super::ResolvedBinding::Local {
+                local_idx,
+                is_refcell,
+                ..
+            } => {
+                if is_refcell {
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadLocal {
+                        dest: refcell_reg.clone(),
+                        index: local_idx,
+                    });
+                    self.emit(IrInstr::StoreRefCell {
+                        refcell: refcell_reg,
+                        value: value.clone(),
+                    });
+                } else {
+                    self.emit(IrInstr::StoreLocal {
+                        index: local_idx,
+                        value: value.clone(),
+                    });
+                    if value.ty.as_u32() != UNRESOLVED_TYPE_ID {
+                        if let Some(entry) = self.local_registers.get_mut(&local_idx) {
+                            entry.ty = value.ty;
+                        }
+                    }
+                }
+                value
+            }
+            super::ResolvedBinding::Capture {
+                capture_idx,
+                is_refcell,
+                is_immutable,
+                ..
+            } => {
+                if is_immutable {
+                    let _ = self.emit_type_error_throw("Assignment to constant variable.");
+                    return value;
+                }
+                if is_refcell {
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadCaptured {
+                        dest: refcell_reg.clone(),
+                        index: capture_idx,
+                    });
+                    self.emit(IrInstr::StoreRefCell {
+                        refcell: refcell_reg,
+                        value: value.clone(),
+                    });
+                } else {
+                    self.emit(IrInstr::StoreCaptured {
+                        index: capture_idx,
+                        value: value.clone(),
+                    });
+                }
+                value
+            }
+            super::ResolvedBinding::ScriptLexicalGlobal { symbol, .. } => {
+                let _ = self.emit_store_js_script_lexical_global(symbol, value.clone());
+                value
+            }
+            super::ResolvedBinding::SharedGlobal { global_idx, .. } => {
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_idx,
+                    value: value.clone(),
+                });
+                value
+            }
+            super::ResolvedBinding::MethodEnvGlobal { binding, .. } => {
+                if binding.is_refcell {
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadGlobal {
+                        dest: refcell_reg.clone(),
+                        index: binding.global_idx,
+                    });
+                    self.emit(IrInstr::StoreRefCell {
+                        refcell: refcell_reg,
+                        value: value.clone(),
+                    });
+                } else {
+                    self.emit(IrInstr::StoreGlobal {
+                        index: binding.global_idx,
+                        value: value.clone(),
+                    });
+                }
+                value
+            }
+            super::ResolvedBinding::DirectEval { symbol, .. } => {
+                self.emit_direct_eval_binding_set(self.interner.resolve(symbol), value.clone());
+                value
+            }
+            super::ResolvedBinding::AmbientGlobal { symbol, .. } => {
+                self.emit_unresolved_js_assignment(self.interner.resolve(symbol), value.clone());
+                value
+            }
+        }
+    }
+
+    fn resolve_update_reference(
+        &mut self,
+        expr: &Expression,
+    ) -> Option<super::Reference> {
+        let semantic_reference = self.semantic_plan.reference_at_span(expr.span().start);
+        match (semantic_reference.map(|reference| &reference.kind), expr) {
+            (
+                Some(crate::semantics::ReferenceExprKind::Identifier)
+                | None,
+                Expression::Identifier(ident),
+            ) => self
+                .resolve_identifier_binding(ident.name)
+                .map(super::Reference::Identifier),
+            (
+                Some(
+                    crate::semantics::ReferenceExprKind::PropertyNamed
+                    | crate::semantics::ReferenceExprKind::SuperNamed,
+                )
+                | None,
+                Expression::Member(member),
+            ) => {
+                let base = self.lower_expr(&member.object);
+                let key = self.emit_named_key_register(self.interner.resolve(member.property.name));
+                Some(super::Reference::Property {
+                    receiver: base.clone(),
+                    base,
+                    key,
+                    strict: self.js_strict_context,
+                })
+            }
+            (
+                Some(
+                    crate::semantics::ReferenceExprKind::PropertyComputed
+                    | crate::semantics::ReferenceExprKind::SuperComputed,
+                )
+                | None,
+                Expression::Index(index),
+            ) => {
+                let base = self.lower_expr(&index.object);
+                let key = self.lower_expr(&index.index);
+                Some(super::Reference::Property {
+                    receiver: base.clone(),
+                    base,
+                    key,
+                    strict: self.js_strict_context,
+                })
+            }
+            (_, Expression::Parenthesized(paren)) => self.resolve_update_reference(&paren.expression),
+            _ => None,
+        }
+    }
+
+    fn emit_reference_get(
+        &mut self,
+        reference: &super::Reference,
+        value_ty: TypeId,
+    ) -> Register {
+        match reference {
+            super::Reference::Identifier(binding) => self.emit_load_identifier_binding(*binding, value_ty),
+            super::Reference::Property { base, key, .. } => {
+                let dest = self.alloc_register(value_ty);
+                self.emit(IrInstr::DynGetKeyed {
+                    dest: dest.clone(),
+                    object: base.clone(),
+                    key: key.clone(),
+                });
+                dest
+            }
+        }
+    }
+
+    fn emit_reference_put(
+        &mut self,
+        reference: super::Reference,
+        value: Register,
+    ) -> Register {
+        match reference {
+            super::Reference::Identifier(binding) => self.emit_store_identifier_binding(binding, value),
+            super::Reference::Property {
+                base,
+                key,
+                strict,
+                ..
+            } => {
+                self.emit(IrInstr::NativeCall {
+                    dest: None,
+                    native_id: if strict {
+                        crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT
+                    } else {
+                        crate::compiler::native_id::OBJECT_SET_PROPERTY
+                    },
+                    args: vec![base, key, value.clone()],
+                });
+                value
+            }
+        }
     }
 
     fn emit_js_member_call_helper(
@@ -2065,16 +2530,35 @@ impl<'a> Lowerer<'a> {
         self.emit(IrInstr::NativeCall {
             dest: Some(dest.clone()),
             native_id: if non_throwing {
-                crate::compiler::native_id::OBJECT_EVAL_ENV_TRY_GET
+                if self.skip_with_scope_runtime_lookup {
+                    crate::compiler::native_id::OBJECT_EVAL_ENV_TRY_GET_NO_WITH
+                } else {
+                    crate::compiler::native_id::OBJECT_EVAL_ENV_TRY_GET
+                }
             } else {
-                crate::compiler::native_id::OBJECT_EVAL_ENV_GET
+                if self.skip_with_scope_runtime_lookup {
+                    crate::compiler::native_id::OBJECT_EVAL_ENV_GET_NO_WITH
+                } else {
+                    crate::compiler::native_id::OBJECT_EVAL_ENV_GET
+                }
             },
             args: vec![name_reg],
         });
         dest
     }
 
-    fn emit_direct_eval_binding_has(&mut self, name: &str) -> Register {
+    pub(super) fn emit_active_with_env_has(&mut self, name: &str) -> Register {
+        let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_ACTIVE_WITH_ENV_HAS,
+            args: vec![name_reg],
+        });
+        dest
+    }
+
+    pub(super) fn emit_direct_eval_binding_has(&mut self, name: &str) -> Register {
         let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
         let name_reg = self.emit_direct_eval_name_reg(name);
         self.emit(IrInstr::NativeCall {
@@ -2203,7 +2687,7 @@ impl<'a> Lowerer<'a> {
         for &symbol in self.module_var_globals.keys() {
             push(symbol);
         }
-        for &symbol in self.js_script_lexical_globals.keys() {
+        for &symbol in &self.visible_js_lexical_symbols {
             push(symbol);
         }
         if let Some(bindings) = &self.current_method_env_globals {
@@ -2217,22 +2701,41 @@ impl<'a> Lowerer<'a> {
 
     fn direct_eval_binding_is_lexical(&self, symbol: Symbol) -> bool {
         self.visible_js_lexical_symbols.contains(&symbol)
-            || self.js_script_lexical_globals.contains_key(&symbol)
             || (self.parameter_scope_eval_mode && self.parameter_symbols.contains(&symbol))
     }
 
     fn direct_eval_binding_is_outer_snapshot(&self, symbol: Symbol) -> bool {
+        if self.local_map.contains_key(&symbol) || self.constant_map.contains_key(&symbol) {
+            return false;
+        }
         self.captures.iter().any(|capture| capture.symbol == symbol)
             || self
                 .ancestor_variables
                 .as_ref()
                 .is_some_and(|ancestors| ancestors.contains_key(&symbol))
             || self.module_var_globals.contains_key(&symbol)
-            || self.js_script_lexical_globals.contains_key(&symbol)
+            || self.visible_js_lexical_symbols.contains(&symbol)
             || self
                 .current_method_env_globals
                 .as_ref()
                 .is_some_and(|bindings| bindings.contains_key(&symbol))
+    }
+
+    fn direct_eval_binding_is_immutable_outer_snapshot(&self, symbol: Symbol) -> bool {
+        if self.local_map.contains_key(&symbol) || self.constant_map.contains_key(&symbol) {
+            return false;
+        }
+        self.js_script_const_globals.contains(&symbol)
+            || self.js_top_level_class_globals.contains(&symbol)
+            || self
+                .captures
+                .iter()
+                .any(|capture| capture.symbol == symbol && capture.is_immutable)
+            || self
+                .ancestor_variables
+                .as_ref()
+                .and_then(|ancestors| ancestors.get(&symbol))
+                .is_some_and(|var| var.is_immutable)
     }
 
     fn emit_direct_eval_hidden_flag_set(&mut self, env_object: Register, key: String) {
@@ -2259,11 +2762,11 @@ impl<'a> Lowerer<'a> {
             dest: key_reg.clone(),
             value: IrValue::Constant(IrConstant::String(key)),
         });
-        let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        let dest = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::NativeCall {
             dest: Some(dest.clone()),
-            native_id: crate::compiler::native_id::OBJECT_HAS_PROPERTY,
-            args: vec![key_reg, env_object],
+            native_id: crate::compiler::native_id::REFLECT_GET,
+            args: vec![env_object, key_reg],
         });
         dest
     }
@@ -2314,7 +2817,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_with_scoped_identifier(&mut self, ident: &ast::Identifier) -> Register {
         let name = self.interner.resolve(ident.name);
-        let has_binding = self.emit_direct_eval_binding_has(name);
+        let has_binding = self.emit_active_with_env_has(name);
         let hit_block = self.alloc_block();
         let miss_block = self.alloc_block();
         let merge_block = self.alloc_block();
@@ -2340,8 +2843,11 @@ impl<'a> Lowerer<'a> {
             .add_block(BasicBlock::with_label(miss_block, "with.ident.miss"));
         self.current_block = miss_block;
         let saved_with_scope_depth = self.with_scope_depth;
+        let saved_skip_with_scope_runtime_lookup = self.skip_with_scope_runtime_lookup;
         self.with_scope_depth = 0;
+        self.skip_with_scope_runtime_lookup = true;
         let fallback = self.lower_identifier(ident);
+        self.skip_with_scope_runtime_lookup = saved_skip_with_scope_runtime_lookup;
         self.with_scope_depth = saved_with_scope_depth;
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -2539,6 +3045,9 @@ impl<'a> Lowerer<'a> {
 
     fn write_back_direct_eval_environment(&mut self, env_object: Register) {
         for symbol in self.collect_visible_direct_eval_symbols() {
+            if self.module_var_globals.contains_key(&symbol) {
+                continue;
+            }
             if !self.identifier_has_static_assignment_target(symbol)
                 && !self.module_var_globals.contains_key(&symbol)
                 && !self.js_script_lexical_globals.contains_key(&symbol)
@@ -2547,6 +3056,9 @@ impl<'a> Lowerer<'a> {
             }
             let name = self.interner.resolve(symbol).to_string();
             if self.direct_eval_binding_is_outer_snapshot(symbol) {
+                if self.direct_eval_binding_is_immutable_outer_snapshot(symbol) {
+                    continue;
+                }
                 let has_marker = self.emit_direct_eval_hidden_flag_has(
                     env_object.clone(),
                     format!("{DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX}{name}"),
@@ -3475,6 +3987,24 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
+        if let Some(nominal_type_id) = self
+            .nominal_type_id_from_type_name(name)
+            .or_else(|| self.class_map.get(&ident.name).copied())
+        {
+            if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
+                eprintln!(
+                    "[lower-class-ident] name={} via=nominal_lookup nominal={} fn_depth={} block_depth={} shared_slot={:?} parameter_scope_eval_mode={}",
+                    name,
+                    nominal_type_id.as_u32(),
+                    self.function_depth,
+                    self.block_depth,
+                    self.shared_script_binding_slot(ident.name),
+                    self.parameter_scope_eval_mode
+                );
+            }
+            return self.load_class_value_for_nominal_type(nominal_type_id);
+        }
+
         if name == "arguments"
             && self.body_scope_eval_arguments_mode
             && !self.function_map.contains_key(&ident.name)
@@ -3503,28 +4033,14 @@ impl<'a> Lowerer<'a> {
             });
             self.emit(IrInstr::NativeCall {
                 dest: Some(dest.clone()),
-                native_id: crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL,
+                native_id: if self.skip_with_scope_runtime_lookup {
+                    crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL_NO_WITH
+                } else {
+                    crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL
+                },
                 args: vec![name_reg],
             });
             return dest;
-        }
-
-        if let Some(nominal_type_id) = self
-            .nominal_type_id_from_type_name(name)
-            .or_else(|| self.class_map.get(&ident.name).copied())
-        {
-            if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
-                eprintln!(
-                    "[lower-class-ident] name={} via=nominal_lookup nominal={} fn_depth={} block_depth={} shared_slot={:?} parameter_scope_eval_mode={}",
-                    name,
-                    nominal_type_id.as_u32(),
-                    self.function_depth,
-                    self.block_depth,
-                    self.shared_script_binding_slot(ident.name),
-                    self.parameter_scope_eval_mode
-                );
-            }
-            return self.load_class_value_for_nominal_type(nominal_type_id);
         }
 
         if name == "arguments" {
@@ -3620,7 +4136,11 @@ impl<'a> Lowerer<'a> {
             });
             self.emit(IrInstr::NativeCall {
                 dest: Some(dest.clone()),
-                native_id: crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL,
+                native_id: if self.skip_with_scope_runtime_lookup {
+                    crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL_NO_WITH
+                } else {
+                    crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL
+                },
                 args: vec![name_reg],
             });
             return dest;
@@ -3931,40 +4451,20 @@ impl<'a> Lowerer<'a> {
 
     fn lower_delete(&mut self, unary: &ast::UnaryExpression) -> Register {
         let bool_ty = TypeId::new(BOOLEAN_TYPE_ID);
-        if let Expression::Member(member) = &*unary.operand {
-            let object = self.lower_expr(&member.object);
-            let name = self.interner.resolve(member.property.name).to_string();
-            let key = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-            self.emit(IrInstr::Assign {
-                dest: key.clone(),
-                value: IrValue::Constant(IrConstant::String(name)),
-            });
-            let dest = self.alloc_register(bool_ty);
-            self.emit(IrInstr::NativeCall {
-                dest: Some(dest.clone()),
-                native_id: if self.js_strict_context {
-                    crate::compiler::native_id::OBJECT_DELETE_PROPERTY_STRICT
-                } else {
-                    crate::compiler::native_id::OBJECT_DELETE_PROPERTY
-                },
-                args: vec![object, key],
-            });
-            return dest;
-        }
-        if let Expression::Index(index) = &*unary.operand {
-            let object = self.lower_expr(&index.object);
-            let key = self.lower_expr(&index.index);
-            let dest = self.alloc_register(bool_ty);
-            self.emit(IrInstr::NativeCall {
-                dest: Some(dest.clone()),
-                native_id: if self.js_strict_context {
-                    crate::compiler::native_id::OBJECT_DELETE_PROPERTY_STRICT
-                } else {
-                    crate::compiler::native_id::OBJECT_DELETE_PROPERTY
-                },
-                args: vec![object, key],
-            });
-            return dest;
+        if let Some(reference) = self.resolve_update_reference(&unary.operand) {
+            if let super::Reference::Property { base, key, .. } = reference {
+                let dest = self.alloc_register(bool_ty);
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: if self.js_strict_context {
+                        crate::compiler::native_id::OBJECT_DELETE_PROPERTY_STRICT
+                    } else {
+                        crate::compiler::native_id::OBJECT_DELETE_PROPERTY
+                    },
+                    args: vec![base, key],
+                });
+                return dest;
+            }
         }
         if let Expression::Identifier(ident) = &*unary.operand {
             let name = self.interner.resolve(ident.name);
@@ -4017,97 +4517,39 @@ impl<'a> Lowerer<'a> {
         );
 
         if self.js_this_binding_compat {
-            match &*unary.operand {
-                Expression::Member(member) => {
-                    let object = self.lower_expr(&member.object);
-                    let prop_name = self.interner.resolve(member.property.name).to_string();
-                    let old_value = self.alloc_register(self.get_expr_type(&unary.operand));
-                    self.emit_dyn_get_named(old_value.clone(), object.clone(), &prop_name);
+            if let Some(reference) = self.resolve_update_reference(&unary.operand) {
+                let value_ty = self.get_expr_type(&unary.operand);
+                let old_value = self.emit_reference_get(&reference, value_ty);
+                let one = if old_value.ty == TypeId::new(INT_TYPE_ID) {
+                    let r = self.alloc_register(TypeId::new(INT_TYPE_ID));
+                    self.emit(IrInstr::Assign {
+                        dest: r.clone(),
+                        value: IrValue::Constant(IrConstant::I32(1)),
+                    });
+                    r
+                } else {
+                    let r = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::Assign {
+                        dest: r.clone(),
+                        value: IrValue::Constant(IrConstant::F64(1.0)),
+                    });
+                    r
+                };
 
-                    let one = if old_value.ty == TypeId::new(INT_TYPE_ID) {
-                        let r = self.alloc_register(TypeId::new(INT_TYPE_ID));
-                        self.emit(IrInstr::Assign {
-                            dest: r.clone(),
-                            value: IrValue::Constant(IrConstant::I32(1)),
-                        });
-                        r
+                let new_value = self.alloc_register(old_value.ty);
+                self.emit(IrInstr::BinaryOp {
+                    dest: new_value.clone(),
+                    op: if is_increment {
+                        BinaryOp::Add
                     } else {
-                        let r = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                        self.emit(IrInstr::Assign {
-                            dest: r.clone(),
-                            value: IrValue::Constant(IrConstant::F64(1.0)),
-                        });
-                        r
-                    };
+                        BinaryOp::Sub
+                    },
+                    left: old_value.clone(),
+                    right: one,
+                });
 
-                    let new_value = self.alloc_register(old_value.ty);
-                    self.emit(IrInstr::BinaryOp {
-                        dest: new_value.clone(),
-                        op: if is_increment {
-                            BinaryOp::Add
-                        } else {
-                            BinaryOp::Sub
-                        },
-                        left: old_value.clone(),
-                        right: one,
-                    });
-
-                    let prop_reg = self.emit_named_key_register(&prop_name);
-                    self.emit(IrInstr::NativeCall {
-                        dest: None,
-                        native_id: crate::compiler::native_id::REFLECT_SET,
-                        args: vec![object, prop_reg, new_value.clone()],
-                    });
-
-                    return if is_prefix { new_value } else { old_value };
-                }
-                Expression::Index(index) => {
-                    let object = self.lower_expr(&index.object);
-                    let key = self.lower_expr(&index.index);
-                    let old_value = self.alloc_register(self.get_expr_type(&unary.operand));
-                    self.emit(IrInstr::DynGetKeyed {
-                        dest: old_value.clone(),
-                        object: object.clone(),
-                        key: key.clone(),
-                    });
-
-                    let one = if old_value.ty == TypeId::new(INT_TYPE_ID) {
-                        let r = self.alloc_register(TypeId::new(INT_TYPE_ID));
-                        self.emit(IrInstr::Assign {
-                            dest: r.clone(),
-                            value: IrValue::Constant(IrConstant::I32(1)),
-                        });
-                        r
-                    } else {
-                        let r = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                        self.emit(IrInstr::Assign {
-                            dest: r.clone(),
-                            value: IrValue::Constant(IrConstant::F64(1.0)),
-                        });
-                        r
-                    };
-
-                    let new_value = self.alloc_register(old_value.ty);
-                    self.emit(IrInstr::BinaryOp {
-                        dest: new_value.clone(),
-                        op: if is_increment {
-                            BinaryOp::Add
-                        } else {
-                            BinaryOp::Sub
-                        },
-                        left: old_value.clone(),
-                        right: one,
-                    });
-
-                    self.emit(IrInstr::NativeCall {
-                        dest: None,
-                        native_id: crate::compiler::native_id::REFLECT_SET,
-                        args: vec![object, key, new_value.clone()],
-                    });
-
-                    return if is_prefix { new_value } else { old_value };
-                }
-                _ => {}
+                let stored = self.emit_reference_put(reference, new_value.clone());
+                return if is_prefix { stored } else { old_value };
             }
         }
 
@@ -4164,6 +4606,11 @@ impl<'a> Lowerer<'a> {
         if call.optional {
             return self.lower_optional_call(call, full_expr);
         }
+
+        let semantic_call_kind = self
+            .semantic_plan
+            .call_op_at_span(call.span.start)
+            .map(|op| op.kind);
 
         // Prefer checker return type; if absent, derive from callee call signature.
         let mut call_ty = self.get_expr_type(full_expr);
@@ -4382,7 +4829,15 @@ impl<'a> Lowerer<'a> {
                     .as_ref()
                     .is_some_and(|bindings| bindings.contains_key(&ident.name));
 
-            if self.js_this_binding_compat && name == "eval" && !identifier_resolved_locally {
+            let is_direct_eval_call = matches!(
+                semantic_call_kind,
+                Some(crate::semantics::CallOpKind::DirectEval)
+            ) || name == "eval";
+
+            if self.js_this_binding_compat
+                && is_direct_eval_call
+                && !identifier_resolved_locally
+            {
                 let source = args.first().cloned().unwrap_or_else(|| {
                     let empty = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                     self.emit(IrInstr::Assign {
@@ -5117,6 +5572,17 @@ impl<'a> Lowerer<'a> {
                     && !self.type_is_callable(callee_ty)
                     && !self.runtime_call_may_be_callable(callee_ty)
                 {
+                    if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
+                        let receiver = self.lower_undefined_literal();
+                        let plan = self.plan_receiver_closure_invoke(
+                            receiver,
+                            closure,
+                            args,
+                            Self::invoke_plan_sync(call_ty),
+                        );
+                        self.emit_invoke_plan(dest.clone(), plan);
+                        return dest;
+                    }
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
                             message: format!(
@@ -8324,6 +8790,7 @@ impl<'a> Lowerer<'a> {
 
     pub(super) fn store_identifier_value(&mut self, symbol: Symbol, value: Register) {
         let name = self.interner.resolve(symbol).to_string();
+        let debug_direct_eval_store = std::env::var("RAYA_DEBUG_DIRECT_EVAL_STORE").is_ok();
 
         if self.constant_map.contains_key(&symbol) {
             let _ = self.emit_type_error_throw("Assignment to constant variable.");
@@ -8356,6 +8823,12 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Some(&local_idx) = self.local_map.get(&symbol) {
+            if debug_direct_eval_store {
+                eprintln!(
+                    "[direct-eval-store] name={} route=local idx={}",
+                    name, local_idx
+                );
+            }
             if self.refcell_registers.contains_key(&local_idx) {
                 let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                 self.emit(IrInstr::LoadLocal {
@@ -8391,6 +8864,12 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Some(idx) = self.captures.iter().position(|c| c.symbol == symbol) {
+            if debug_direct_eval_store {
+                eprintln!(
+                    "[direct-eval-store] name={} route=capture idx={}",
+                    name, idx
+                );
+            }
             let capture = &self.captures[idx];
             let is_refcell = capture.is_refcell;
             let capture_idx = capture.capture_idx;
@@ -8458,6 +8937,12 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Some(global_idx) = self.shared_script_binding_slot(symbol) {
+            if debug_direct_eval_store {
+                eprintln!(
+                    "[direct-eval-store] name={} route=shared-global idx={}",
+                    name, global_idx
+                );
+            }
             self.emit(IrInstr::StoreGlobal {
                 index: global_idx,
                 value,
@@ -8471,6 +8956,12 @@ impl<'a> Lowerer<'a> {
             .and_then(|m| m.get(&symbol))
             .copied()
         {
+            if debug_direct_eval_store {
+                eprintln!(
+                    "[direct-eval-store] name={} route=method-env global_idx={}",
+                    name, binding.global_idx
+                );
+            }
             if binding.is_refcell {
                 let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                 self.emit(IrInstr::LoadGlobal {
@@ -9675,6 +10166,38 @@ impl<'a> Lowerer<'a> {
         let callable_assign_hint = assign.operator == AssignmentOperator::Assign
             && self.expression_is_callable_hint(&assign.right);
 
+        if self.js_this_binding_compat && assign.operator == AssignmentOperator::Assign {
+            if let Some(reference) = self.resolve_update_reference(&assign.left) {
+                let can_use_reference_pipeline = match &reference {
+                    super::Reference::Property { .. } => true,
+                    super::Reference::Identifier(binding) => {
+                        !matches!(binding, super::ResolvedBinding::AmbientGlobal { .. })
+                            && self.with_scope_depth == 0
+                    }
+                };
+
+                if can_use_reference_pipeline {
+                    let stored = self.emit_reference_put(reference, value.clone());
+                    if let Expression::Identifier(ident) = &*assign.left {
+                        if callable_assign_hint {
+                            self.callable_symbol_hints.insert(ident.name);
+                        } else {
+                            self.callable_symbol_hints.remove(&ident.name);
+                            self.bound_method_vars.remove(&ident.name);
+                        }
+                        if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                            if callable_assign_hint {
+                                self.callable_local_hints.insert(local_idx);
+                            } else {
+                                self.callable_local_hints.remove(&local_idx);
+                            }
+                        }
+                    }
+                    return stored;
+                }
+            }
+        }
+
         if assign.operator == AssignmentOperator::Assign
             && matches!(&*assign.left, Expression::Array(_) | Expression::Object(_))
         {
@@ -9722,6 +10245,11 @@ impl<'a> Lowerer<'a> {
             }
             Expression::Identifier(ident) => {
                 if let Some(target) = captured_with_identifier_target {
+                    let fallback_binding = self.resolve_identifier_binding(ident.name).filter(
+                        |binding| {
+                            !matches!(binding, super::ResolvedBinding::AmbientGlobal { .. })
+                        },
+                    );
                     let hit_block = self.alloc_block();
                     let miss_block = self.alloc_block();
                     let merge_block = self.alloc_block();
@@ -9745,7 +10273,11 @@ impl<'a> Lowerer<'a> {
                     self.current_function_mut()
                         .add_block(BasicBlock::with_label(miss_block, "assign.ident.with.miss"));
                     self.current_block = miss_block;
-                    self.store_identifier_value(ident.name, value.clone());
+                    if let Some(binding) = fallback_binding {
+                        self.emit_store_identifier_binding(binding, value.clone());
+                    } else {
+                        self.store_identifier_value(ident.name, value.clone());
+                    }
                     self.set_terminator(Terminator::Jump(merge_block));
 
                     self.current_function_mut()
@@ -11498,10 +12030,20 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_typeof(&mut self, typeof_expr: &ast::TypeofExpression) -> Register {
-        if let Expression::Identifier(ident) = &*typeof_expr.argument {
+        fn peel_parenthesized<'a>(expr: &'a Expression) -> &'a Expression {
+            let mut current = expr;
+            while let Expression::Parenthesized(paren) = current {
+                current = &paren.expression;
+            }
+            current
+        }
+
+        let argument = peel_parenthesized(&typeof_expr.argument);
+
+        if let Expression::Identifier(ident) = argument {
             let name = self.interner.resolve(ident.name);
             if self.should_resolve_from_direct_eval_env(ident)
-                || (self.in_direct_eval_function && self.direct_eval_binding_enabled(name))
+                || self.direct_eval_binding_enabled(name)
             {
                 let operand = self.emit_direct_eval_binding_get(name, true);
                 let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
@@ -11524,7 +12066,7 @@ impl<'a> Lowerer<'a> {
         }
 
         // ES spec: typeof always returns "number" for all numerics, "object" for null.
-        if let Expression::IntLiteral(lit) = &*typeof_expr.argument {
+        if let Expression::IntLiteral(lit) = argument {
             let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             let type_name = if self.js_this_binding_compat && lit.is_bigint {
                 "bigint"
@@ -11540,13 +12082,7 @@ impl<'a> Lowerer<'a> {
 
         // Prefer static primitive classification when the checker already knows it.
         // Follows ES spec: typeof null === "object", typeof int === "number".
-        let arg_type_id = self.get_expr_type(&typeof_expr.argument).as_u32();
-        if std::env::var("RAYA_DEBUG_TYPEOF_STATIC").is_ok() {
-            if let Expression::Identifier(id) = &*typeof_expr.argument {
-                let n = self.interner.resolve(id.name);
-                eprintln!("[typeof-static] ident='{}' type_id={}", n, arg_type_id);
-            }
-        }
+        let arg_type_id = self.get_expr_type(argument).as_u32();
         let static_typeof_name = match arg_type_id {
             NUMBER_TYPE_ID => Some("number"),
             INT_TYPE_ID => Some(if self.js_this_binding_compat {
@@ -11572,56 +12108,50 @@ impl<'a> Lowerer<'a> {
         // without throwing.  For identifiers that would use OBJECT_GET_AMBIENT_GLOBAL
         // (which throws on missing names), use TRY_GET_GLOBAL instead (returns
         // undefined on missing names), then apply Typeof normally.
-        if self.allow_unresolved_runtime_fallback {
-            if let Expression::Identifier(ident) = &*typeof_expr.argument {
-                let name = self.interner.resolve(ident.name);
-                // Check if lower_identifier would fall through to the
-                // OBJECT_GET_AMBIENT_GLOBAL runtime path (the throwing one).
-                let resolved_locally = self.local_map.contains_key(&ident.name)
-                    || self.constant_map.contains_key(&ident.name)
-                    || self.function_map.contains_key(&ident.name)
-                    || self.class_map.contains_key(&ident.name)
-                    || self.captures.iter().any(|c| c.symbol == ident.name)
-                    || self
-                        .ancestor_variables
-                        .as_ref()
-                        .is_some_and(|av| av.contains_key(&ident.name))
-                    || self.shared_script_binding_slot(ident.name).is_some()
-                    || self.ambient_builtin_globals.contains(name)
-                    || matches!(name, "Infinity" | "NaN" | "undefined" | "arguments");
-                if !resolved_locally {
-                    if self.in_direct_eval_function {
-                        let operand = self.emit_direct_eval_binding_get(name, true);
-                        let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                        self.emit(IrInstr::Typeof {
-                            dest: dest.clone(),
-                            operand,
-                        });
-                        return dest;
-                    }
-                    // Use TRY_GET_GLOBAL (non-throwing) + Typeof
-                    let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                    self.emit(IrInstr::Assign {
-                        dest: name_reg.clone(),
-                        value: IrValue::Constant(IrConstant::String(name.to_string())),
-                    });
-                    let operand = self.alloc_register(UNRESOLVED);
-                    self.emit(IrInstr::NativeCall {
-                        dest: Some(operand.clone()),
-                        native_id: crate::compiler::native_id::TRY_GET_GLOBAL,
-                        args: vec![name_reg],
-                    });
+        if let Expression::Identifier(ident) = argument {
+            let name = self.interner.resolve(ident.name);
+            // Check if lower_identifier would fall through to the
+            // ambient/global runtime path (the throwing one). `typeof` on an
+            // unresolvable identifier must stay non-throwing even when normal
+            // unresolved-runtime fallback is disabled for this profile.
+            let binding = self.resolve_identifier_binding(ident.name);
+            let needs_non_throwing_lookup = matches!(
+                binding,
+                None | Some(super::ResolvedBinding::AmbientGlobal { .. })
+            ) && !self.ambient_builtin_globals.contains(name)
+                && !matches!(name, "Infinity" | "NaN" | "undefined" | "arguments");
+            if needs_non_throwing_lookup {
+                if self.in_direct_eval_function {
+                    let operand = self.emit_direct_eval_binding_get(name, true);
                     let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                    self.emit(IrInstr::Typeof {
+                        self.emit(IrInstr::Typeof {
                         dest: dest.clone(),
                         operand,
                     });
                     return dest;
                 }
+                // Use TRY_GET_GLOBAL (non-throwing) + Typeof
+                let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(name.to_string())),
+                });
+                let operand = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(operand.clone()),
+                    native_id: crate::compiler::native_id::TRY_GET_GLOBAL,
+                    args: vec![name_reg],
+                });
+                let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                self.emit(IrInstr::Typeof {
+                    dest: dest.clone(),
+                    operand,
+                });
+                return dest;
             }
         }
 
-        let operand = self.lower_expr(&typeof_expr.argument);
+        let operand = self.lower_expr(argument);
         let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
         self.emit(IrInstr::Typeof {
             dest: dest.clone(),

@@ -2761,6 +2761,41 @@ mod tests {
     }
 
     #[test]
+    fn test_semantic_hir_tracks_js_reference_and_loop_plans() {
+        let hir = inspect_semantic_hir_with_profile(
+            r#"
+            function main(source, obj) {
+                let { [source()]: value = 1, plain } = obj;
+                for (let i = 0; i < 3; i++) {
+                    obj.count = i;
+                }
+                eval("value");
+                return obj.count++;
+            }
+            "#,
+            SemanticProfile::js(),
+        )
+        .expect("semantic HIR should build");
+
+        assert!(hir.references.iter().any(|reference| {
+            reference.kind == raya_engine::ReferenceExprKind::PropertyNamed
+                && reference.name.as_deref() == Some("count")
+        }));
+        assert!(hir.call_ops.iter().any(|call| {
+            call.kind == raya_engine::CallOpKind::DirectEval
+        }));
+        assert!(hir.update_ops.iter().any(|op| {
+            op.kind == raya_engine::UpdateOpKind::PostfixIncrement
+        }));
+        assert!(hir.destructuring_plans.iter().any(|plan| {
+            plan.has_computed_keys && plan.has_defaults && plan.binding_names.iter().any(|name| name == "value")
+        }));
+        assert!(hir.loop_scopes.iter().any(|plan| {
+            plan.creates_per_iteration_env && plan.binding_names.iter().any(|name| name == "i")
+        }));
+    }
+
+    #[test]
     fn test_parser_for_profile_uses_js_mode_for_contextual_keywords() {
         let parser = parser_for_profile(
             r#""use strict"; var public = 1; public;"#,

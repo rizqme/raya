@@ -877,11 +877,12 @@ impl<'a> Interpreter<'a> {
                 };
                 let array_val = stack.pop()?;
 
-                if !array_val.is_ptr() {
+                let Some(arr_ptr) =
+                    crate::vm::interpreter::opcodes::native::checked_array_ptr(array_val)
+                else {
                     return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+                };
+                let arr = unsafe { &*arr_ptr.as_ptr() };
 
                 let len = arr.len();
 
@@ -1059,31 +1060,35 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             array::CONCAT => {
-                // concat(other): merge two arrays
-                if arg_count != 1 {
-                    return Err(VmError::RuntimeError(format!(
-                        "Array.concat expects 1 argument, got {}",
-                        arg_count
-                    )));
+                let mut items = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    items.push(stack.pop()?);
                 }
-                let other_val = stack.pop()?;
+                items.reverse();
                 let array_val = stack.pop()?;
 
-                if !array_val.is_ptr() || !other_val.is_ptr() {
+                let Some(arr_ptr) =
+                    crate::vm::interpreter::opcodes::native::checked_array_ptr(array_val)
+                else {
                     return Err(VmError::TypeError("Expected array".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let other_ptr = unsafe { other_val.as_ptr::<Array>() };
-                let other = unsafe { &*other_ptr.unwrap().as_ptr() };
+                };
+                let arr = unsafe { &*arr_ptr.as_ptr() };
 
                 let mut new_arr = Array::new(0, 0);
                 for elem in arr.elements.iter() {
                     new_arr.push(*elem);
                 }
-                for elem in other.elements.iter() {
-                    new_arr.push(*elem);
+                for item in items {
+                    if let Some(other_ptr) =
+                        crate::vm::interpreter::opcodes::native::checked_array_ptr(item)
+                    {
+                        let other = unsafe { &*other_ptr.as_ptr() };
+                        for elem in other.elements.iter() {
+                            new_arr.push(*elem);
+                        }
+                    } else {
+                        new_arr.push(item);
+                    }
                 }
 
                 let gc_ptr = self.gc.lock().allocate(new_arr);

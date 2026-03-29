@@ -5,7 +5,7 @@
 //! profile instead of scattering booleans across layers.
 
 use crate::parser::ast::{
-    self, Expression, FunctionDecl, MethodDecl, Pattern, Statement, VariableKind,
+    self, Expression, FunctionDecl, MethodDecl, Pattern, Statement, UnaryOperator, VariableKind,
 };
 use crate::parser::checker::{CheckerPolicy, EarlyErrorOptions, TsTypeFlags, TypeSystemMode};
 use crate::parser::{Interner, Symbol};
@@ -142,7 +142,7 @@ impl SemanticProfile {
             allow_unresolved_runtime_fallback: true,
             track_top_level_completion: true,
             emit_script_global_bindings: true,
-            script_global_bindings_configurable: true,
+            script_global_bindings_configurable: false,
             allow_top_level_return: false,
             allow_await_outside_async: false,
             allow_typescript_syntax: false,
@@ -162,7 +162,7 @@ impl SemanticProfile {
             allow_unresolved_runtime_fallback: true,
             track_top_level_completion: true,
             emit_script_global_bindings: true,
-            script_global_bindings_configurable: true,
+            script_global_bindings_configurable: false,
             allow_top_level_return: false,
             allow_await_outside_async: false,
             allow_typescript_syntax: true,
@@ -183,7 +183,7 @@ impl SemanticProfile {
             allow_unresolved_runtime_fallback: true,
             track_top_level_completion: true,
             emit_script_global_bindings: true,
-            script_global_bindings_configurable: true,
+            script_global_bindings_configurable: false,
             allow_top_level_return: false,
             allow_await_outside_async: true,
             allow_typescript_syntax: true,
@@ -312,6 +312,120 @@ pub enum SuspensionKind {
     YieldStar,
 }
 
+/// Shared environment record shape carried through semantic planning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnvRecordKind {
+    Declarative,
+    ObjectWith,
+    Global,
+    DirectEval,
+}
+
+/// Lightweight semantic handle for an environment record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnvHandle {
+    pub kind: EnvRecordKind,
+}
+
+/// Reference expression kind recorded before lowering.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ReferenceExprKind {
+    Identifier,
+    PropertyNamed,
+    PropertyComputed,
+    SuperNamed,
+    SuperComputed,
+}
+
+/// Semantic reference expression summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticReferenceExpr {
+    pub span_start: usize,
+    pub kind: ReferenceExprKind,
+    pub name: Option<String>,
+}
+
+/// Binding operation kind recorded before lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BindingOpKind {
+    CreateMutable,
+    CreateImmutable,
+    Initialize,
+    Assign,
+    Delete,
+    HasBinding,
+}
+
+/// Semantic binding operation summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticBindingOp {
+    pub span_start: usize,
+    pub kind: BindingOpKind,
+    pub name: Option<String>,
+    pub reference_span_start: Option<usize>,
+}
+
+/// Prefix/postfix update operation kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UpdateOpKind {
+    PrefixIncrement,
+    PrefixDecrement,
+    PostfixIncrement,
+    PostfixDecrement,
+}
+
+/// Semantic update operation summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticUpdateOp {
+    pub span_start: usize,
+    pub kind: UpdateOpKind,
+    pub reference_span_start: usize,
+}
+
+/// Call operation kind recorded before lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallOpKind {
+    Ordinary,
+    Method,
+    Constructor,
+    DirectEval,
+    IndirectEval,
+}
+
+/// Semantic call operation summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticCallOp {
+    pub span_start: usize,
+    pub kind: CallOpKind,
+    pub callee_span_start: usize,
+}
+
+/// Semantic function behavior summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionSemantics {
+    pub span_start: usize,
+    pub kind: CallableKind,
+    pub uses_js_this: bool,
+}
+
+/// Ordered destructuring plan summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestructuringPlan {
+    pub span_start: usize,
+    pub binding_names: Vec<String>,
+    pub has_computed_keys: bool,
+    pub has_defaults: bool,
+    pub step_count: usize,
+}
+
+/// Per-loop lexical scope plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopScopePlan {
+    pub span_start: usize,
+    pub creates_per_iteration_env: bool,
+    pub binding_names: Vec<String>,
+}
+
 /// Semantic callable summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticCallable {
@@ -340,7 +454,14 @@ pub struct SuspensionPoint {
 pub struct SemanticHirModule {
     pub profile: SemanticProfile,
     pub callables: Vec<SemanticCallable>,
+    pub function_semantics: Vec<FunctionSemantics>,
     pub bindings: Vec<SemanticBinding>,
+    pub references: Vec<SemanticReferenceExpr>,
+    pub binding_ops: Vec<SemanticBindingOp>,
+    pub update_ops: Vec<SemanticUpdateOp>,
+    pub call_ops: Vec<SemanticCallOp>,
+    pub destructuring_plans: Vec<DestructuringPlan>,
+    pub loop_scopes: Vec<LoopScopePlan>,
     pub suspension_points: Vec<SuspensionPoint>,
     pub uses_direct_eval: bool,
 }
@@ -358,6 +479,12 @@ pub struct SemanticTopLevelCallable {
 pub struct SemanticLoweringPlan {
     pub hir: SemanticHirModule,
     callable_kinds_by_span: FxHashMap<usize, CallableKind>,
+    references_by_span: FxHashMap<usize, SemanticReferenceExpr>,
+    binding_ops_by_span: FxHashMap<usize, SemanticBindingOp>,
+    update_ops_by_span: FxHashMap<usize, SemanticUpdateOp>,
+    call_ops_by_span: FxHashMap<usize, SemanticCallOp>,
+    destructuring_by_span: FxHashMap<usize, DestructuringPlan>,
+    loop_scopes_by_span: FxHashMap<usize, LoopScopePlan>,
     top_level_callables: Vec<SemanticTopLevelCallable>,
     top_level_vars: FxHashSet<Symbol>,
     top_level_lexicals: FxHashSet<Symbol>,
@@ -371,11 +498,24 @@ impl SemanticLoweringPlan {
             hir: SemanticHirModule {
                 profile,
                 callables: Vec::new(),
+                function_semantics: Vec::new(),
                 bindings: Vec::new(),
+                references: Vec::new(),
+                binding_ops: Vec::new(),
+                update_ops: Vec::new(),
+                call_ops: Vec::new(),
+                destructuring_plans: Vec::new(),
+                loop_scopes: Vec::new(),
                 suspension_points: Vec::new(),
                 uses_direct_eval: false,
             },
             callable_kinds_by_span: FxHashMap::default(),
+            references_by_span: FxHashMap::default(),
+            binding_ops_by_span: FxHashMap::default(),
+            update_ops_by_span: FxHashMap::default(),
+            call_ops_by_span: FxHashMap::default(),
+            destructuring_by_span: FxHashMap::default(),
+            loop_scopes_by_span: FxHashMap::default(),
             top_level_callables: Vec::new(),
             top_level_vars: FxHashSet::default(),
             top_level_lexicals: FxHashSet::default(),
@@ -398,6 +538,30 @@ impl SemanticLoweringPlan {
 
     pub fn callable_kind_at_span(&self, span_start: usize) -> Option<CallableKind> {
         self.callable_kinds_by_span.get(&span_start).copied()
+    }
+
+    pub fn reference_at_span(&self, span_start: usize) -> Option<&SemanticReferenceExpr> {
+        self.references_by_span.get(&span_start)
+    }
+
+    pub fn binding_op_at_span(&self, span_start: usize) -> Option<&SemanticBindingOp> {
+        self.binding_ops_by_span.get(&span_start)
+    }
+
+    pub fn update_op_at_span(&self, span_start: usize) -> Option<&SemanticUpdateOp> {
+        self.update_ops_by_span.get(&span_start)
+    }
+
+    pub fn call_op_at_span(&self, span_start: usize) -> Option<&SemanticCallOp> {
+        self.call_ops_by_span.get(&span_start)
+    }
+
+    pub fn destructuring_plan_at_span(&self, span_start: usize) -> Option<&DestructuringPlan> {
+        self.destructuring_by_span.get(&span_start)
+    }
+
+    pub fn loop_scope_plan_at_span(&self, span_start: usize) -> Option<&LoopScopePlan> {
+        self.loop_scopes_by_span.get(&span_start)
     }
 
     pub fn top_level_callables(&self) -> &[SemanticTopLevelCallable] {
@@ -439,7 +603,14 @@ pub fn build_semantic_lowering_plan(
     let mut builder = SemanticHirBuilder {
         interner,
         callables: Vec::new(),
+        function_semantics: Vec::new(),
         bindings: Vec::new(),
+        references: Vec::new(),
+        binding_ops: Vec::new(),
+        update_ops: Vec::new(),
+        call_ops: Vec::new(),
+        destructuring_plans: Vec::new(),
+        loop_scopes: Vec::new(),
         suspension_points: Vec::new(),
         uses_direct_eval: false,
         function_depth: 0,
@@ -463,6 +634,7 @@ pub fn build_semantic_lowering_plan(
                 span_start: callable.span_start,
             })
             .collect(),
+        function_semantics: builder.function_semantics,
         bindings: builder
             .bindings
             .iter()
@@ -472,6 +644,12 @@ pub fn build_semantic_lowering_plan(
                 top_level: binding.top_level,
             })
             .collect(),
+        references: builder.references,
+        binding_ops: builder.binding_ops,
+        update_ops: builder.update_ops,
+        call_ops: builder.call_ops,
+        destructuring_plans: builder.destructuring_plans,
+        loop_scopes: builder.loop_scopes,
         suspension_points: builder.suspension_points,
         uses_direct_eval: builder.uses_direct_eval,
     };
@@ -480,9 +658,51 @@ pub fn build_semantic_lowering_plan(
         .iter()
         .map(|callable| (callable.span_start, callable.kind))
         .collect();
+    let references_by_span = hir
+        .references
+        .iter()
+        .cloned()
+        .map(|reference| (reference.span_start, reference))
+        .collect();
+    let binding_ops_by_span = hir
+        .binding_ops
+        .iter()
+        .cloned()
+        .map(|op| (op.span_start, op))
+        .collect();
+    let update_ops_by_span = hir
+        .update_ops
+        .iter()
+        .cloned()
+        .map(|op| (op.span_start, op))
+        .collect();
+    let call_ops_by_span = hir
+        .call_ops
+        .iter()
+        .cloned()
+        .map(|op| (op.span_start, op))
+        .collect();
+    let destructuring_by_span = hir
+        .destructuring_plans
+        .iter()
+        .cloned()
+        .map(|plan| (plan.span_start, plan))
+        .collect();
+    let loop_scopes_by_span = hir
+        .loop_scopes
+        .iter()
+        .cloned()
+        .map(|plan| (plan.span_start, plan))
+        .collect();
     SemanticLoweringPlan {
         hir,
         callable_kinds_by_span,
+        references_by_span,
+        binding_ops_by_span,
+        update_ops_by_span,
+        call_ops_by_span,
+        destructuring_by_span,
+        loop_scopes_by_span,
         top_level_callables: builder.top_level_callables,
         top_level_vars: builder.top_level_vars,
         top_level_lexicals: builder.top_level_lexicals,
@@ -508,7 +728,14 @@ struct SemanticBindingInfo {
 struct SemanticHirBuilder<'a> {
     interner: &'a Interner,
     callables: Vec<SemanticCallableInfo>,
+    function_semantics: Vec<FunctionSemantics>,
     bindings: Vec<SemanticBindingInfo>,
+    references: Vec<SemanticReferenceExpr>,
+    binding_ops: Vec<SemanticBindingOp>,
+    update_ops: Vec<SemanticUpdateOp>,
+    call_ops: Vec<SemanticCallOp>,
+    destructuring_plans: Vec<DestructuringPlan>,
+    loop_scopes: Vec<LoopScopePlan>,
     suspension_points: Vec<SuspensionPoint>,
     uses_direct_eval: bool,
     function_depth: usize,
@@ -572,6 +799,7 @@ impl<'a> SemanticHirBuilder<'a> {
         match pattern {
             Pattern::Identifier(id) => self.record_binding(id.name, kind),
             Pattern::Array(arr) => {
+                self.record_destructuring_plan(pattern);
                 for elem in arr.elements.iter().flatten() {
                     self.record_pattern(&elem.pattern, kind);
                     if let Some(default) = &elem.default {
@@ -583,6 +811,7 @@ impl<'a> SemanticHirBuilder<'a> {
                 }
             }
             Pattern::Object(obj) => {
+                self.record_destructuring_plan(pattern);
                 for prop in &obj.properties {
                     self.record_pattern(&prop.value, kind);
                     if let Some(default) = &prop.default {
@@ -595,6 +824,188 @@ impl<'a> SemanticHirBuilder<'a> {
             }
             Pattern::Rest(rest) => self.record_pattern(&rest.argument, kind),
         }
+    }
+
+    fn collect_pattern_names_in_order(
+        pattern: &Pattern,
+        out: &mut Vec<String>,
+        interner: &Interner,
+    ) {
+        match pattern {
+            Pattern::Identifier(id) => out.push(interner.resolve(id.name).to_string()),
+            Pattern::Array(arr) => {
+                for elem in arr.elements.iter().flatten() {
+                    Self::collect_pattern_names_in_order(&elem.pattern, out, interner);
+                }
+                if let Some(rest) = &arr.rest {
+                    Self::collect_pattern_names_in_order(rest, out, interner);
+                }
+            }
+            Pattern::Object(obj) => {
+                for prop in &obj.properties {
+                    Self::collect_pattern_names_in_order(&prop.value, out, interner);
+                }
+                if let Some(rest) = &obj.rest {
+                    out.push(interner.resolve(rest.name).to_string());
+                }
+            }
+            Pattern::Rest(rest) => {
+                Self::collect_pattern_names_in_order(&rest.argument, out, interner)
+            }
+        }
+    }
+
+    fn pattern_has_computed_keys(pattern: &Pattern) -> bool {
+        match pattern {
+            Pattern::Identifier(_) => false,
+            Pattern::Array(arr) => arr
+                .elements
+                .iter()
+                .flatten()
+                .any(|elem| Self::pattern_has_computed_keys(&elem.pattern))
+                || arr
+                    .rest
+                    .as_deref()
+                    .is_some_and(Self::pattern_has_computed_keys),
+            Pattern::Object(obj) => obj.properties.iter().any(|prop| {
+                matches!(prop.key, ast::PropertyKey::Computed(_))
+                    || Self::pattern_has_computed_keys(&prop.value)
+            }),
+            Pattern::Rest(rest) => Self::pattern_has_computed_keys(&rest.argument),
+        }
+    }
+
+    fn pattern_has_defaults(pattern: &Pattern) -> bool {
+        match pattern {
+            Pattern::Identifier(_) => false,
+            Pattern::Array(arr) => arr
+                .elements
+                .iter()
+                .flatten()
+                .any(|elem| elem.default.is_some() || Self::pattern_has_defaults(&elem.pattern)),
+            Pattern::Object(obj) => obj
+                .properties
+                .iter()
+                .any(|prop| prop.default.is_some() || Self::pattern_has_defaults(&prop.value)),
+            Pattern::Rest(rest) => Self::pattern_has_defaults(&rest.argument),
+        }
+    }
+
+    fn pattern_step_count(pattern: &Pattern) -> usize {
+        match pattern {
+            Pattern::Identifier(_) => 1,
+            Pattern::Array(arr) => {
+                arr.elements.iter().flatten().count()
+                    + usize::from(arr.rest.is_some())
+                    + arr
+                        .elements
+                        .iter()
+                        .flatten()
+                        .map(|elem| Self::pattern_step_count(&elem.pattern).saturating_sub(1))
+                        .sum::<usize>()
+            }
+            Pattern::Object(obj) => {
+                obj.properties.len()
+                    + usize::from(obj.rest.is_some())
+                    + obj
+                        .properties
+                        .iter()
+                        .map(|prop| Self::pattern_step_count(&prop.value).saturating_sub(1))
+                        .sum::<usize>()
+            }
+            Pattern::Rest(rest) => Self::pattern_step_count(&rest.argument),
+        }
+    }
+
+    fn record_destructuring_plan(&mut self, pattern: &Pattern) {
+        if !matches!(pattern, Pattern::Array(_) | Pattern::Object(_)) {
+            return;
+        }
+        let mut binding_names = Vec::new();
+        Self::collect_pattern_names_in_order(pattern, &mut binding_names, self.interner);
+        self.destructuring_plans.push(DestructuringPlan {
+            span_start: pattern.span().start,
+            binding_names,
+            has_computed_keys: Self::pattern_has_computed_keys(pattern),
+            has_defaults: Self::pattern_has_defaults(pattern),
+            step_count: Self::pattern_step_count(pattern),
+        });
+    }
+
+    fn record_reference_expr(&mut self, expr: &Expression) {
+        let reference = match expr {
+            Expression::Identifier(ident) => SemanticReferenceExpr {
+                span_start: ident.span.start,
+                kind: ReferenceExprKind::Identifier,
+                name: Some(self.identifier(ident)),
+            },
+            Expression::Member(member) => SemanticReferenceExpr {
+                span_start: member.span.start,
+                kind: if matches!(&*member.object, Expression::Super(_)) {
+                    ReferenceExprKind::SuperNamed
+                } else {
+                    ReferenceExprKind::PropertyNamed
+                },
+                name: Some(self.identifier(&member.property)),
+            },
+            Expression::Index(index) => SemanticReferenceExpr {
+                span_start: index.span.start,
+                kind: if matches!(&*index.object, Expression::Super(_)) {
+                    ReferenceExprKind::SuperComputed
+                } else {
+                    ReferenceExprKind::PropertyComputed
+                },
+                name: None,
+            },
+            Expression::Parenthesized(paren) => {
+                self.record_reference_expr(&paren.expression);
+                return;
+            }
+            _ => return,
+        };
+        self.references.push(reference);
+    }
+
+    fn record_call_op(&mut self, call: &ast::CallExpression) {
+        let kind = match &*call.callee {
+            Expression::Identifier(ident) if self.interner.resolve(ident.name) == "eval" => {
+                self.uses_direct_eval = true;
+                CallOpKind::DirectEval
+            }
+            Expression::Member(_) | Expression::Index(_) => CallOpKind::Method,
+            Expression::Parenthesized(paren)
+                if matches!(
+                    &*paren.expression,
+                    Expression::Identifier(ident) if self.interner.resolve(ident.name) == "eval"
+                ) =>
+            {
+                CallOpKind::IndirectEval
+            }
+            _ => CallOpKind::Ordinary,
+        };
+        self.call_ops.push(SemanticCallOp {
+            span_start: call.span.start,
+            kind,
+            callee_span_start: call.callee.span().start,
+        });
+    }
+
+    fn record_loop_scope_plan(
+        &mut self,
+        span_start: usize,
+        creates_per_iteration_env: bool,
+        pattern: Option<&Pattern>,
+    ) {
+        let Some(pattern) = pattern else {
+            return;
+        };
+        let mut binding_names = Vec::new();
+        Self::collect_pattern_names_in_order(pattern, &mut binding_names, self.interner);
+        self.loop_scopes.push(LoopScopePlan {
+            span_start,
+            creates_per_iteration_env,
+            binding_names,
+        });
     }
 
     fn visit_function_like(
@@ -617,6 +1028,18 @@ impl<'a> SemanticHirBuilder<'a> {
             name,
             kind,
             span_start,
+        });
+        self.function_semantics.push(FunctionSemantics {
+            span_start,
+            kind,
+            uses_js_this: matches!(
+                kind,
+                CallableKind::SyncMethod
+                    | CallableKind::AsyncMethod
+                    | CallableKind::GeneratorMethod
+                    | CallableKind::AsyncGeneratorMethod
+                    | CallableKind::Constructor
+            ),
         });
         self.function_depth += 1;
         for param in params {
@@ -746,6 +1169,12 @@ impl<'a> SemanticHirBuilder<'a> {
                     }
                 }
                 self.record_pattern(&var_decl.pattern, kind);
+                self.binding_ops.push(SemanticBindingOp {
+                    span_start: var_decl.span.start,
+                    kind: BindingOpKind::Initialize,
+                    name: None,
+                    reference_span_start: Some(var_decl.pattern.span().start),
+                });
                 if let Some(init) = &var_decl.initializer {
                     self.visit_expr(init);
                 }
@@ -767,6 +1196,13 @@ impl<'a> SemanticHirBuilder<'a> {
                 self.visit_stmt(&while_stmt.body);
             }
             Statement::For(for_stmt) => {
+                if let Some(ast::ForInit::VariableDecl(decl)) = &for_stmt.init {
+                    self.record_loop_scope_plan(
+                        for_stmt.span.start,
+                        matches!(decl.kind, VariableKind::Let | VariableKind::Const),
+                        Some(&decl.pattern),
+                    );
+                }
                 if let Some(init) = &for_stmt.init {
                     match init {
                         ast::ForInit::Expression(expr) => self.visit_expr(expr),
@@ -830,6 +1266,16 @@ impl<'a> SemanticHirBuilder<'a> {
             }
             Statement::ForIn(for_in) => {
                 match &for_in.left {
+                    ast::ForOfLeft::VariableDecl(decl) => self.record_loop_scope_plan(
+                        for_in.span.start,
+                        matches!(decl.kind, VariableKind::Let | VariableKind::Const),
+                        Some(&decl.pattern),
+                    ),
+                    ast::ForOfLeft::Pattern(pattern) => {
+                        self.record_loop_scope_plan(for_in.span.start, false, Some(pattern))
+                    }
+                }
+                match &for_in.left {
                     ast::ForOfLeft::VariableDecl(decl) => self.record_pattern(
                         &decl.pattern,
                         match decl.kind {
@@ -845,6 +1291,16 @@ impl<'a> SemanticHirBuilder<'a> {
                 self.visit_stmt(&for_in.body);
             }
             Statement::ForOf(for_of) => {
+                match &for_of.left {
+                    ast::ForOfLeft::VariableDecl(decl) => self.record_loop_scope_plan(
+                        for_of.span.start,
+                        matches!(decl.kind, VariableKind::Let | VariableKind::Const),
+                        Some(&decl.pattern),
+                    ),
+                    ast::ForOfLeft::Pattern(pattern) => {
+                        self.record_loop_scope_plan(for_of.span.start, false, Some(pattern))
+                    }
+                }
                 match &for_of.left {
                     ast::ForOfLeft::VariableDecl(decl) => self.record_pattern(
                         &decl.pattern,
@@ -896,11 +1352,7 @@ impl<'a> SemanticHirBuilder<'a> {
     fn visit_expr(&mut self, expr: &Expression) {
         match expr {
             Expression::Call(call) => {
-                if let Expression::Identifier(ident) = &*call.callee {
-                    if self.interner.resolve(ident.name) == "eval" {
-                        self.uses_direct_eval = true;
-                    }
-                }
+                self.record_call_op(call);
                 self.visit_expr(&call.callee);
                 for arg in &call.arguments {
                     self.visit_expr(arg.expression());
@@ -944,14 +1396,20 @@ impl<'a> SemanticHirBuilder<'a> {
                 );
             }
             Expression::Arrow(arrow) => {
+                let kind = if arrow.is_async {
+                    CallableKind::AsyncFunction
+                } else {
+                    CallableKind::SyncFunction
+                };
                 self.callables.push(SemanticCallableInfo {
                     name: None,
-                    kind: if arrow.is_async {
-                        CallableKind::AsyncFunction
-                    } else {
-                        CallableKind::SyncFunction
-                    },
+                    kind,
                     span_start: arrow.span.start,
+                });
+                self.function_semantics.push(FunctionSemantics {
+                    span_start: arrow.span.start,
+                    kind,
+                    uses_js_this: false,
                 });
                 self.function_depth += 1;
                 for param in &arrow.params {
@@ -971,19 +1429,33 @@ impl<'a> SemanticHirBuilder<'a> {
                 self.function_depth = self.function_depth.saturating_sub(1);
             }
             Expression::Member(member) => {
+                self.record_reference_expr(expr);
                 self.visit_expr(&member.object);
             }
             Expression::Index(index) => {
+                self.record_reference_expr(expr);
                 self.visit_expr(&index.object);
                 self.visit_expr(&index.index);
             }
             Expression::New(new_expr) => {
+                self.call_ops.push(SemanticCallOp {
+                    span_start: new_expr.span.start,
+                    kind: CallOpKind::Constructor,
+                    callee_span_start: new_expr.callee.span().start,
+                });
                 self.visit_expr(&new_expr.callee);
                 for arg in &new_expr.arguments {
                     self.visit_expr(arg.expression());
                 }
             }
             Expression::Assignment(assign) => {
+                self.record_reference_expr(&assign.left);
+                self.binding_ops.push(SemanticBindingOp {
+                    span_start: assign.span.start,
+                    kind: BindingOpKind::Assign,
+                    name: None,
+                    reference_span_start: Some(assign.left.span().start),
+                });
                 self.visit_expr(&assign.left);
                 self.visit_expr(&assign.right);
             }
@@ -995,7 +1467,38 @@ impl<'a> SemanticHirBuilder<'a> {
                 self.visit_expr(&logical.left);
                 self.visit_expr(&logical.right);
             }
-            Expression::Unary(unary) => self.visit_expr(&unary.operand),
+            Expression::Unary(unary) => {
+                match unary.operator {
+                    UnaryOperator::PrefixIncrement
+                    | UnaryOperator::PrefixDecrement
+                    | UnaryOperator::PostfixIncrement
+                    | UnaryOperator::PostfixDecrement => {
+                        self.record_reference_expr(&unary.operand);
+                        self.update_ops.push(SemanticUpdateOp {
+                            span_start: unary.span.start,
+                            kind: match unary.operator {
+                                UnaryOperator::PrefixIncrement => UpdateOpKind::PrefixIncrement,
+                                UnaryOperator::PrefixDecrement => UpdateOpKind::PrefixDecrement,
+                                UnaryOperator::PostfixIncrement => UpdateOpKind::PostfixIncrement,
+                                UnaryOperator::PostfixDecrement => UpdateOpKind::PostfixDecrement,
+                                _ => unreachable!(),
+                            },
+                            reference_span_start: unary.operand.span().start,
+                        });
+                    }
+                    UnaryOperator::Delete => {
+                        self.record_reference_expr(&unary.operand);
+                        self.binding_ops.push(SemanticBindingOp {
+                            span_start: unary.span.start,
+                            kind: BindingOpKind::Delete,
+                            name: None,
+                            reference_span_start: Some(unary.operand.span().start),
+                        });
+                    }
+                    _ => {}
+                }
+                self.visit_expr(&unary.operand)
+            }
             Expression::Conditional(cond) => {
                 self.visit_expr(&cond.test);
                 self.visit_expr(&cond.consequent);

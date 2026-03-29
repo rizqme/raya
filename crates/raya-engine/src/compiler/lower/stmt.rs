@@ -202,7 +202,6 @@ impl<'a> Lowerer<'a> {
     fn ensure_js_nested_class_binding(&mut self, name: crate::parser::Symbol) {
         if !self.js_this_binding_compat
             || self.function_depth == 0
-            || self.shared_script_binding_slot(name).is_some()
             || self.local_map.contains_key(&name)
         {
             return;
@@ -529,10 +528,7 @@ impl<'a> Lowerer<'a> {
                         self.interner.resolve(class.name.name),
                         class_value.clone(),
                     );
-                } else if self.js_this_binding_compat
-                    && self.function_depth > 0
-                    && self.shared_script_binding_slot(class.name.name).is_none()
-                {
+                } else if self.js_this_binding_compat && self.function_depth > 0 {
                     self.store_identifier_value(class.name.name, class_value.clone());
                 }
 
@@ -606,6 +602,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_with(&mut self, with_stmt: &ast::WithStatement) {
+        if self.js_this_binding_compat {
+            let env_object = self.lower_activation_direct_eval_environment_object();
+            let _ = self.emit_ensure_activation_direct_eval_env(env_object);
+        }
         let object = self.lower_expr(&with_stmt.object);
         self.emit(IrInstr::NativeCall {
             dest: None,
@@ -1708,9 +1708,19 @@ impl<'a> Lowerer<'a> {
                             });
                             key_reg
                         }
-                        ast::PropertyKey::Computed(expr) => self.lower_expr(expr),
+                        ast::PropertyKey::Computed(expr) => {
+                            let raw_key = self.lower_expr(expr);
+                            self.emit_property_key_coercion(raw_key)
+                        }
                     };
                     excluded_keys.push(key_reg.clone());
+
+                    if self.with_scope_depth > 0 {
+                        if let ast::Pattern::Identifier(ident) = &property.value {
+                            let _ =
+                                self.emit_active_with_env_has(self.interner.resolve(ident.name));
+                        }
+                    }
 
                     let static_prop_name = match &property.key {
                         ast::PropertyKey::Identifier(id) => {
@@ -2285,6 +2295,7 @@ impl<'a> Lowerer<'a> {
         }
 
         if self.in_direct_eval_function && decl.kind != crate::parser::ast::VariableKind::Var {
+            self.emit_direct_eval_binding_declare_lexical(self.interner.resolve(name));
             let mut value = if let Some(init) = &decl.initializer {
                 self.lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref())
             } else {

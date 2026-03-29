@@ -6425,12 +6425,8 @@ impl<'a> TypeChecker<'a> {
                             };
                         }
                         if self.is_js_mode() {
-                            self.push_error_soft(CheckError::JsTypedDotMonkeypatchForbidden {
-                                property: property_name.clone(),
-                                ty: format!("class {}", class_to_use.name),
-                                span: member.span,
-                            });
-                            return self.type_ctx.unknown_type();
+                            self.maybe_escalate_identifier_to_jsobject(&member.object, None);
+                            return self.type_ctx.any_type();
                         }
                         // Fall through to hard error for typed class dot-writes
                     } else {

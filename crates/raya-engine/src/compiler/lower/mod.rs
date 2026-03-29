@@ -18,7 +18,9 @@ use crate::parser::ast::{
 };
 use crate::parser::token::Span;
 use crate::parser::{Interner, Symbol, Type, TypeContext, TypeId};
-use crate::semantics::{CallableKind, SemanticLoweringPlan, SemanticProfile};
+use crate::semantics::{
+    CallableKind, EnvHandle, EnvRecordKind, SemanticLoweringPlan, SemanticProfile,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 fn remap_function_id(func_id: &mut FunctionId, remap: &FxHashMap<u32, u32>) {
@@ -381,12 +383,62 @@ struct RuntimeClassMethodElement {
 }
 
 /// Materialized outer-scope binding for class-method environment bridging.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct MethodEnvBinding {
     /// Dedicated global slot used by method lowering.
     global_idx: u16,
     /// Whether the bridged value is a RefCell pointer.
     is_refcell: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ResolvedBinding {
+    Local {
+        env: EnvHandle,
+        symbol: Symbol,
+        local_idx: u16,
+        is_refcell: bool,
+    },
+    Capture {
+        env: EnvHandle,
+        symbol: Symbol,
+        capture_idx: u16,
+        is_refcell: bool,
+        is_immutable: bool,
+    },
+    ScriptLexicalGlobal {
+        env: EnvHandle,
+        symbol: Symbol,
+    },
+    SharedGlobal {
+        env: EnvHandle,
+        symbol: Symbol,
+        global_idx: u16,
+    },
+    MethodEnvGlobal {
+        env: EnvHandle,
+        symbol: Symbol,
+        binding: MethodEnvBinding,
+    },
+    DirectEval {
+        env: EnvHandle,
+        symbol: Symbol,
+    },
+    AmbientGlobal {
+        env: EnvHandle,
+        symbol: Symbol,
+    },
+}
+
+#[derive(Clone, Debug)]
+enum Reference {
+    Identifier(ResolvedBinding),
+    Property {
+        base: Register,
+        receiver: Register,
+        key: Register,
+        strict: bool,
+    },
 }
 
 /// Information about a decorator application
@@ -901,6 +953,8 @@ pub struct Lowerer<'a> {
     /// from parameter initialization before falling back to outer/global bindings.
     body_scope_eval_mode: bool,
     with_scope_depth: usize,
+    /// Whether the current identifier lowering fallback should skip the active `with` object.
+    skip_with_scope_runtime_lookup: bool,
     /// Parameter bindings visible in the currently lowered function body.
     parameter_symbols: FxHashSet<Symbol>,
     /// Currently-visible lexical/class bindings in JS lowering contexts.
@@ -1616,6 +1670,7 @@ impl<'a> Lowerer<'a> {
             body_scope_eval_arguments_mode: false,
             body_scope_eval_mode: false,
             with_scope_depth: 0,
+            skip_with_scope_runtime_lookup: false,
             parameter_symbols: FxHashSet::default(),
             visible_js_lexical_symbols: FxHashSet::default(),
             eval_completion_local: None,
@@ -2322,6 +2377,12 @@ impl<'a> Lowerer<'a> {
                     let mut names = FxHashSet::default();
                     collect_pattern_names(&decl.pattern, &mut names);
                     for name in names {
+                        if self.js_this_binding_compat
+                            && !self.builtin_this_coercion_compat
+                            && self.semantic_plan.is_top_level_lexical(name)
+                        {
+                            continue;
+                        }
                         let _was_referenced = referenced.contains(&name);
                         self.module_var_globals.entry(name).or_insert_with(|| {
                             let global_index = self.next_global_index;
@@ -3497,8 +3558,7 @@ impl<'a> Lowerer<'a> {
 
         // Resolve parent class if extends clause is present
         let mut extends_type_args: Option<Vec<TypeId>> = None;
-        let has_runtime_extends = class.extends_expr.is_some();
-        let (parent_class, parent_runtime_name, parent_constructor_symbol) =
+        let (parent_class, parent_runtime_name, parent_constructor_symbol, has_runtime_extends) =
             if let Some(ref extends) = class.extends {
                 if let ast::Type::Reference(type_ref) = &extends.ty {
                     // Extract type arguments from extends clause (e.g., Base<string>)
@@ -3522,12 +3582,26 @@ impl<'a> Lowerer<'a> {
                     let parent_class = local_parent_class.or(imported_parent_class);
                     let runtime_name = (imported_parent_class.is_some() || parent_class.is_none())
                         .then_some(parent_name);
-                    (parent_class, runtime_name, Some(type_ref.name.name))
+                    (parent_class, runtime_name, Some(type_ref.name.name), false)
                 } else {
-                    (None, None, None)
+                    (None, None, None, false)
+                }
+            } else if let Some(ref extends_expr) = class.extends_expr {
+                if let ast::Expression::Identifier(ident) = extends_expr {
+                    let parent_name = self.interner.resolve(ident.name).to_string();
+                    let parent_class = self.nominal_type_id_from_type_name(&parent_name);
+                    let runtime_name = parent_class.is_none().then_some(parent_name);
+                    (
+                        parent_class,
+                        runtime_name,
+                        Some(ident.name),
+                        parent_class.is_none(),
+                    )
+                } else {
+                    (None, None, None, true)
                 }
             } else {
-                (None, None, None)
+                (None, None, None, false)
             };
 
         // Collect instance and static field information
@@ -4454,6 +4528,7 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = None;
         self.parameter_symbols.clear();
         self.eval_completion_local = None;
+        self.visible_js_lexical_symbols.clear();
         self.local_tdz_symbols.clear();
         self.pending_constructor_prologue = None;
         self.current_method_env_globals = None;

@@ -186,6 +186,14 @@ pub const OBJECT_CREATE_REFERENCE_ERROR: u16 = 0x0058;
 pub const OBJECT_CREATE_TYPE_ERROR: u16 = 0x0059;
 /// Ensure the current activation has a persistent direct-eval environment.
 pub const OBJECT_ENSURE_ACTIVATION_EVAL_ENV: u16 = 0x005A;
+/// Resolve an ambient/global identifier while skipping the active `with` object environment.
+pub const OBJECT_GET_AMBIENT_GLOBAL_NO_WITH: u16 = 0x005B;
+/// Read a direct-eval binding while skipping the active `with` object environment.
+pub const OBJECT_EVAL_ENV_GET_NO_WITH: u16 = 0x005C;
+/// Non-throwing direct-eval binding read while skipping the active `with` object environment.
+pub const OBJECT_EVAL_ENV_TRY_GET_NO_WITH: u16 = 0x005D;
+/// Check whether the active `with` environment chain resolves a binding before lexical fallback.
+pub const OBJECT_ACTIVE_WITH_ENV_HAS: u16 = 0x005E;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -721,6 +729,10 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_EVAL_GET_COMPLETION => "Object.evalGetCompletion",
         OBJECT_EVAL_ENV_DECLARE_LEXICAL => "Object.evalEnvDeclareLexical",
         OBJECT_ENSURE_ACTIVATION_EVAL_ENV => "Object.ensureActivationEvalEnv",
+        OBJECT_GET_AMBIENT_GLOBAL_NO_WITH => "Object.getAmbientGlobalNoWith",
+        OBJECT_EVAL_ENV_GET_NO_WITH => "Object.evalEnvGetNoWith",
+        OBJECT_EVAL_ENV_TRY_GET_NO_WITH => "Object.evalEnvTryGetNoWith",
+        OBJECT_ACTIVE_WITH_ENV_HAS => "Object.activeWithEnvHas",
         OBJECT_DELETE_PROPERTY_STRICT => "Object.deletePropertyStrict",
         OBJECT_DEFINE_CLASS_PROPERTY => "Object.defineClassElement",
         OBJECT_GET_OWN_PROPERTY_SYMBOLS => "Object.getOwnPropertySymbols",

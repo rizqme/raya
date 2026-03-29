@@ -169,7 +169,7 @@ fn parse_statement_inner(
         Token::Import => parse_import_declaration(parser),
         Token::Export => parse_export_declaration(parser),
         Token::LeftBrace => {
-            if allow_block_statement {
+            if allow_block_statement || parser.is_js_mode() {
                 parser.advance();
                 Ok(Statement::Block(parse_block_statement(parser)?))
             } else {

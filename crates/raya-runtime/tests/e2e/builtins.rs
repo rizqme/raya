@@ -2507,6 +2507,51 @@ fn test_node_compat_globalthis_exists() {
 }
 
 #[test]
+fn test_node_compat_top_level_var_without_initializer_is_undefined() {
+    expect_bool_runtime_node_compat(
+        r#"
+        var value;
+        return value === undefined
+            && globalThis.value === undefined
+            && ("value" in globalThis);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_function_constructor_families_reject_hashbang_in_body() {
+    expect_bool_runtime_node_compat(
+        r##"
+        const AsyncFunction = (async function (){}).constructor;
+        const GeneratorFunction = (function *(){}).constructor;
+        const AsyncGeneratorFunction = (async function *(){}).constructor;
+        const ctors = [AsyncFunction, GeneratorFunction, AsyncGeneratorFunction];
+        for (const ctor of ctors) {
+            try {
+                ctor("#!\n_", "");
+                return false;
+            } catch (e) {
+                if (e == null || e.name !== "SyntaxError") {
+                    return false;
+                }
+            }
+            try {
+                new ctor("#!\n_");
+                return false;
+            } catch (e) {
+                if (e == null || e.name !== "SyntaxError") {
+                    return false;
+                }
+            }
+        }
+        return true;
+    "##,
+        true,
+    );
+}
+
+#[test]
 fn test_node_compat_array_global_from() {
     expect_i32_runtime_node_compat(
         r#"

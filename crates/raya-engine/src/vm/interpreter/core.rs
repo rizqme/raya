@@ -475,9 +475,25 @@ impl<'a> Interpreter<'a> {
         module: &Module,
         local_nominal_type_id: usize,
     ) -> Result<usize, VmError> {
-        self.module_layouts
-            .read()
-            .get(&module.checksum)
+        let layout = self.module_layouts.read().get(&module.checksum).cloned();
+        if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+            eprintln!(
+                "[dynamic-fn] resolve-nominal module={} local_id={} module_classes={} layout={}",
+                module.metadata.name,
+                local_nominal_type_id,
+                module.classes.len(),
+                layout
+                    .as_ref()
+                    .map(|layout| format!(
+                        "base={} len={} checksum={:x?}",
+                        layout.nominal_type_base,
+                        layout.nominal_type_len,
+                        &layout.checksum[..4]
+                    ))
+                    .unwrap_or_else(|| "missing".to_string())
+            );
+        }
+        layout
             .and_then(|layout| {
                 (local_nominal_type_id < layout.nominal_type_len)
                     .then_some(layout.nominal_type_base + local_nominal_type_id)
@@ -521,6 +537,14 @@ impl<'a> Interpreter<'a> {
         module: Arc<Module>,
     ) -> Result<(), String> {
         if self.module_layouts.read().contains_key(&module.checksum) {
+            if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+                eprintln!(
+                    "[dynamic-fn] register-module:reuse name={} classes={} checksum={:x?}",
+                    module.metadata.name,
+                    module.classes.len(),
+                    &module.checksum[..4]
+                );
+            }
             return Ok(());
         }
 
@@ -558,6 +582,16 @@ impl<'a> Interpreter<'a> {
                 initialized: false,
             },
         );
+        if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+            eprintln!(
+                "[dynamic-fn] register-module:new name={} classes={} nominal_base={} nominal_len={} checksum={:x?}",
+                module.metadata.name,
+                module.classes.len(),
+                nominal_type_base,
+                nominal_type_len,
+                &module.checksum[..4]
+            );
+        }
 
         for binding in &module.metadata.js_global_bindings {
             let absolute_slot = global_base + binding.slot as usize;
@@ -578,6 +612,18 @@ impl<'a> Interpreter<'a> {
             self.js_global_binding_slots
                 .write()
                 .insert(absolute_slot, binding.name.clone());
+            if matches!(
+                binding.kind,
+                crate::compiler::bytecode::module::JsGlobalBindingKind::Var
+            ) {
+                let mut globals = self.globals_by_index.write();
+                if globals.len() <= absolute_slot {
+                    globals.resize(absolute_slot + 1, Value::null());
+                }
+                if globals[absolute_slot].is_null() {
+                    globals[absolute_slot] = Value::undefined();
+                }
+            }
             if canonical_existing.is_none() {
                 self.js_global_bindings.write().insert(
                     binding.name.clone(),
@@ -1050,17 +1096,6 @@ impl<'a> Interpreter<'a> {
             caller_task.current_module(),
             Some(caller_task.id()),
         ));
-        if let Some(env) = caller_task.current_active_direct_eval_env() {
-            scratch_task.push_active_direct_eval_env(
-                env,
-                caller_task.current_active_direct_eval_is_strict(),
-                caller_task.current_active_direct_eval_uses_script_global_bindings(),
-                caller_task.current_active_direct_eval_persist_caller_declarations(),
-            );
-            if let Some(completion) = caller_task.current_active_direct_eval_completion() {
-                let _ = scratch_task.set_current_active_direct_eval_completion(completion);
-            }
-        }
         if let Some(home_object) = caller_task
             .current_active_js_home_object()
             .or_else(|| {
@@ -1201,17 +1236,6 @@ impl<'a> Interpreter<'a> {
                 };
                 if let Some(closure) = closure_val {
                     callee_task.push_closure(closure);
-                }
-                if let Some(env) = scratch_task.current_active_direct_eval_env() {
-                    callee_task.push_active_direct_eval_env(
-                        env,
-                        scratch_task.current_active_direct_eval_is_strict(),
-                        scratch_task.current_active_direct_eval_uses_script_global_bindings(),
-                        scratch_task.current_active_direct_eval_persist_caller_declarations(),
-                    );
-                    if let Some(completion) = scratch_task.current_active_direct_eval_completion() {
-                        let _ = callee_task.set_current_active_direct_eval_completion(completion);
-                    }
                 }
                 if let Some(home_object) = scratch_task.current_active_js_home_object() {
                     callee_task.push_active_js_home_object(home_object);

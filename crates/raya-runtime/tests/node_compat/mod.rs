@@ -198,3 +198,68 @@ fn test_node_events_emit_function_payload_cast_path() {
 
     expect_bool(value, true);
 }
+
+#[test]
+fn test_node_compat_identifier_update_and_assignment_share_reference_path() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let i = 0;
+            i++;
+            i = i + 1;
+            return i == 2;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_direct_eval_assignment_updates_outer_binding() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let x = 1;
+            eval("x = 2");
+            return x == 2;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_with_assignment_and_delete_use_identifier_reference() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let target = { x: 1 };
+            let deleted = false;
+            with (target) {
+                x = 2;
+                deleted = delete x;
+            }
+            return deleted && target.x == undefined;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}

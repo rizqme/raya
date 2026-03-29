@@ -1074,6 +1074,15 @@ impl SharedVmState {
         self.js_global_binding_slots
             .write()
             .insert(absolute_slot, binding.name.clone());
+        if matches!(binding.kind, JsGlobalBindingKind::Var) {
+            let mut globals = self.globals_by_index.write();
+            if globals.len() <= absolute_slot {
+                globals.resize(absolute_slot + 1, Value::null());
+            }
+            if globals[absolute_slot].is_null() {
+                globals[absolute_slot] = Value::undefined();
+            }
+        }
         if canonical_existing.is_none() {
             self.js_global_bindings.write().insert(
                 binding.name.clone(),

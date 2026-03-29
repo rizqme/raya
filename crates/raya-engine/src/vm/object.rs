@@ -418,6 +418,7 @@ pub struct CallableData {
     pub module: Option<Arc<crate::compiler::Module>>,
     pub direct_eval_env: Option<Value>,
     pub direct_eval_uses_script_global_bindings: bool,
+    pub direct_eval_persist_caller_declarations: bool,
     pub home_object: Option<Value>,
     pub lexical_new_target: Option<Value>,
 }
@@ -783,6 +784,12 @@ impl Object {
             .is_some_and(|callable| callable.direct_eval_uses_script_global_bindings)
     }
 
+    pub fn callable_direct_eval_persist_caller_declarations(&self) -> bool {
+        self.callable
+            .as_ref()
+            .is_some_and(|callable| callable.direct_eval_persist_caller_declarations)
+    }
+
     pub fn callable_home_object(&self) -> Option<Value> {
         self.callable.as_ref()?.home_object
     }
@@ -811,6 +818,18 @@ impl Object {
             .as_mut()
             .ok_or_else(|| "Not a callable object".to_string())?;
         callable.direct_eval_uses_script_global_bindings = value;
+        Ok(())
+    }
+
+    pub fn set_callable_direct_eval_persist_caller_declarations(
+        &mut self,
+        value: bool,
+    ) -> Result<(), String> {
+        let callable = self
+            .callable
+            .as_mut()
+            .ok_or_else(|| "Not a callable object".to_string())?;
+        callable.direct_eval_persist_caller_declarations = value;
         Ok(())
     }
 
@@ -880,6 +899,7 @@ impl Object {
             module: None,
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            direct_eval_persist_caller_declarations: false,
             home_object: None,
             lexical_new_target: None,
         }));
@@ -899,6 +919,7 @@ impl Object {
             module: Some(module),
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            direct_eval_persist_caller_declarations: false,
             home_object: None,
             lexical_new_target: None,
         }));
@@ -918,6 +939,7 @@ impl Object {
             module,
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            direct_eval_persist_caller_declarations: false,
             home_object: None,
             lexical_new_target: None,
         }));
@@ -936,6 +958,7 @@ impl Object {
             module: None,
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            direct_eval_persist_caller_declarations: false,
             home_object: None,
             lexical_new_target: None,
         }));
@@ -965,6 +988,7 @@ impl Object {
             module: None,
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            direct_eval_persist_caller_declarations: false,
             home_object: None,
             lexical_new_target: None,
         }));

@@ -2758,8 +2758,11 @@ impl<'a> Binder<'a> {
             declared_return_ty
         };
 
-        // Validate parameter ordering: required params must come before optional/default params
-        self.validate_param_order(&func.params)?;
+        // TS/Raya require required parameters before optional/default parameters.
+        // Plain JS allows these forms, and Test262 exercises them heavily.
+        if self.mode != TypeSystemMode::Js {
+            self.validate_param_order(&func.params)?;
+        }
 
         // Validate rest parameter is last and only one
         if let Some(rest_idx) = func.params.iter().position(|p| p.is_rest) {
@@ -3240,8 +3243,10 @@ impl<'a> Binder<'a> {
                         self.symbols.pop_scope();
                     }
 
-                    // Validate parameter ordering
-                    self.validate_param_order(&method.params)?;
+                    // TS/Raya require required parameters before optional/default parameters.
+                    if self.mode != TypeSystemMode::Js {
+                        self.validate_param_order(&method.params)?;
+                    }
 
                     // Validate rest parameter is last and only one
                     if let Some(rest_idx) = method.params.iter().position(|p| p.is_rest) {
@@ -3345,7 +3350,9 @@ impl<'a> Binder<'a> {
                         };
                         ctor_params.push(param_ty);
                     }
-                    self.validate_param_order(&ctor.params)?;
+                    if self.mode != TypeSystemMode::Js {
+                        self.validate_param_order(&ctor.params)?;
+                    }
                     if let Some(rest_idx) = ctor.params.iter().position(|p| p.is_rest) {
                         if rest_idx < ctor.params.len() - 1 {
                             return Err(BindError::InvalidRestParameter {
