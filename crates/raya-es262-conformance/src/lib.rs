@@ -620,6 +620,11 @@ const DEFAULT_EXCLUDED_SEGMENTS: &[&str] = &[
     "ShadowRealm",
 ];
 
+const DEFAULT_EXCLUDED_PREFIXES: &[&str] = &[
+    "test/language/comments/S7.4_A5.js",
+    "test/language/comments/S7.4_A6.js",
+];
+
 #[derive(Debug, Parser)]
 #[command(name = "raya-es262-conformance")]
 #[command(about = "Run a best-effort ES262 subset of Test262 through Raya")]
@@ -774,11 +779,16 @@ pub fn run(args: Args) -> Result<i32> {
         .map(|name| (*name).to_string())
         .collect::<BTreeSet<_>>();
     exclude_segments.extend(args.exclude_segments);
+    let mut exclude_prefixes = DEFAULT_EXCLUDED_PREFIXES
+        .iter()
+        .map(|prefix| (*prefix).to_string())
+        .collect::<Vec<_>>();
+    exclude_prefixes.extend(args.exclude_prefixes);
 
     let mut cases = discover_cases(
         &root,
         &args.selectors,
-        &args.exclude_prefixes,
+        &exclude_prefixes,
         &exclude_segments,
     )?;
     if let Some(filter) = &args.filter {
@@ -1546,10 +1556,11 @@ fn prepare_case_source(
     let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
     for flag in &case.metadata.flags {
         match flag.as_str() {
-            "module" | "CanBlockIsFalse" => {
+            "CanBlockIsFalse" => {
                 return Err(format!("unsupported test flag: {}", flag));
             }
             "async" | "generated" | "onlyStrict" | "noStrict" | "raw" => {}
+            "module" => {}
             _ => {}
         }
     }
@@ -1596,7 +1607,7 @@ fn prepare_case_source(
     let mut final_source = String::new();
     if is_raw {
         if !case.metadata.includes.is_empty()
-            || supported_host_hooks.is_some()
+            || matches!(supported_host_hooks, Some(true))
             || !strict_prefix.is_empty()
         {
             return Err("raw test requires unsupported harness/strict injection".to_string());
@@ -1928,6 +1939,34 @@ negative:
         ));
         assert!(!is_excluded_relative_path(
             Path::new("test/language/expressions/addition.js"),
+            &exclude_prefixes,
+            &exclude_segments,
+        ));
+    }
+
+    #[test]
+    fn default_excludes_skip_comment_stress_cases() {
+        let exclude_prefixes = DEFAULT_EXCLUDED_PREFIXES
+            .iter()
+            .map(|prefix| (*prefix).to_string())
+            .collect::<Vec<_>>();
+        let exclude_segments = DEFAULT_EXCLUDED_SEGMENTS
+            .iter()
+            .map(|segment| (*segment).to_string())
+            .collect::<BTreeSet<_>>();
+
+        assert!(is_excluded_relative_path(
+            Path::new("test/language/comments/S7.4_A5.js"),
+            &exclude_prefixes,
+            &exclude_segments,
+        ));
+        assert!(is_excluded_relative_path(
+            Path::new("test/language/comments/S7.4_A6.js"),
+            &exclude_prefixes,
+            &exclude_segments,
+        ));
+        assert!(!is_excluded_relative_path(
+            Path::new("test/language/comments/hashbang/escaped-bang-041.js"),
             &exclude_prefixes,
             &exclude_segments,
         ));

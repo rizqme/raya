@@ -442,9 +442,6 @@ impl<'a> Lowerer<'a> {
                 // Module-level declarations handled in lower_module first pass
             }
             Statement::ClassDecl(class) => {
-                if self.js_this_binding_compat {
-                    self.visible_js_lexical_symbols.insert(class.name.name);
-                }
                 self.ensure_js_nested_class_binding(class.name.name);
                 let Some(nominal_type_id) = self.nominal_type_id_for_decl(class) else {
                     self.errors
@@ -471,13 +468,12 @@ impl<'a> Lowerer<'a> {
                     let saved_register = self.next_register;
                     let saved_block = self.next_block;
                     let saved_local_map = self.local_map.clone();
-                    let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
                     let saved_local_registers = self.local_registers.clone();
                     let saved_refcell_registers = self.refcell_registers.clone();
                     let saved_refcell_inner_types = self.refcell_inner_types.clone();
                     let saved_refcell_vars = self.refcell_vars.clone();
                     let saved_immutable_bindings = self.immutable_bindings.clone();
-                    let saved_loop_captured_vars = self.loop_captured_vars.clone();
+                    let saved_captured_read_vars = self.captured_read_vars.clone();
                     let saved_next_local = self.next_local;
                     let saved_function = self.current_function.take();
                     let saved_current_block = self.current_block;
@@ -491,13 +487,12 @@ impl<'a> Lowerer<'a> {
                     self.next_register = saved_register;
                     self.next_block = saved_block;
                     self.local_map = saved_local_map;
-                    self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
                     self.local_registers = saved_local_registers;
                     self.refcell_registers = saved_refcell_registers;
                     self.refcell_inner_types = saved_refcell_inner_types;
                     self.refcell_vars = saved_refcell_vars;
                     self.immutable_bindings = saved_immutable_bindings;
-                    self.loop_captured_vars = saved_loop_captured_vars;
+                    self.captured_read_vars = saved_captured_read_vars;
                     self.next_local = saved_next_local;
                     self.current_function = saved_function;
                     self.current_block = saved_current_block;
@@ -529,7 +524,11 @@ impl<'a> Lowerer<'a> {
                         class_value.clone(),
                     );
                 } else if self.js_this_binding_compat && self.function_depth > 0 {
-                    self.store_identifier_value(class.name.name, class_value.clone());
+                    self.store_identifier_value_at_span(
+                        class.name.name,
+                        class.name.span.start,
+                        class_value.clone(),
+                    );
                 }
 
                 self.emit_static_elements_for_class(class, nominal_type_id, class_value);
@@ -602,19 +601,13 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_with(&mut self, with_stmt: &ast::WithStatement) {
-        if self.js_this_binding_compat {
-            let env_object = self.lower_activation_direct_eval_environment_object();
-            let _ = self.emit_ensure_activation_direct_eval_env(env_object);
-        }
         let object = self.lower_expr(&with_stmt.object);
         self.emit(IrInstr::NativeCall {
             dest: None,
             native_id: crate::compiler::native_id::OBJECT_PUSH_WITH_ENV,
             args: vec![object],
         });
-        self.with_scope_depth += 1;
         self.lower_stmt(&with_stmt.body);
-        self.with_scope_depth = self.with_scope_depth.saturating_sub(1);
         if !self.current_block_is_terminated() {
             self.emit(IrInstr::NativeCall {
                 dest: None,
@@ -680,13 +673,75 @@ impl<'a> Lowerer<'a> {
         self.current_block = exit_block;
     }
 
+    fn loop_scope_plan(&self, span_start: usize) -> Option<crate::semantics::LoopScopePlan> {
+        self.semantic_plan.loop_scope_plan_at_span(span_start).cloned()
+    }
+
+    fn with_runtime_loop_declaration_bindings<T>(
+        &mut self,
+        binding_names: &[String],
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let saved = std::mem::take(&mut self.active_runtime_declaration_bindings);
+        self.active_runtime_declaration_bindings = saved.clone();
+        for binding_name in binding_names {
+            self.active_runtime_declaration_bindings
+                .insert(binding_name.clone());
+        }
+        let result = f(self);
+        self.active_runtime_declaration_bindings = saved;
+        result
+    }
+
+    fn declare_runtime_loop_bindings(&mut self, binding_names: &[String]) {
+        self.emit_push_declarative_env();
+        for binding_name in binding_names {
+            self.emit_direct_eval_binding_declare_lexical(binding_name);
+        }
+    }
+
+    fn lower_runtime_loop_initializer_decl(
+        &mut self,
+        decl: &ast::VariableDecl,
+        binding_names: &[String],
+    ) {
+        self.with_runtime_loop_declaration_bindings(binding_names, |this| {
+            let value = if let Some(init) = &decl.initializer {
+                this.lower_expr(init)
+            } else {
+                let undefined = this.alloc_register(UNRESOLVED);
+                this.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: crate::ir::IrValue::Constant(crate::ir::IrConstant::Undefined),
+                });
+                undefined
+            };
+            this.bind_pattern(&decl.pattern, value);
+        });
+    }
+
     fn lower_for_of(&mut self, for_of: &ast::ForOfStatement) {
+        let loop_plan = self.loop_scope_plan(for_of.span.start);
+        let runtime_loop_env = self.js_this_binding_compat
+            && loop_plan
+                .as_ref()
+                .is_some_and(|plan| plan.creates_per_iteration_env && !plan.binding_names.is_empty());
+        let runtime_loop_binding_names = loop_plan
+            .as_ref()
+            .map(|plan| plan.binding_names.clone())
+            .unwrap_or_default();
+
+        if runtime_loop_env {
+            self.declare_runtime_loop_bindings(&runtime_loop_binding_names);
+        }
+
         let (_, elem_ty, _) = self.classify_for_of_iterable(&for_of.right);
         let iterable_reg = self.lower_expr(&for_of.right);
         let iterator_reg = self.emit_iterator_get_helper(iterable_reg);
 
         let header_block = self.alloc_block();
         let body_block = self.alloc_block();
+        let next_iter_block = self.alloc_block();
         let exit_block = self.alloc_block();
 
         self.set_terminator(Terminator::Jump(header_block));
@@ -708,7 +763,11 @@ impl<'a> Lowerer<'a> {
         self.loop_stack.push(super::LoopContext {
             label: self.pending_label.take(),
             break_target: exit_block,
-            continue_target: header_block,
+            continue_target: if runtime_loop_env {
+                next_iter_block
+            } else {
+                header_block
+            },
             iterator_record: Some(iterator_reg.clone()),
             try_finally_depth: self.try_finally_stack.len(),
         });
@@ -742,17 +801,6 @@ impl<'a> Lowerer<'a> {
             _ => None,
         };
 
-        let is_captured = loop_var_name
-            .map(|n| self.loop_captured_vars.contains(&n))
-            .unwrap_or(false);
-
-        // If captured, mark for RefCell treatment
-        if is_captured {
-            if let Some(name) = loop_var_name {
-                self.refcell_vars.insert(name);
-            }
-        }
-
         // Infer element class type from the iterable for field access resolution
         if let Some(var_name) = loop_var_name {
             // Check if iterable is a variable with known array element class type
@@ -777,20 +825,30 @@ impl<'a> Lowerer<'a> {
         }
 
         // Bind the loop variable (supports destructuring patterns)
-        // Clone elem_reg before binding so we can use it for RefCell wrapping
-        let elem_for_refcell = if is_captured {
-            Some(elem_reg.clone())
-        } else {
-            None
-        };
 
         match &for_of.left {
             ast::ForOfLeft::VariableDecl(decl) => {
-                self.bind_pattern(&decl.pattern, elem_reg);
+                if runtime_loop_env {
+                    self.with_runtime_loop_declaration_bindings(
+                        &runtime_loop_binding_names,
+                        |this| this.bind_pattern(&decl.pattern, elem_reg),
+                    );
+                } else {
+                    self.bind_pattern(&decl.pattern, elem_reg);
+                }
             }
             ast::ForOfLeft::Pattern(pattern) => match pattern {
                 ast::Pattern::Identifier(ident) => {
-                    if let Some(local_idx) = self.lookup_local(ident.name) {
+                    if runtime_loop_env
+                        && runtime_loop_binding_names
+                            .iter()
+                            .any(|binding| binding == self.interner.resolve(ident.name))
+                    {
+                        self.with_runtime_loop_declaration_bindings(
+                            &runtime_loop_binding_names,
+                            |this| this.bind_pattern(pattern, elem_reg),
+                        );
+                    } else if let Some(local_idx) = self.lookup_local(ident.name) {
                         self.emit(IrInstr::StoreLocal {
                             index: local_idx,
                             value: elem_reg,
@@ -798,48 +856,48 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 _ => {
-                    self.bind_pattern(pattern, elem_reg);
+                    if runtime_loop_env {
+                        self.with_runtime_loop_declaration_bindings(
+                            &runtime_loop_binding_names,
+                            |this| this.bind_pattern(pattern, elem_reg),
+                        );
+                    } else {
+                        self.bind_pattern(pattern, elem_reg);
+                    }
                 }
             },
-        }
-
-        // Per-iteration RefCell binding for captured loop variables
-        if is_captured {
-            if let Some(var_name) = loop_var_name {
-                if let (Some(&local_idx), Some(value_reg)) =
-                    (self.local_map.get(&var_name), elem_for_refcell)
-                {
-                    let inner_ty = value_reg.ty;
-                    let refcell_ty = TypeId::new(0);
-                    let refcell_reg = self.alloc_register(refcell_ty);
-                    self.emit(IrInstr::NewRefCell {
-                        dest: refcell_reg.clone(),
-                        initial_value: value_reg,
-                    });
-                    self.local_registers.insert(local_idx, refcell_reg.clone());
-                    self.refcell_registers
-                        .insert(local_idx, refcell_reg.clone());
-                    self.refcell_inner_types.insert(local_idx, inner_ty);
-                    self.emit(IrInstr::StoreLocal {
-                        index: local_idx,
-                        value: refcell_reg,
-                    });
-                }
-            }
         }
 
         // Lower the body
         self.lower_stmt(&for_of.body);
 
         if !self.current_block_is_terminated() {
-            self.set_terminator(Terminator::Jump(header_block));
+            self.set_terminator(Terminator::Jump(if runtime_loop_env {
+                next_iter_block
+            } else {
+                header_block
+            }));
         }
 
         self.loop_stack.pop();
 
+        if runtime_loop_env {
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(
+                    next_iter_block,
+                    "forof.next",
+                ));
+            self.current_block = next_iter_block;
+            self.emit_replace_declarative_env(&runtime_loop_binding_names);
+            self.set_terminator(Terminator::Jump(header_block));
+        }
+
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(exit_block, "forof.exit"));
         self.current_block = exit_block;
+        if runtime_loop_env {
+            self.emit_pop_declarative_env();
+        }
     }
 
     fn lower_for_in(&mut self, for_in: &ast::ForInStatement) {
@@ -855,6 +913,20 @@ impl<'a> Lowerer<'a> {
 
         let number_ty = TypeId::new(2); // number type
         let string_ty = TypeId::new(1); // string type
+
+        let loop_plan = self.loop_scope_plan(for_in.span.start);
+        let runtime_loop_env = self.js_this_binding_compat
+            && loop_plan
+                .as_ref()
+                .is_some_and(|plan| plan.creates_per_iteration_env && !plan.binding_names.is_empty());
+        let runtime_loop_binding_names = loop_plan
+            .as_ref()
+            .map(|plan| plan.binding_names.clone())
+            .unwrap_or_default();
+
+        if runtime_loop_env {
+            self.declare_runtime_loop_bindings(&runtime_loop_binding_names);
+        }
 
         // Evaluate the object expression
         let obj_reg = self.lower_expr(&for_in.right);
@@ -955,11 +1027,27 @@ impl<'a> Lowerer<'a> {
         // Bind the loop variable
         match &for_in.left {
             ast::ForOfLeft::VariableDecl(decl) => {
-                self.bind_pattern(&decl.pattern, key_reg);
+                if runtime_loop_env {
+                    self.with_runtime_loop_declaration_bindings(
+                        &runtime_loop_binding_names,
+                        |this| this.bind_pattern(&decl.pattern, key_reg),
+                    );
+                } else {
+                    self.bind_pattern(&decl.pattern, key_reg);
+                }
             }
             ast::ForOfLeft::Pattern(pattern) => match pattern {
                 ast::Pattern::Identifier(ident) => {
-                    if let Some(local_idx) = self.lookup_local(ident.name) {
+                    if runtime_loop_env
+                        && runtime_loop_binding_names
+                            .iter()
+                            .any(|binding| binding == self.interner.resolve(ident.name))
+                    {
+                        self.with_runtime_loop_declaration_bindings(
+                            &runtime_loop_binding_names,
+                            |this| this.bind_pattern(pattern, key_reg),
+                        );
+                    } else if let Some(local_idx) = self.lookup_local(ident.name) {
                         self.emit(IrInstr::StoreLocal {
                             index: local_idx,
                             value: key_reg,
@@ -967,7 +1055,14 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 _ => {
-                    self.bind_pattern(pattern, key_reg);
+                    if runtime_loop_env {
+                        self.with_runtime_loop_declaration_bindings(
+                            &runtime_loop_binding_names,
+                            |this| this.bind_pattern(pattern, key_reg),
+                        );
+                    } else {
+                        self.bind_pattern(pattern, key_reg);
+                    }
                 }
             },
         }
@@ -1016,6 +1111,10 @@ impl<'a> Lowerer<'a> {
             value: new_idx,
         });
 
+        if runtime_loop_env {
+            self.emit_replace_declarative_env(&runtime_loop_binding_names);
+        }
+
         // Jump back to header
         self.set_terminator(Terminator::Jump(header_block));
 
@@ -1023,6 +1122,9 @@ impl<'a> Lowerer<'a> {
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(exit_block, "forin.exit"));
         self.current_block = exit_block;
+        if runtime_loop_env {
+            self.emit_pop_declarative_env();
+        }
     }
 
     /// Bind a destructuring pattern to a value register.
@@ -1375,6 +1477,18 @@ impl<'a> Lowerer<'a> {
     pub fn bind_pattern(&mut self, pattern: &ast::Pattern, value_reg: Register) {
         match pattern {
             ast::Pattern::Identifier(ident) => {
+                if self
+                    .active_runtime_declaration_bindings
+                    .contains(self.interner.resolve(ident.name))
+                {
+                    let binding = super::ResolvedBinding::RuntimeIdentifier {
+                        env: self.env_handle_for_binding(false, false, false),
+                        symbol: ident.name,
+                    };
+                    let _ = self.emit_store_identifier_binding(binding, value_reg);
+                    return;
+                }
+
                 // Module-top-level bindings must use globals so module functions can see them.
                 if self.function_depth == 0 && self.block_depth == 0 {
                     if self.js_this_binding_compat {
@@ -1715,10 +1829,10 @@ impl<'a> Lowerer<'a> {
                     };
                     excluded_keys.push(key_reg.clone());
 
-                    if self.with_scope_depth > 0 {
+                    if self.js_this_binding_compat {
                         if let ast::Pattern::Identifier(ident) = &property.value {
                             let _ =
-                                self.emit_active_with_env_has(self.interner.resolve(ident.name));
+                                self.emit_direct_eval_binding_has(self.interner.resolve(ident.name));
                         }
                     }
 
@@ -2235,9 +2349,6 @@ impl<'a> Lowerer<'a> {
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
         let is_js_lexical = self.js_this_binding_compat
             && decl.kind != crate::parser::ast::VariableKind::Var;
-        if is_js_lexical {
-            super::collect_pattern_names(&decl.pattern, &mut self.visible_js_lexical_symbols);
-        }
         if decl.kind == crate::parser::ast::VariableKind::Const {
             super::collect_pattern_names(&decl.pattern, &mut self.immutable_bindings);
         }
@@ -2248,21 +2359,8 @@ impl<'a> Lowerer<'a> {
             ast::Pattern::Array(_) | ast::Pattern::Object(_) => {
                 // Destructuring: evaluate initializer, then bind pattern
                 if let Some(init) = &decl.initializer {
-                    let saved_local_tdz_symbols = if is_js_lexical {
-                        let mut names = FxHashSet::default();
-                        super::collect_pattern_names(&decl.pattern, &mut names);
-                        let saved = std::mem::take(&mut self.local_tdz_symbols);
-                        self.local_tdz_symbols = saved.clone();
-                        self.local_tdz_symbols.extend(names);
-                        Some(saved)
-                    } else {
-                        None
-                    };
                     let value = self
                         .lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
-                    if let Some(saved_local_tdz_symbols) = saved_local_tdz_symbols {
-                        self.local_tdz_symbols = saved_local_tdz_symbols;
-                    }
                     self.bind_pattern(&decl.pattern, value);
                 }
                 return;
@@ -2816,14 +2914,6 @@ impl<'a> Lowerer<'a> {
         // If there's an initializer, evaluate and store
         // The register from lowering the expression will have the correct inferred type
         if let Some(init) = &decl.initializer {
-            let saved_local_tdz_symbols = if is_js_lexical {
-                let saved = std::mem::take(&mut self.local_tdz_symbols);
-                self.local_tdz_symbols = saved.clone();
-                self.local_tdz_symbols.insert(name);
-                Some(saved)
-            } else {
-                None
-            };
             let explicit_dynamic_any_annotation =
                 decl.type_annotation.as_ref().is_some_and(|type_ann| {
                     self.type_is_dynamic_any_like(
@@ -3156,9 +3246,6 @@ impl<'a> Lowerer<'a> {
                     index: local_idx,
                     value,
                 });
-            }
-            if let Some(saved_local_tdz_symbols) = saved_local_tdz_symbols {
-                self.local_tdz_symbols = saved_local_tdz_symbols;
             }
         } else {
             // No initializer: still honor type-annotation hints for later dispatch.
@@ -3691,31 +3778,26 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_for(&mut self, for_stmt: &ast::ForStatement) {
-        // Track if we need per-iteration binding for a captured loop variable
-        // This implements JavaScript/TypeScript `let` semantics where each iteration
-        // gets a fresh binding, so closures capture the value from their iteration.
-        let mut loop_var_info: Option<(crate::parser::Symbol, u16)> = None;
+        let loop_plan = self.loop_scope_plan(for_stmt.span.start);
+        let runtime_loop_env = self.js_this_binding_compat
+            && loop_plan
+                .as_ref()
+                .is_some_and(|plan| plan.creates_per_iteration_env && !plan.binding_names.is_empty());
+        let runtime_loop_binding_names = loop_plan
+            .as_ref()
+            .map(|plan| plan.binding_names.clone())
+            .unwrap_or_default();
+
+        if runtime_loop_env {
+            self.declare_runtime_loop_bindings(&runtime_loop_binding_names);
+        }
 
         // Lower initializer
         if let Some(init) = &for_stmt.init {
             match init {
                 ast::ForInit::VariableDecl(decl) => {
-                    // Check if this is a captured variable (needs per-iteration binding)
-                    // Use loop_captured_vars which tracks ALL captured variables (read or write)
-                    if let ast::Pattern::Identifier(ident) = &decl.pattern {
-                        let is_captured = self.loop_captured_vars.contains(&ident.name);
-                        if is_captured {
-                            // This variable is captured by a closure - we'll need per-iteration binding
-                            // Ensure it gets RefCell treatment even for read-only captures
-                            self.refcell_vars.insert(ident.name);
-                            // Get the local index after lowering
-                            self.lower_var_decl(decl);
-                            if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                                loop_var_info = Some((ident.name, local_idx));
-                            }
-                        } else {
-                            self.lower_var_decl(decl);
-                        }
+                    if runtime_loop_env {
+                        self.lower_runtime_loop_initializer_decl(decl, &runtime_loop_binding_names);
                     } else {
                         self.lower_var_decl(decl);
                     }
@@ -3769,76 +3851,7 @@ impl<'a> Lowerer<'a> {
             .add_block(crate::ir::BasicBlock::with_label(body_block, "for.body"));
         self.current_block = body_block;
 
-        // Per-iteration binding setup: if the loop variable is captured,
-        // create a fresh RefCell for this iteration and copy the current value into it
-        let original_refcell: Option<(u16, Register)> =
-            if let Some((_sym, local_idx)) = &loop_var_info {
-                if let Some(orig_refcell) = self.refcell_registers.get(local_idx).cloned() {
-                    // Load current value from loop variable's RefCell
-                    let refcell_ty = TypeId::new(0);
-                    let value_reg = self.alloc_register(refcell_ty);
-                    self.emit(IrInstr::LoadRefCell {
-                        dest: value_reg.clone(),
-                        refcell: orig_refcell.clone(),
-                    });
-
-                    // Create per-iteration RefCell with this value
-                    let iter_refcell = self.alloc_register(refcell_ty);
-                    self.emit(IrInstr::NewRefCell {
-                        dest: iter_refcell.clone(),
-                        initial_value: value_reg,
-                    });
-
-                    // Replace mappings so closures in the body capture the per-iteration RefCell
-                    self.refcell_registers
-                        .insert(*local_idx, iter_refcell.clone());
-                    self.local_registers
-                        .insert(*local_idx, iter_refcell.clone());
-                    self.emit(IrInstr::StoreLocal {
-                        index: *local_idx,
-                        value: iter_refcell,
-                    });
-
-                    Some((*local_idx, orig_refcell))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
         self.lower_stmt(&for_stmt.body);
-
-        // Before jumping to update, copy back from per-iteration RefCell to original
-        // so the update expression (i = i + 1) operates on the loop counter
-        if let Some((local_idx, orig_refcell)) = &original_refcell {
-            if !self.current_block_is_terminated() {
-                // Load value from per-iteration RefCell
-                if let Some(iter_refcell) = self.refcell_registers.get(local_idx).cloned() {
-                    let refcell_ty = TypeId::new(0);
-                    let value = self.alloc_register(refcell_ty);
-                    self.emit(IrInstr::LoadRefCell {
-                        dest: value.clone(),
-                        refcell: iter_refcell,
-                    });
-                    // Store to original RefCell
-                    self.emit(IrInstr::StoreRefCell {
-                        refcell: orig_refcell.clone(),
-                        value,
-                    });
-                }
-
-                // Restore original RefCell mapping for update expression
-                self.refcell_registers
-                    .insert(*local_idx, orig_refcell.clone());
-                self.local_registers
-                    .insert(*local_idx, orig_refcell.clone());
-                self.emit(IrInstr::StoreLocal {
-                    index: *local_idx,
-                    value: orig_refcell.clone(),
-                });
-            }
-        }
 
         if !self.current_block_is_terminated() {
             self.set_terminator(Terminator::Jump(update_block));
@@ -3854,6 +3867,9 @@ impl<'a> Lowerer<'a> {
                 "for.update",
             ));
         self.current_block = update_block;
+        if runtime_loop_env {
+            self.emit_replace_declarative_env(&runtime_loop_binding_names);
+        }
         if let Some(update) = &for_stmt.update {
             self.lower_expr(update);
         }
@@ -3863,6 +3879,9 @@ impl<'a> Lowerer<'a> {
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(exit_block, "for.exit"));
         self.current_block = exit_block;
+        if runtime_loop_env {
+            self.emit_pop_declarative_env();
+        }
     }
 
     fn lower_block(&mut self, block: &ast::BlockStatement) {
@@ -3870,7 +3889,6 @@ impl<'a> Lowerer<'a> {
         // This allows nested scopes to shadow outer variables without
         // overwriting the outer variable's slot mapping
         let saved_local_map = self.local_map.clone();
-        let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
         let saved_constant_map = self.constant_map.clone();
         self.block_depth += 1;
 
@@ -3884,7 +3902,6 @@ impl<'a> Lowerer<'a> {
         // Restore local_map to exit the block scope
         // This ensures outer variables are accessible again after the block
         self.local_map = saved_local_map;
-        self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
         self.constant_map = saved_constant_map;
         self.block_depth = self.block_depth.saturating_sub(1);
     }
@@ -4081,7 +4098,6 @@ impl<'a> Lowerer<'a> {
 
         if let Some(catch_clause) = &try_stmt.catch_clause {
             let saved_local_map = self.local_map.clone();
-            let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
             let saved_variable_class_map = self.variable_class_map.clone();
             let saved_constant_map = self.constant_map.clone();
             self.block_depth += 1;
@@ -4139,7 +4155,6 @@ impl<'a> Lowerer<'a> {
             }
 
             self.local_map = saved_local_map;
-            self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
             self.variable_class_map = saved_variable_class_map;
             self.constant_map = saved_constant_map;
             self.block_depth = self.block_depth.saturating_sub(1);

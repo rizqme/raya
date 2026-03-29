@@ -113,9 +113,10 @@ pub use semantics::{
     build_semantic_hir, build_semantic_lowering_plan, BindingKind, BindingOpKind, CallOpKind,
     CallableKind, ConcurrencySemantics, DestructuringPlan, EnvHandle, EnvRecordKind,
     FunctionSemantics, LoopScopePlan, LoweringSemantics, OptimizationProfile,
-    ReferenceExprKind, RuntimeSemanticsBase, SemanticBinding, SemanticBindingOp, SemanticCallOp,
-    SemanticCallable, SemanticHirModule, SemanticLoweringPlan, SemanticProfile,
-    SemanticReferenceExpr, SemanticTopLevelCallable, SemanticUpdateOp, SourceKind,
+    ReferenceExprKind, ResolvedIdentifierKind, RuntimeSemanticsBase, SemanticBinding,
+    SemanticBindingOp, SemanticCallOp, SemanticCallable, SemanticHirModule,
+    SemanticLoweringPlan, SemanticProfile, SemanticReferenceExpr, SemanticResolvedIdentifier,
+    SemanticTopLevelCallable, SemanticUpdateOp, SourceKind,
     SuspensionKind, SuspensionPoint, TypingDiscipline, UpdateOpKind,
 };
 

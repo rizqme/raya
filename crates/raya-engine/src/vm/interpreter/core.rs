@@ -456,6 +456,56 @@ pub struct Interpreter<'a> {
 }
 
 impl<'a> Interpreter<'a> {
+    fn push_same_task_closure_context(
+        &self,
+        task: &Arc<Task>,
+        module: &Module,
+        func_id: usize,
+        closure: Value,
+    ) {
+        let Some(closure_ptr) = (unsafe { closure.as_ptr::<Object>() }) else {
+            return;
+        };
+        let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+        if let Some(env) = closure_obj.callable_direct_eval_env() {
+            let is_strict = module
+                .functions
+                .get(func_id)
+                .is_some_and(|function| function.is_strict_js);
+            task.push_active_direct_eval_env(
+                env,
+                is_strict,
+                closure_obj.callable_direct_eval_uses_script_global_bindings(),
+                closure_obj.callable_direct_eval_persist_caller_declarations(),
+            );
+        }
+        if let Some(home_object) = closure_obj.callable_home_object() {
+            task.push_active_js_home_object(home_object);
+        }
+        if let Some(new_target) = closure_obj.callable_new_target() {
+            task.push_active_js_new_target(new_target);
+        }
+    }
+
+    fn pop_same_task_closure_context(&self, task: &Arc<Task>) {
+        let Some(current_closure) = task.current_closure() else {
+            return;
+        };
+        let Some(closure_ptr) = (unsafe { current_closure.as_ptr::<Object>() }) else {
+            return;
+        };
+        let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+        if closure_obj.callable_direct_eval_env().is_some() {
+            let _ = task.pop_active_direct_eval_env();
+        }
+        if closure_obj.callable_home_object().is_some() {
+            let _ = task.pop_active_js_home_object();
+        }
+        if closure_obj.callable_new_target().is_some() {
+            let _ = task.pop_active_js_new_target();
+        }
+    }
+
     #[inline]
     pub(in crate::vm::interpreter) fn resolve_global_slot(
         &self,
@@ -1236,6 +1286,21 @@ impl<'a> Interpreter<'a> {
                 };
                 if let Some(closure) = closure_val {
                     callee_task.push_closure(closure);
+                    if let Some(closure_ptr) = unsafe { closure.as_ptr::<Object>() } {
+                        let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                        if let Some(env) = closure_obj.callable_direct_eval_env() {
+                            let is_strict = callee_module
+                                .functions
+                                .get(func_id)
+                                .is_some_and(|function| function.is_strict_js);
+                            callee_task.push_active_direct_eval_env(
+                                env,
+                                is_strict,
+                                closure_obj.callable_direct_eval_uses_script_global_bindings(),
+                                closure_obj.callable_direct_eval_persist_caller_declarations(),
+                            );
+                        }
+                    }
                 }
                 if let Some(home_object) = scratch_task.current_active_js_home_object() {
                     callee_task.push_active_js_home_object(home_object);
@@ -1887,6 +1952,7 @@ impl<'a> Interpreter<'a> {
                     task.clear_activation_direct_eval_env(current_func_id, locals_base);
                     task.pop_call_frame();
                     if frame.is_closure {
+                        self.pop_same_task_closure_context(task);
                         task.pop_closure();
                     }
                     module = frame.module;
@@ -2190,6 +2256,7 @@ impl<'a> Interpreter<'a> {
                 if let Some(frame) = frames.pop() {
                     task.pop_call_frame();
                     if frame.is_closure {
+                        self.pop_same_task_closure_context(task);
                         task.pop_closure();
                     }
 
@@ -2734,6 +2801,7 @@ impl<'a> Interpreter<'a> {
                     // Push closure onto closure stack if needed
                     if let Some(cv) = closure_val {
                         task.push_closure(cv);
+                        self.push_same_task_closure_context(task, &callee_module, func_id, cv);
                     }
 
                     // Set up callee's frame on the same stack
@@ -2941,6 +3009,7 @@ impl<'a> Interpreter<'a> {
                             task.clear_activation_direct_eval_env(current_func_id, locals_base);
                             task.pop_call_frame();
                             if frame.is_closure {
+                                self.pop_same_task_closure_context(task);
                                 task.pop_closure();
                             }
                             // Restore caller's context — don't clean stack here,

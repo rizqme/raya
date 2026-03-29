@@ -83,28 +83,26 @@ pub const OBJECT_ITERATOR_VALUE: u16 = 0x0025;
 pub const OBJECT_ITERATOR_CLOSE: u16 = 0x0026;
 /// Append all values from an iterable into a target array.
 pub const OBJECT_ITERATOR_APPEND_TO_ARRAY: u16 = 0x0027;
-/// Resolve a direct-eval binding name from the active eval environment.
-pub const OBJECT_EVAL_ENV_GET: u16 = 0x0028;
-/// Non-throwing direct-eval binding lookup used by `typeof`.
-pub const OBJECT_EVAL_ENV_TRY_GET: u16 = 0x0029;
-/// Write a direct-eval binding into the active eval environment.
-pub const OBJECT_EVAL_ENV_SET: u16 = 0x002A;
-/// Hoist a function-scoped `var` binding into the active eval environment.
-pub const OBJECT_EVAL_ENV_DECLARE_VAR: u16 = 0x002B;
-/// Check whether the active eval environment has a direct binding.
-pub const OBJECT_EVAL_ENV_HAS: u16 = 0x002C;
-/// Assign an unresolved JS identifier through activation eval env / global fallback.
-pub const OBJECT_SET_AMBIENT_GLOBAL: u16 = 0x002D;
-/// Hoist a function declaration binding into the active eval environment.
-pub const OBJECT_EVAL_ENV_DECLARE_FUNCTION: u16 = 0x002E;
+/// Resolve a JS identifier through the active env chain, falling back to JS globals.
+pub const OBJECT_JS_GET_IDENTIFIER: u16 = 0x0028;
+/// Non-throwing JS identifier lookup used by `typeof`.
+pub const OBJECT_JS_TRY_GET_IDENTIFIER: u16 = 0x0029;
+/// Write a JS identifier through env-reference semantics.
+pub const OBJECT_JS_SET_IDENTIFIER: u16 = 0x002A;
+/// Hoist a function-scoped `var` binding into the active JS env chain.
+pub const OBJECT_JS_DECLARE_VAR: u16 = 0x002B;
+/// Check whether the active JS env chain has a direct binding.
+pub const OBJECT_JS_HAS_IDENTIFIER: u16 = 0x002C;
+/// Hoist a function declaration binding into the active JS env chain.
+pub const OBJECT_JS_DECLARE_FUNCTION: u16 = 0x002E;
 /// Delete an identifier reference using JS environment/global semantics.
 pub const OBJECT_JS_DELETE_IDENTIFIER: u16 = 0x002F;
 /// Record the current direct-eval completion value.
 pub const OBJECT_EVAL_SET_COMPLETION: u16 = 0x0030;
 /// Read the current direct-eval completion value.
 pub const OBJECT_EVAL_GET_COMPLETION: u16 = 0x0031;
-/// Declare a lexical binding in the active eval environment.
-pub const OBJECT_EVAL_ENV_DECLARE_LEXICAL: u16 = 0x003B;
+/// Declare a lexical binding in the active JS env chain.
+pub const OBJECT_JS_DECLARE_LEXICAL: u16 = 0x003B;
 /// delete target[key] using strict-mode JS delete semantics.
 pub const OBJECT_DELETE_PROPERTY_STRICT: u16 = 0x003C;
 /// Define a class method/accessor on an internal class target
@@ -158,10 +156,6 @@ pub const OBJECT_ASSIGN_BINDING_NAME_IF_MISSING: u16 = 0x004A;
 pub const OBJECT_COPY_DATA_PROPERTIES_EXCLUDING: u16 = 0x004B;
 /// Canonicalize a JS property key using ToPropertyKey semantics.
 pub const OBJECT_COERCE_PROPERTY_KEY: u16 = 0x004C;
-/// Capture the current dynamic identifier assignment target before RHS evaluation.
-pub const OBJECT_CAPTURE_IDENTIFIER_ASSIGNMENT_TARGET: u16 = 0x004D;
-/// Store through a previously captured dynamic identifier assignment target.
-pub const OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET: u16 = 0x004E;
 /// JS property assignment using [[Set]] semantics, returning the assigned value.
 pub const OBJECT_SET_PROPERTY: u16 = 0x004F;
 /// Strict-mode JS property assignment using [[Set]] semantics, throwing on failure.
@@ -186,14 +180,12 @@ pub const OBJECT_CREATE_REFERENCE_ERROR: u16 = 0x0058;
 pub const OBJECT_CREATE_TYPE_ERROR: u16 = 0x0059;
 /// Ensure the current activation has a persistent direct-eval environment.
 pub const OBJECT_ENSURE_ACTIVATION_EVAL_ENV: u16 = 0x005A;
-/// Resolve an ambient/global identifier while skipping the active `with` object environment.
-pub const OBJECT_GET_AMBIENT_GLOBAL_NO_WITH: u16 = 0x005B;
-/// Read a direct-eval binding while skipping the active `with` object environment.
-pub const OBJECT_EVAL_ENV_GET_NO_WITH: u16 = 0x005C;
-/// Non-throwing direct-eval binding read while skipping the active `with` object environment.
-pub const OBJECT_EVAL_ENV_TRY_GET_NO_WITH: u16 = 0x005D;
-/// Check whether the active `with` environment chain resolves a binding before lexical fallback.
-pub const OBJECT_ACTIVE_WITH_ENV_HAS: u16 = 0x005E;
+/// Push a fresh declarative env record onto the active JS env stack.
+pub const OBJECT_PUSH_DECLARATIVE_ENV: u16 = 0x005E;
+/// Pop the active declarative env record from the active JS env stack.
+pub const OBJECT_POP_DECLARATIVE_ENV: u16 = 0x005F;
+/// Replace the active declarative env with a sibling env cloned from the current iteration.
+pub const OBJECT_REPLACE_DECLARATIVE_ENV: u16 = 0x0060;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -717,22 +709,20 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_ITERATOR_CLOSE_COMPLETION => "Object.iteratorCloseCompletion",
         OBJECT_HANDLE_GENERATOR_RESUME => "Object.handleGeneratorResume",
         OBJECT_ITERATOR_APPEND_TO_ARRAY => "Object.iteratorAppendToArray",
-        OBJECT_EVAL_ENV_GET => "Object.evalEnvGet",
-        OBJECT_EVAL_ENV_TRY_GET => "Object.evalEnvTryGet",
-        OBJECT_EVAL_ENV_SET => "Object.evalEnvSet",
-        OBJECT_EVAL_ENV_DECLARE_VAR => "Object.evalEnvDeclareVar",
-        OBJECT_EVAL_ENV_HAS => "Object.evalEnvHas",
-        OBJECT_SET_AMBIENT_GLOBAL => "Object.setAmbientGlobal",
-        OBJECT_EVAL_ENV_DECLARE_FUNCTION => "Object.evalEnvDeclareFunction",
+        OBJECT_JS_GET_IDENTIFIER => "Object.jsGetIdentifier",
+        OBJECT_JS_TRY_GET_IDENTIFIER => "Object.jsTryGetIdentifier",
+        OBJECT_JS_SET_IDENTIFIER => "Object.jsSetIdentifier",
+        OBJECT_JS_DECLARE_VAR => "Object.jsDeclareVar",
+        OBJECT_JS_HAS_IDENTIFIER => "Object.jsHasIdentifier",
+        OBJECT_JS_DECLARE_FUNCTION => "Object.jsDeclareFunction",
         OBJECT_JS_DELETE_IDENTIFIER => "Object.jsDeleteIdentifier",
         OBJECT_EVAL_SET_COMPLETION => "Object.evalSetCompletion",
         OBJECT_EVAL_GET_COMPLETION => "Object.evalGetCompletion",
-        OBJECT_EVAL_ENV_DECLARE_LEXICAL => "Object.evalEnvDeclareLexical",
+        OBJECT_JS_DECLARE_LEXICAL => "Object.jsDeclareLexical",
         OBJECT_ENSURE_ACTIVATION_EVAL_ENV => "Object.ensureActivationEvalEnv",
-        OBJECT_GET_AMBIENT_GLOBAL_NO_WITH => "Object.getAmbientGlobalNoWith",
-        OBJECT_EVAL_ENV_GET_NO_WITH => "Object.evalEnvGetNoWith",
-        OBJECT_EVAL_ENV_TRY_GET_NO_WITH => "Object.evalEnvTryGetNoWith",
-        OBJECT_ACTIVE_WITH_ENV_HAS => "Object.activeWithEnvHas",
+        OBJECT_PUSH_DECLARATIVE_ENV => "Object.pushDeclarativeEnv",
+        OBJECT_POP_DECLARATIVE_ENV => "Object.popDeclarativeEnv",
+        OBJECT_REPLACE_DECLARATIVE_ENV => "Object.replaceDeclarativeEnv",
         OBJECT_DELETE_PROPERTY_STRICT => "Object.deletePropertyStrict",
         OBJECT_DEFINE_CLASS_PROPERTY => "Object.defineClassElement",
         OBJECT_GET_OWN_PROPERTY_SYMBOLS => "Object.getOwnPropertySymbols",
@@ -755,8 +745,6 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_ASSIGN_BINDING_NAME_IF_MISSING => "Object.assignBindingNameIfMissing",
         OBJECT_COPY_DATA_PROPERTIES_EXCLUDING => "Object.copyDataPropertiesExcluding",
         OBJECT_COERCE_PROPERTY_KEY => "Object.coercePropertyKey",
-        OBJECT_CAPTURE_IDENTIFIER_ASSIGNMENT_TARGET => "Object.captureIdentifierAssignmentTarget",
-        OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET => "Object.storeIdentifierAssignmentTarget",
         OBJECT_THROW_REFERENCE_ERROR => "Object.throwReferenceError",
         OBJECT_THROW_TYPE_ERROR => "Object.throwTypeError",
         OBJECT_CREATE_REFERENCE_ERROR => "Object.createReferenceError",

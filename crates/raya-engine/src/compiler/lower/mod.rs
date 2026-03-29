@@ -398,6 +398,7 @@ enum ResolvedBinding {
         symbol: Symbol,
         local_idx: u16,
         is_refcell: bool,
+        is_immutable: bool,
     },
     Capture {
         env: EnvHandle,
@@ -419,6 +420,10 @@ enum ResolvedBinding {
         env: EnvHandle,
         symbol: Symbol,
         binding: MethodEnvBinding,
+    },
+    RuntimeIdentifier {
+        env: EnvHandle,
+        symbol: Symbol,
     },
     DirectEval {
         env: EnvHandle,
@@ -727,8 +732,8 @@ pub struct Lowerer<'a> {
     immutable_bindings: FxHashSet<Symbol>,
     /// Map from local variable to its RefCell register (for variables stored in RefCells)
     refcell_registers: FxHashMap<u16, Register>,
-    /// Variables that are captured by any closure (read or write) - used for per-iteration bindings in loops
-    loop_captured_vars: FxHashSet<Symbol>,
+    /// Variables that are read from an outer scope by a nested closure.
+    captured_read_vars: FxHashSet<Symbol>,
     /// Map from variable name to its class type (for field access resolution)
     variable_class_map: FxHashMap<Symbol, NominalTypeId>,
     /// Variables explicitly annotated as `any`/`unknown`, which must suppress
@@ -942,8 +947,9 @@ pub struct Lowerer<'a> {
     parameter_scope_eval_mode: bool,
     /// Parameter names that are currently in the JS parameter TDZ while initializers run.
     parameter_tdz_symbols: FxHashSet<Symbol>,
-    /// Lexical names currently being initialized and not yet readable in JS mode.
-    local_tdz_symbols: FxHashSet<Symbol>,
+    /// Pattern identifiers that should bind into the active runtime JS env
+    /// instead of allocating a local slot.
+    active_runtime_declaration_bindings: FxHashSet<String>,
     /// Whether pattern binding should reuse preallocated parameter locals.
     parameter_binding_mode: bool,
     /// Whether the current function body is an arrow-compatible body where `arguments`
@@ -952,13 +958,8 @@ pub struct Lowerer<'a> {
     /// Whether unresolved body identifiers should first consult a carried direct-eval env
     /// from parameter initialization before falling back to outer/global bindings.
     body_scope_eval_mode: bool,
-    with_scope_depth: usize,
-    /// Whether the current identifier lowering fallback should skip the active `with` object.
-    skip_with_scope_runtime_lookup: bool,
     /// Parameter bindings visible in the currently lowered function body.
     parameter_symbols: FxHashSet<Symbol>,
-    /// Currently-visible lexical/class bindings in JS lowering contexts.
-    visible_js_lexical_symbols: FxHashSet<Symbol>,
     /// Anonymous local that tracks direct-eval script completion values.
     eval_completion_local: Option<u16>,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
@@ -1185,7 +1186,7 @@ fn recurse_into_body(body: &ast::Statement, locals: &mut FxHashSet<Symbol>) {
 struct ArrowCaptureFinder<'a> {
     outer_locals: &'a FxHashSet<Symbol>,
     refcell_vars: &'a mut FxHashSet<Symbol>,
-    loop_captured_vars: &'a mut FxHashSet<Symbol>,
+    captured_read_vars: &'a mut FxHashSet<Symbol>,
 }
 
 impl<'a> ArrowCaptureFinder<'a> {
@@ -1202,7 +1203,7 @@ impl<'a> ArrowCaptureFinder<'a> {
             outer_locals: self.outer_locals,
             arrow_locals: &closure_locals,
             refcell_vars: self.refcell_vars,
-            loop_captured_vars: self.loop_captured_vars,
+            captured_read_vars: self.captured_read_vars,
         };
         for stmt in &body.statements {
             analyzer.visit_statement(stmt);
@@ -1230,7 +1231,7 @@ impl Visitor for ArrowCaptureFinder<'_> {
                             outer_locals: self.outer_locals,
                             arrow_locals: &closure_locals,
                             refcell_vars: self.refcell_vars,
-                            loop_captured_vars: self.loop_captured_vars,
+                            captured_read_vars: self.captured_read_vars,
                         };
                         analyzer.visit_expression(body_expr);
                         for param in &arrow.params {
@@ -1268,19 +1269,19 @@ impl Visitor for ArrowCaptureFinder<'_> {
 }
 
 /// Walks inside a closure body to find identifiers that reference outer-scope variables.
-/// - Read captures: any outer-scope identifier → `loop_captured_vars`
+/// - Read captures: any outer-scope identifier → `captured_read_vars`
 /// - Write captures: assignments to outer-scope identifiers → `refcell_vars`
 struct CapturedRefAnalyzer<'a> {
     outer_locals: &'a FxHashSet<Symbol>,
     arrow_locals: &'a FxHashSet<Symbol>,
     refcell_vars: &'a mut FxHashSet<Symbol>,
-    loop_captured_vars: &'a mut FxHashSet<Symbol>,
+    captured_read_vars: &'a mut FxHashSet<Symbol>,
 }
 
 impl Visitor for CapturedRefAnalyzer<'_> {
     fn visit_identifier(&mut self, id: &ast::Identifier) {
         if self.outer_locals.contains(&id.name) && !self.arrow_locals.contains(&id.name) {
-            self.loop_captured_vars.insert(id.name);
+            self.captured_read_vars.insert(id.name);
         }
     }
 
@@ -1317,7 +1318,7 @@ impl Visitor for CapturedRefAnalyzer<'_> {
             let mut finder = ArrowCaptureFinder {
                 outer_locals: self.outer_locals,
                 refcell_vars: self.refcell_vars,
-                loop_captured_vars: self.loop_captured_vars,
+                captured_read_vars: self.captured_read_vars,
             };
             finder.visit_expression(expr);
             return;
@@ -1330,7 +1331,7 @@ impl Visitor for CapturedRefAnalyzer<'_> {
         let mut finder = ArrowCaptureFinder {
             outer_locals: self.outer_locals,
             refcell_vars: self.refcell_vars,
-            loop_captured_vars: self.loop_captured_vars,
+            captured_read_vars: self.captured_read_vars,
         };
         finder.visit_function_decl(func);
     }
@@ -1576,7 +1577,7 @@ impl<'a> Lowerer<'a> {
             refcell_vars: FxHashSet::default(),
             immutable_bindings: FxHashSet::default(),
             refcell_registers: FxHashMap::default(),
-            loop_captured_vars: FxHashSet::default(),
+            captured_read_vars: FxHashSet::default(),
             refcell_inner_types: FxHashMap::default(),
             variable_class_map: FxHashMap::default(),
             dynamic_any_vars: FxHashSet::default(),
@@ -1665,14 +1666,11 @@ impl<'a> Lowerer<'a> {
             in_direct_eval_function: false,
             parameter_scope_eval_mode: false,
             parameter_tdz_symbols: FxHashSet::default(),
-            local_tdz_symbols: FxHashSet::default(),
+            active_runtime_declaration_bindings: FxHashSet::default(),
             parameter_binding_mode: false,
             body_scope_eval_arguments_mode: false,
             body_scope_eval_mode: false,
-            with_scope_depth: 0,
-            skip_with_scope_runtime_lookup: false,
             parameter_symbols: FxHashSet::default(),
-            visible_js_lexical_symbols: FxHashSet::default(),
             eval_completion_local: None,
             generator_yield_array_local: None,
         }
@@ -3114,7 +3112,7 @@ impl<'a> Lowerer<'a> {
         let mut finder = ArrowCaptureFinder {
             outer_locals: locals,
             refcell_vars: &mut self.refcell_vars,
-            loop_captured_vars: &mut self.loop_captured_vars,
+            captured_read_vars: &mut self.captured_read_vars,
         };
         for stmt in stmts {
             finder.visit_statement(stmt);
@@ -3128,7 +3126,7 @@ impl<'a> Lowerer<'a> {
 
         // Phase 2: Promote read-captured vars to RefCell if assigned in enclosing scope.
         // This ensures closures see the live value, not a stale copy.
-        if !self.loop_captured_vars.is_empty() {
+        if !self.captured_read_vars.is_empty() {
             let mut assigned = FxHashSet::default();
             let mut collector = ScopeAssignmentCollector {
                 assigned: &mut assigned,
@@ -3136,7 +3134,7 @@ impl<'a> Lowerer<'a> {
             for stmt in stmts {
                 collector.visit_statement(stmt);
             }
-            for var in self.loop_captured_vars.clone() {
+            for var in self.captured_read_vars.clone() {
                 if assigned.contains(&var) {
                     self.refcell_vars.insert(var);
                 }
@@ -4125,7 +4123,7 @@ impl<'a> Lowerer<'a> {
         self.refcell_vars.clear();
         self.refcell_registers.clear();
         self.refcell_inner_types.clear();
-        self.loop_captured_vars.clear();
+        self.captured_read_vars.clear();
         // Module-level functions do not inherit closure capture state.
         // Without resetting this, stale captures from previously-lowered closures
         // can cause identifiers (e.g. `io`) to resolve via LoadCaptured instead of
@@ -4137,8 +4135,6 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = None;
         self.eval_completion_local = None;
         self.parameter_symbols.clear();
-        self.visible_js_lexical_symbols.clear();
-        self.local_tdz_symbols.clear();
         // closure_locals maps local-slot indices to async func IDs.  It is
         // strictly per-function: stale entries from a previously-lowered
         // function (e.g. std:math init code registering `wrapped` at slot 2)
@@ -4375,8 +4371,6 @@ impl<'a> Lowerer<'a> {
         let saved_js_strict_context = self.js_strict_context;
         let saved_in_direct_eval_function = self.in_direct_eval_function;
         let saved_parameter_symbols = self.parameter_symbols.clone();
-        let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
-        let saved_local_tdz_symbols = self.local_tdz_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
@@ -4398,7 +4392,7 @@ impl<'a> Lowerer<'a> {
             .add_block(BasicBlock::with_label(entry_block, "entry"));
 
         if use_js_parameter_env {
-            let env_object = self.lower_activation_direct_eval_environment_object();
+            let env_object = self.lower_activation_direct_eval_environment_object(func.span.start);
             let _ = self.emit_ensure_activation_direct_eval_env(env_object);
         }
 
@@ -4494,8 +4488,6 @@ impl<'a> Lowerer<'a> {
         self.js_strict_context = saved_js_strict_context;
         self.in_direct_eval_function = saved_in_direct_eval_function;
         self.parameter_symbols = saved_parameter_symbols;
-        self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
-        self.local_tdz_symbols = saved_local_tdz_symbols;
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
@@ -4517,7 +4509,7 @@ impl<'a> Lowerer<'a> {
         self.refcell_vars.clear();
         self.refcell_registers.clear();
         self.refcell_inner_types.clear();
-        self.loop_captured_vars.clear();
+        self.captured_read_vars.clear();
         self.ancestor_variables = None;
         self.captures.clear();
         self.next_capture_slot = 0;
@@ -4528,8 +4520,6 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = None;
         self.parameter_symbols.clear();
         self.eval_completion_local = None;
-        self.visible_js_lexical_symbols.clear();
-        self.local_tdz_symbols.clear();
         self.pending_constructor_prologue = None;
         self.current_method_env_globals = None;
         self.pending_class_method_env_globals = None;
@@ -4602,7 +4592,7 @@ impl<'a> Lowerer<'a> {
                 });
                 self.emit(IrInstr::NativeCall {
                     dest: None,
-                    native_id: crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_VAR,
+                    native_id: crate::compiler::native_id::OBJECT_JS_DECLARE_VAR,
                     args: vec![name_reg],
                 });
             }
@@ -4945,7 +4935,7 @@ impl<'a> Lowerer<'a> {
                     self.refcell_vars.clear();
                     self.refcell_registers.clear();
                     self.refcell_inner_types.clear();
-                    self.loop_captured_vars.clear();
+                    self.captured_read_vars.clear();
                     self.ancestor_variables = None;
                     self.captures.clear();
                     self.next_capture_slot = 0;
@@ -5421,13 +5411,12 @@ impl<'a> Lowerer<'a> {
                 self.refcell_vars.clear();
                 self.refcell_registers.clear();
                 self.refcell_inner_types.clear();
-                self.loop_captured_vars.clear();
+                self.captured_read_vars.clear();
                 self.ancestor_variables = None;
                 self.captures.clear();
                 self.next_capture_slot = 0;
                 self.this_captured_idx = None;
                 self.js_arguments_local = None;
-                self.local_tdz_symbols.clear();
                 self.closure_locals.clear();
                 self.current_method_env_globals = class_method_env_globals.clone();
 
@@ -5808,7 +5797,7 @@ impl<'a> Lowerer<'a> {
             self.refcell_vars.clear();
             self.refcell_registers.clear();
             self.refcell_inner_types.clear();
-            self.loop_captured_vars.clear();
+            self.captured_read_vars.clear();
             self.ancestor_variables = None;
             self.captures.clear();
             self.next_capture_slot = 0;

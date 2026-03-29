@@ -369,6 +369,75 @@ impl Default for ExoticKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvRecordKind {
+    Declarative,
+    ObjectWith,
+    Global,
+    DirectEval,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingState {
+    Uninitialized,
+    Initialized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingStorageKind {
+    Value,
+    LocalSlot,
+    LocalRefCellSlot,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EnvBinding {
+    pub storage: BindingStorageKind,
+    pub state: BindingState,
+    pub value: Value,
+    pub lexical: bool,
+    pub outer_snapshot: bool,
+    pub deletable: bool,
+    pub strict: bool,
+}
+
+impl EnvBinding {
+    pub fn initialized_value(value: Value) -> Self {
+        Self {
+            storage: BindingStorageKind::Value,
+            state: BindingState::Initialized,
+            value,
+            lexical: false,
+            outer_snapshot: false,
+            deletable: true,
+            strict: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EnvRecordData {
+    pub kind: EnvRecordKind,
+    pub outer: Option<Value>,
+    pub with_target: Option<Value>,
+    pub completion: Value,
+    pub locals_base: Option<usize>,
+    pub bindings: FxHashMap<String, EnvBinding>,
+}
+
+impl EnvRecordData {
+    pub fn new(kind: EnvRecordKind) -> Self {
+        Self {
+            kind,
+            outer: None,
+            with_target: None,
+            completion: Value::undefined(),
+            locals_base: None,
+            bindings: FxHashMap::default(),
+        }
+    }
+}
+
 /// Immutable identity header for runtime objects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectHeader {
@@ -532,6 +601,8 @@ pub struct Object {
     pub generator_snapshot: Option<Box<GeneratorSnapshotData>>,
     /// Optional live generator state for JS generator iterators.
     pub generator_state: Option<Box<GeneratorStateData>>,
+    /// Optional ECMAScript environment-record payload for eval/with/global resolution.
+    pub env_record: Option<Box<EnvRecordData>>,
 }
 
 impl Object {
@@ -551,6 +622,7 @@ impl Object {
             arguments: None,
             generator_snapshot: None,
             generator_state: None,
+            env_record: None,
         }
     }
 
@@ -566,6 +638,7 @@ impl Object {
             arguments: None,
             generator_snapshot: None,
             generator_state: None,
+            env_record: None,
         }
     }
 
@@ -796,6 +869,20 @@ impl Object {
 
     pub fn callable_new_target(&self) -> Option<Value> {
         self.callable.as_ref()?.lexical_new_target
+    }
+
+    pub fn env_record(&self) -> Option<&EnvRecordData> {
+        self.env_record.as_deref()
+    }
+
+    pub fn env_record_mut(&mut self) -> Option<&mut EnvRecordData> {
+        self.env_record.as_deref_mut()
+    }
+
+    pub fn ensure_env_record(&mut self, kind: EnvRecordKind) -> &mut EnvRecordData {
+        self.env_record
+            .get_or_insert_with(|| Box::new(EnvRecordData::new(kind)))
+            .as_mut()
     }
 
     /// Attach a direct-eval environment to this callable.

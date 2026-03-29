@@ -26,8 +26,9 @@ use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::{PromiseHandle, PromiseMicrotask};
 use crate::vm::object::{
     layout_id_from_ordered_names, ArgumentsDataProperty, ArgumentsIndexedProperty,
-    ArgumentsObjectData, Array, Buffer, CallableKind, ChannelObject, Class, DateObject, DynProp,
-    ExoticKind, GeneratorSnapshotData, GeneratorStateData, LayoutId, MapObject, Object, RayaBigInt,
+    ArgumentsObjectData, Array, BindingState, BindingStorageKind, Buffer, CallableKind,
+    ChannelObject, Class, DateObject, DynProp, EnvBinding, EnvRecordKind, ExoticKind,
+    GeneratorSnapshotData, GeneratorStateData, LayoutId, MapObject, Object, RayaBigInt,
     RayaString, RefCell, RegExpObject, SetObject, SlotMeta, TypeHandle,
 };
 use crate::vm::scheduler::{PromiseReaction, PromiseReactionKind, Task, TaskId, TaskState};
@@ -53,9 +54,12 @@ const OBJECT_EXTENSIBLE_METADATA_KEY: &str = "__object_extensible__";
 const FIELD_PRESENT_MASK_KEY: &str = "__field_present_mask__";
 const DIRECT_EVAL_OUTER_ENV_KEY: &str = "__direct_eval_outer_env__";
 const DIRECT_EVAL_COMPLETION_KEY: &str = "__direct_eval_completion__";
+const DIRECT_EVAL_LOCALS_BASE_KEY: &str = "__direct_eval_locals_base__";
 const DIRECT_EVAL_LEXICAL_MARKER_PREFIX: &str = "__direct_eval_lexical__:";
 const DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX: &str = "__direct_eval_uninitialized__:";
 const DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX: &str = "__direct_eval_outer_snapshot__:";
+const DIRECT_EVAL_LOCAL_SLOT_PREFIX: &str = "__direct_eval_local_slot__:";
+const DIRECT_EVAL_LOCAL_REFCELL_PREFIX: &str = "__direct_eval_local_refcell__:";
 const DIRECT_EVAL_UNINITIALIZED_PREFIX: &str = "__direct_eval_uninitialized__:";
 const WITH_ENV_TARGET_KEY: &str = "__with_env_target__";
 const SUPER_THIS_INITIALIZED_KEY: &str = "__super_this_initialized__";
@@ -246,6 +250,15 @@ struct DirectEvalDeclarations {
     lexical_names: Vec<String>,
 }
 
+impl DirectEvalDeclarations {
+    fn is_empty(&self) -> bool {
+        !self.declares_arguments
+            && self.var_names.is_empty()
+            && self.function_names.is_empty()
+            && self.lexical_names.is_empty()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DirectEvalBehavior {
     is_strict: bool,
@@ -387,6 +400,14 @@ fn direct_eval_uninitialized_marker_key(name: &str) -> String {
 
 fn direct_eval_outer_snapshot_marker_key(name: &str) -> String {
     format!("{DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX}{name}")
+}
+
+fn direct_eval_local_slot_key(name: &str) -> String {
+    format!("{DIRECT_EVAL_LOCAL_SLOT_PREFIX}{name}")
+}
+
+fn direct_eval_local_refcell_key(name: &str) -> String {
+    format!("{DIRECT_EVAL_LOCAL_REFCELL_PREFIX}{name}")
 }
 
 impl From<DirectEvalDeclarationCollector<'_>> for DirectEvalDeclarations {
@@ -3890,6 +3911,136 @@ impl<'a> Interpreter<'a> {
             })
     }
 
+    fn object_env_record(&self, env: Value) -> Option<&crate::vm::object::EnvRecordData> {
+        let ptr = unsafe { env.as_ptr::<Object>() }?;
+        let obj = unsafe { &*ptr.as_ptr() };
+        obj.env_record()
+    }
+
+    fn object_env_record_mut(
+        &mut self,
+        env: Value,
+    ) -> Option<&mut crate::vm::object::EnvRecordData> {
+        let ptr = unsafe { env.as_ptr::<Object>() }?;
+        let obj = unsafe { &mut *ptr.as_ptr() };
+        obj.env_record_mut()
+    }
+
+    fn ensure_runtime_env_record(&mut self, env: Value, default_kind: EnvRecordKind) {
+        let Some(ptr) = (unsafe { env.as_ptr::<Object>() }) else {
+            return;
+        };
+        let obj = unsafe { &mut *ptr.as_ptr() };
+        if obj.env_record().is_some() {
+            return;
+        }
+        let mut record = crate::vm::object::EnvRecordData::new(default_kind);
+        record.outer = self.get_own_js_property_value_by_name(env, DIRECT_EVAL_OUTER_ENV_KEY);
+        record.with_target = self.get_own_js_property_value_by_name(env, WITH_ENV_TARGET_KEY);
+        record.completion = self
+            .get_own_js_property_value_by_name(env, DIRECT_EVAL_COMPLETION_KEY)
+            .unwrap_or(Value::undefined());
+        record.locals_base = self
+            .get_own_js_property_value_by_name(env, DIRECT_EVAL_LOCALS_BASE_KEY)
+            .and_then(|value| value.as_i32())
+            .filter(|base| *base >= 0)
+            .map(|base| base as usize);
+
+        for key in self.js_own_property_names(env) {
+            if key == DIRECT_EVAL_OUTER_ENV_KEY
+                || key == DIRECT_EVAL_COMPLETION_KEY
+                || key == DIRECT_EVAL_LOCALS_BASE_KEY
+                || key == WITH_ENV_TARGET_KEY
+                || key.starts_with(DIRECT_EVAL_LEXICAL_MARKER_PREFIX)
+                || key.starts_with(DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX)
+                || key.starts_with(DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX)
+                || key.starts_with(DIRECT_EVAL_LOCAL_SLOT_PREFIX)
+                || key.starts_with(DIRECT_EVAL_LOCAL_REFCELL_PREFIX)
+            {
+                continue;
+            }
+            let lexical = self
+                .get_own_js_property_value_by_name(env, &direct_eval_lexical_marker_key(&key))
+                .is_some_and(|value| value.is_truthy());
+            let uninitialized = self
+                .get_own_js_property_value_by_name(env, &direct_eval_uninitialized_marker_key(&key))
+                .is_some_and(|value| value.is_truthy());
+            let local_slot = self
+                .get_own_js_property_value_by_name(env, &direct_eval_local_slot_key(&key))
+                .and_then(|value| value.as_i32())
+                .filter(|slot| *slot >= 0)
+                .map(|slot| slot as u16);
+            let local_refcell = self
+                .get_own_js_property_value_by_name(env, &direct_eval_local_refcell_key(&key))
+                .is_some_and(|value| value.is_truthy());
+            let outer_snapshot = self
+                .get_own_js_property_value_by_name(env, &direct_eval_outer_snapshot_marker_key(&key))
+                .is_some_and(|value| value.is_truthy());
+            let storage = match (local_slot, local_refcell) {
+                (Some(_), true) => BindingStorageKind::LocalRefCellSlot,
+                (Some(_), false) => BindingStorageKind::LocalSlot,
+                (None, _) => BindingStorageKind::Value,
+            };
+            let binding_value = match local_slot {
+                Some(slot) => Value::i32(slot as i32),
+                None => self
+                    .get_own_js_property_value_by_name(env, &key)
+                    .unwrap_or(Value::undefined()),
+            };
+            record.bindings.insert(
+                key,
+                EnvBinding {
+                    storage,
+                    state: if uninitialized {
+                        BindingState::Uninitialized
+                    } else {
+                        BindingState::Initialized
+                    },
+                    value: binding_value,
+                    lexical,
+                    outer_snapshot,
+                    deletable: !lexical,
+                    strict: lexical,
+                },
+            );
+        }
+        obj.env_record = Some(Box::new(record));
+    }
+
+    fn env_outer_value(&mut self, env: Value) -> Option<Value> {
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        self.object_env_record(env)
+            .and_then(|record| record.outer)
+            .or_else(|| self.get_own_js_property_value_by_name(env, DIRECT_EVAL_OUTER_ENV_KEY))
+    }
+
+    fn env_with_target_value(&mut self, env: Value) -> Option<Value> {
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        self.object_env_record(env)
+            .and_then(|record| record.with_target)
+            .or_else(|| self.get_own_js_property_value_by_name(env, WITH_ENV_TARGET_KEY))
+    }
+
+    fn env_binding(&mut self, env: Value, key: &str) -> Option<EnvBinding> {
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        self.object_env_record(env)
+            .and_then(|record| record.bindings.get(key).copied())
+    }
+
+    fn env_binding_mut(
+        &mut self,
+        env: Value,
+        key: &str,
+    ) -> Option<&mut EnvBinding> {
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        self.object_env_record_mut(env)
+            .and_then(|record| record.bindings.get_mut(key))
+    }
+
+    fn env_has_binding(&mut self, env: Value, key: &str) -> bool {
+        self.env_binding(env, key).is_some() || self.resolve_own_property_shape(env, key).is_some()
+    }
+
     fn resolve_activation_identifier_reference(
         &mut self,
         task: &Arc<Task>,
@@ -3906,16 +4057,17 @@ impl<'a> Interpreter<'a> {
         };
         let mut cursor = Some(env);
         while let Some(current) = cursor {
+            self.ensure_runtime_env_record(current, EnvRecordKind::Declarative);
             if debug_eval_lookup {
                 eprintln!(
                     "[eval-lookup] key={} env={:#x} with={} own={}",
                     key,
                     current.raw(),
-                    self.with_env_target(current).is_some(),
-                    self.resolve_own_property_shape(current, key).is_some()
+                    self.env_with_target_value(current).is_some(),
+                    self.env_has_binding(current, key)
                 );
             }
-            if let Some(target) = self.with_env_target(current) {
+            if let Some(target) = self.env_with_target_value(current) {
                 if matches!(lookup_mode, JsEnvLookupMode::RespectWith) {
                     let target = self.proxy_wrapper_proxy_value(target).unwrap_or(target);
                     if self.with_env_has_binding(target, key, task, module)? {
@@ -3927,12 +4079,12 @@ impl<'a> Interpreter<'a> {
                         }));
                     }
                 }
-            } else if self.resolve_own_property_shape(current, key).is_some() {
+            } else if self.env_has_binding(current, key) {
                 return Ok(Some(JsReference::IdentifierRef {
                     env_record: JsEnvRecord::Declarative { handle: current },
                 }));
             }
-            cursor = self.direct_eval_outer_env(current);
+            cursor = self.env_outer_value(current);
         }
         Ok(None)
     }
@@ -3943,6 +4095,7 @@ impl<'a> Interpreter<'a> {
         module: &Module,
         key: &str,
         reference: JsReference,
+        stack: Option<*mut Stack>,
     ) -> Result<Option<Value>, VmError> {
         let debug_eval_lookup = std::env::var("RAYA_DEBUG_EVAL_LOOKUP").is_ok();
         match reference {
@@ -3972,12 +4125,42 @@ impl<'a> Interpreter<'a> {
                         handle,
                     },
             } => {
-                if self.direct_eval_binding_is_uninitialized(handle, key) {
-                    return Err(self.raise_task_builtin_error(
-                        task,
-                        "ReferenceError",
-                        format!("{key} is not defined"),
-                    ));
+                if let Some(binding) = self.env_binding(handle, key) {
+                    if matches!(binding.state, BindingState::Uninitialized) {
+                        return Err(self.raise_task_builtin_error(
+                            task,
+                            "ReferenceError",
+                            format!("{key} is not defined"),
+                        ));
+                    }
+                    match binding.storage {
+                        BindingStorageKind::LocalSlot | BindingStorageKind::LocalRefCellSlot => {
+                            if let Some(value) = self
+                                .read_direct_eval_local_binding(handle, key, task, module, stack)?
+                            {
+                                if debug_eval_lookup {
+                                    eprintln!(
+                                        "[eval-read] key={} declarative-local={:#x} value={:#x}",
+                                        key,
+                                        handle.raw(),
+                                        value.raw()
+                                    );
+                                }
+                                return Ok(Some(value));
+                            }
+                        }
+                        BindingStorageKind::Value => {
+                            if debug_eval_lookup {
+                                eprintln!(
+                                    "[eval-read] key={} declarative-binding={:#x} value={:#x}",
+                                    key,
+                                    handle.raw(),
+                                    binding.value.raw()
+                                );
+                            }
+                            return Ok(Some(binding.value));
+                        }
+                    }
                 }
                 let value =
                     self.get_own_property_value_via_js_semantics_with_context(handle, key, task, module)?;
@@ -4001,6 +4184,7 @@ impl<'a> Interpreter<'a> {
         key: &str,
         value: Value,
         reference: JsReference,
+        stack: Option<*mut Stack>,
     ) -> Result<bool, VmError> {
         match reference {
             JsReference::IdentifierRef {
@@ -4016,7 +4200,11 @@ impl<'a> Interpreter<'a> {
                         handle,
                     },
             } => {
-                if self.direct_eval_binding_is_outer_snapshot(handle, key) {
+                if self.write_direct_eval_local_binding(handle, key, value, task, module, stack)? {
+                    return Ok(true);
+                }
+                let was_outer_snapshot = self.direct_eval_binding_is_outer_snapshot(handle, key);
+                if was_outer_snapshot {
                     if self.set_shared_js_global_binding_value(key, value, task, module)? {
                         let written = self.set_property_value_via_js_semantics(
                             handle, key, value, handle, task, module,
@@ -4026,6 +4214,9 @@ impl<'a> Interpreter<'a> {
                             if self.direct_eval_binding_is_uninitialized(handle, key) {
                                 self.clear_direct_eval_binding_uninitialized(handle, key)?;
                             }
+                            self.sync_activation_eval_snapshot_binding(
+                                task, module, key, value, handle,
+                            )?;
                         }
                         return Ok(written);
                     }
@@ -4049,6 +4240,9 @@ impl<'a> Interpreter<'a> {
                                 if self.direct_eval_binding_is_uninitialized(handle, key) {
                                     self.clear_direct_eval_binding_uninitialized(handle, key)?;
                                 }
+                                self.sync_activation_eval_snapshot_binding(
+                                    task, module, key, value, handle,
+                                )?;
                             }
                             return Ok(written);
                         }
@@ -4058,6 +4252,14 @@ impl<'a> Interpreter<'a> {
                 let written = self.set_property_value_via_js_semantics(
                     handle, key, value, handle, task, module,
                 )?;
+                if written {
+                    if let Some(binding) = self.env_binding_mut(handle, key) {
+                        if matches!(binding.storage, BindingStorageKind::Value) {
+                            binding.value = value;
+                        }
+                        binding.state = BindingState::Initialized;
+                    }
+                }
                 if written && self.direct_eval_binding_is_uninitialized(handle, key) {
                     self.clear_direct_eval_binding_uninitialized(handle, key)?;
                 }
@@ -4068,9 +4270,78 @@ impl<'a> Interpreter<'a> {
                     let _ = self.set_shared_js_global_binding_value(key, value, task, module)?;
                     self.sync_existing_script_global_property(key, value, task, module)?;
                 }
+                if written && was_outer_snapshot {
+                    self.sync_activation_eval_snapshot_binding(task, module, key, value, handle)?;
+                }
                 Ok(written)
             }
         }
+    }
+
+    fn sync_activation_eval_snapshot_binding(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        key: &str,
+        value: Value,
+        written_handle: Value,
+    ) -> Result<(), VmError> {
+        let mut envs = Vec::with_capacity(4);
+        if let Some(env) = task.current_active_direct_eval_env() {
+            envs.push(env);
+        }
+        if let Some(env) = task.current_activation_direct_eval_env() {
+            if envs.iter().all(|existing| existing.raw() != env.raw()) {
+                envs.push(env);
+            }
+        }
+        if let Some(closure_env) = task.current_closure().and_then(|closure| {
+            let closure_ptr = unsafe { closure.as_ptr::<Object>() }?;
+            let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+            closure_obj.callable_direct_eval_env()
+        }) {
+            if envs
+                .iter()
+                .all(|existing| existing.raw() != closure_env.raw())
+            {
+                envs.push(closure_env);
+            }
+        }
+
+        let mut visited = FxHashSet::default();
+        let mut stack = envs;
+
+        while let Some(env) = stack.pop() {
+            if !visited.insert(env.raw()) {
+                continue;
+            }
+            self.ensure_runtime_env_record(env, EnvRecordKind::DirectEval);
+            if env.raw() != written_handle.raw() {
+                if let Some(binding_snapshot) = self.env_binding(env, key) {
+                    if matches!(binding_snapshot.storage, BindingStorageKind::Value) {
+                        let wrote_snapshot = self
+                            .set_property_value_via_js_semantics(env, key, value, env, task, module)?;
+                        if wrote_snapshot {
+                            if let Some(binding) = self.env_binding_mut(env, key) {
+                                if matches!(binding.storage, BindingStorageKind::Value) {
+                                    binding.value = value;
+                                }
+                                binding.state = BindingState::Initialized;
+                            }
+                            if self.direct_eval_binding_is_uninitialized(env, key) {
+                                self.clear_direct_eval_binding_uninitialized(env, key)?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(outer) = self.env_outer_value(env) {
+                stack.push(outer);
+            }
+        }
+
+        Ok(())
     }
 
     fn delete_identifier_reference(
@@ -4098,35 +4369,36 @@ impl<'a> Interpreter<'a> {
                     JsEnvRecord::Declarative {
                         handle,
                     },
-            } => self.delete_property_from_target(
-                handle,
-                self.alloc_string_value(key),
-                task,
-                module,
-            ),
-        }
-    }
-
-    fn capture_activation_identifier_assignment_target(
-        &mut self,
-        task: &Arc<Task>,
-        module: &Module,
-        key: &str,
-    ) -> Result<Option<Value>, VmError> {
-        match self.resolve_activation_identifier_reference(
-            task,
-            module,
-            key,
-            JsEnvLookupMode::RespectWith,
-        )? {
-            Some(JsReference::IdentifierRef {
-                env_record:
-                    JsEnvRecord::ObjectWith {
-                        target,
-                        ..
-                    },
-            }) => Ok(Some(target)),
-            _ => Ok(None),
+            } => {
+                if let Some(binding) = self.env_binding(handle, key) {
+                    match binding.storage {
+                        BindingStorageKind::LocalSlot | BindingStorageKind::LocalRefCellSlot => {
+                            return Ok(false);
+                        }
+                        BindingStorageKind::Value => {
+                            if !binding.deletable {
+                                return Ok(false);
+                            }
+                            if let Some(record) = self.object_env_record_mut(handle) {
+                                record.bindings.remove(key);
+                            }
+                            let _ = self.delete_property_from_target(
+                                handle,
+                                self.alloc_string_value(key),
+                                task,
+                                module,
+                            )?;
+                            return Ok(true);
+                        }
+                    }
+                }
+                self.delete_property_from_target(
+                    handle,
+                    self.alloc_string_value(key),
+                    task,
+                    module,
+                )
+            }
         }
     }
 
@@ -4136,8 +4408,9 @@ impl<'a> Interpreter<'a> {
         module: &Module,
         key: &str,
         value: Value,
+        stack: Option<*mut Stack>,
     ) -> Result<(), VmError> {
-        let did_set_activation = self.activation_eval_env_set(task, module, key, value)?;
+        let did_set_activation = self.activation_eval_env_set(task, module, key, value, stack)?;
         if did_set_activation {
             return Ok(());
         }
@@ -4163,70 +4436,12 @@ impl<'a> Interpreter<'a> {
         self.bind_script_global_property(key, value, true, task, module)
     }
 
-    fn store_identifier_assignment_target(
-        &mut self,
-        task: &Arc<Task>,
-        module: &Module,
-        target: Option<Value>,
-        key: &str,
-        value: Value,
-    ) -> Result<(), VmError> {
-        if let Some(target) = target {
-            let strict = self.current_function_is_strict_js(task, module);
-            if !self.with_env_has_binding(target, key, task, module)? {
-                if strict {
-                    return Err(self.raise_task_builtin_error(
-                        task,
-                        "ReferenceError",
-                        format!("{key} is not defined"),
-                    ));
-                }
-                self.set_property_value_via_js_semantics(target, key, value, target, task, module)?;
-                return Ok(());
-            }
-            match self
-                .set_property_value_via_js_semantics(target, key, value, target, task, module)?
-            {
-                true => Ok(()),
-                false if strict => Err(self.raise_task_builtin_error(
-                    task,
-                    "TypeError",
-                    format!("Cannot assign to non-writable property '{key}'"),
-                )),
-                false => Ok(()),
-            }
-        } else {
-            if self.activation_eval_env_set_skip_with(task, module, key, value)? {
-                return Ok(());
-            }
-
-            let strict = self.current_function_is_strict_js(task, module);
-            if self.set_shared_js_global_binding_value(key, value, task, module)? {
-                return Ok(());
-            }
-
-            let has_ambient_binding = self.shared_js_global_binding(key).is_some()
-                || self
-                    .builtin_global_value("globalThis")
-                    .is_some_and(|global_this| self.has_property_via_js_semantics(global_this, key));
-
-            if strict && !has_ambient_binding {
-                return Err(self.raise_task_builtin_error(
-                    task,
-                    "ReferenceError",
-                    format!("{key} is not defined"),
-                ));
-            }
-
-            self.bind_script_global_property(key, value, true, task, module)
-        }
-    }
-
     fn activation_eval_env_get(
         &mut self,
         task: &Arc<Task>,
         module: &Module,
         key: &str,
+        stack: Option<*mut Stack>,
     ) -> Result<Option<Value>, VmError> {
         let Some(reference) = self.resolve_activation_identifier_reference(
             task,
@@ -4236,7 +4451,7 @@ impl<'a> Interpreter<'a> {
         )? else {
             return Ok(None);
         };
-        self.read_identifier_reference(task, module, key, reference)
+        self.read_identifier_reference(task, module, key, reference, stack)
     }
 
     fn activation_eval_env_get_skip_with(
@@ -4244,6 +4459,7 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
         key: &str,
+        stack: Option<*mut Stack>,
     ) -> Result<Option<Value>, VmError> {
         let Some(reference) = self.resolve_activation_identifier_reference(
             task,
@@ -4253,12 +4469,21 @@ impl<'a> Interpreter<'a> {
         )? else {
             return Ok(None);
         };
-        self.read_identifier_reference(task, module, key, reference)
+        self.read_identifier_reference(task, module, key, reference, stack)
     }
 
     fn resolve_direct_eval_binding_env(&self, env: Value, key: &str) -> Option<Value> {
         let mut cursor = Some(env);
         while let Some(current) = cursor {
+            if let Some(ptr) = unsafe { current.as_ptr::<Object>() } {
+                let obj = unsafe { &*ptr.as_ptr() };
+                if obj
+                    .env_record()
+                    .is_some_and(|record| record.bindings.contains_key(key))
+                {
+                    return Some(current);
+                }
+            }
             if self.resolve_own_property_shape(current, key).is_some() {
                 return Some(current);
             }
@@ -4267,9 +4492,47 @@ impl<'a> Interpreter<'a> {
         None
     }
 
+    fn peek_task_stack_value(
+        &self,
+        task: &Arc<Task>,
+        stack: Option<*mut Stack>,
+        pos: usize,
+    ) -> Value {
+        if let Some(stack_ptr) = stack {
+            let stack = unsafe { &*stack_ptr };
+            return stack.peek_at(pos).unwrap_or(Value::undefined());
+        }
+        let stack = task.stack().lock().unwrap();
+        stack.peek_at(pos).unwrap_or(Value::undefined())
+    }
+
+    fn set_task_stack_value(
+        &self,
+        task: &Arc<Task>,
+        stack: Option<*mut Stack>,
+        pos: usize,
+        value: Value,
+    ) -> Result<(), VmError> {
+        if let Some(stack_ptr) = stack {
+            let stack = unsafe { &mut *stack_ptr };
+            return stack.set_at(pos, value);
+        }
+        let mut stack = task.stack().lock().unwrap();
+        stack.set_at(pos, value)
+    }
+
     fn direct_eval_chain_outer_has_binding(&self, env: Value, key: &str) -> bool {
         let mut cursor = self.direct_eval_outer_env(env);
         while let Some(current) = cursor {
+            if let Some(ptr) = unsafe { current.as_ptr::<Object>() } {
+                let obj = unsafe { &*ptr.as_ptr() };
+                if obj
+                    .env_record()
+                    .is_some_and(|record| record.bindings.contains_key(key))
+                {
+                    return true;
+                }
+            }
             if self.resolve_own_property_shape(current, key).is_some() {
                 return true;
             }
@@ -4279,18 +4542,204 @@ impl<'a> Interpreter<'a> {
     }
 
     fn direct_eval_binding_is_lexical(&self, env: Value, key: &str) -> bool {
+        if let Some(ptr) = unsafe { env.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            if let Some(record) = obj.env_record() {
+                if let Some(binding) = record.bindings.get(key) {
+                    return binding.lexical;
+                }
+            }
+        }
         self.get_own_js_property_value_by_name(env, &direct_eval_lexical_marker_key(key))
             .is_some_and(|value| value.is_truthy())
     }
 
     fn direct_eval_binding_is_uninitialized(&self, env: Value, key: &str) -> bool {
+        if let Some(ptr) = unsafe { env.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            if let Some(record) = obj.env_record() {
+                if let Some(binding) = record.bindings.get(key) {
+                    return matches!(binding.state, BindingState::Uninitialized);
+                }
+            }
+        }
         self.get_own_js_property_value_by_name(env, &direct_eval_uninitialized_marker_key(key))
             .is_some_and(|value| value.is_truthy())
     }
 
     fn direct_eval_binding_is_outer_snapshot(&self, env: Value, key: &str) -> bool {
+        if let Some(ptr) = unsafe { env.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            if let Some(record) = obj.env_record() {
+                if let Some(binding) = record.bindings.get(key) {
+                    return binding.outer_snapshot;
+                }
+            }
+        }
         self.get_own_js_property_value_by_name(env, &direct_eval_outer_snapshot_marker_key(key))
             .is_some_and(|value| value.is_truthy())
+    }
+
+    fn direct_eval_binding_local_slot(&self, env: Value, key: &str) -> Option<u16> {
+        if let Some(ptr) = unsafe { env.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            if let Some(record) = obj.env_record() {
+                if let Some(binding) = record.bindings.get(key) {
+                    return match binding.storage {
+                        BindingStorageKind::LocalSlot | BindingStorageKind::LocalRefCellSlot => {
+                            binding
+                                .value
+                                .as_i32()
+                                .filter(|slot| *slot >= 0 && *slot <= u16::MAX as i32)
+                                .map(|slot| slot as u16)
+                        }
+                        BindingStorageKind::Value => None,
+                    };
+                }
+            }
+        }
+        let slot_value =
+            self.get_own_js_property_value_by_name(env, &direct_eval_local_slot_key(key))?;
+        if slot_value.is_i32() {
+            let slot = slot_value.as_i32()?;
+            return (slot >= 0 && slot <= u16::MAX as i32).then_some(slot as u16);
+        }
+        if slot_value.is_f64() {
+            let slot = slot_value.as_f64()?;
+            if slot.is_finite() && slot.fract() == 0.0 && slot >= 0.0 && slot <= u16::MAX as f64 {
+                return Some(slot as u16);
+            }
+        }
+        None
+    }
+
+    fn direct_eval_binding_is_local_refcell(&self, env: Value, key: &str) -> bool {
+        if let Some(ptr) = unsafe { env.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            if let Some(record) = obj.env_record() {
+                if let Some(binding) = record.bindings.get(key) {
+                    return matches!(binding.storage, BindingStorageKind::LocalRefCellSlot);
+                }
+            }
+        }
+        self.get_own_js_property_value_by_name(env, &direct_eval_local_refcell_key(key))
+            .is_some_and(|value| value.is_truthy())
+    }
+
+    fn read_direct_eval_local_binding(
+        &mut self,
+        env: Value,
+        key: &str,
+        task: &Arc<Task>,
+        _module: &Module,
+        stack: Option<*mut Stack>,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(local_idx) = self.direct_eval_binding_local_slot(env, key) else {
+            return Ok(None);
+        };
+        if self.direct_eval_binding_is_uninitialized(env, key) {
+            return Err(self.raise_task_builtin_error(
+                task,
+                "ReferenceError",
+                format!("{key} is not defined"),
+            ));
+        }
+        if let Some(snapshot_value) = self.get_own_js_property_value_by_name(env, key) {
+            if std::env::var("RAYA_DEBUG_DIRECT_EVAL_LOCALS").is_ok() {
+                eprintln!(
+                    "[direct-eval-local-read] key={} env={:#x} source=snapshot value={:#x} string={:?}",
+                    key,
+                    env.raw(),
+                    snapshot_value.raw(),
+                    primitive_to_js_string(snapshot_value),
+                );
+            }
+            return Ok(Some(snapshot_value));
+        }
+        let locals_base = self.direct_eval_locals_base(env, task);
+        let local_value =
+            self.peek_task_stack_value(task, stack, locals_base + local_idx as usize);
+        if std::env::var("RAYA_DEBUG_DIRECT_EVAL_LOCALS").is_ok() {
+            eprintln!(
+                "[direct-eval-local-read] key={} env={:#x} locals_base={} local_idx={} slot={} value={:#x} string={:?}",
+                key,
+                env.raw(),
+                locals_base,
+                local_idx,
+                locals_base + local_idx as usize,
+                local_value.raw(),
+                primitive_to_js_string(local_value),
+            );
+        }
+        if self.direct_eval_binding_is_local_refcell(env, key) {
+            let Some(refcell_ptr): Option<NonNull<RefCell>> =
+                (unsafe { local_value.as_ptr::<RefCell>() })
+            else {
+                return Err(VmError::TypeError("Expected RefCell".to_string()));
+            };
+            let refcell = unsafe { &*refcell_ptr.as_ptr() };
+            return Ok(Some(refcell.get()));
+        }
+        Ok(Some(local_value))
+    }
+
+    fn write_direct_eval_local_binding(
+        &mut self,
+        env: Value,
+        key: &str,
+        value: Value,
+        task: &Arc<Task>,
+        module: &Module,
+        stack: Option<*mut Stack>,
+    ) -> Result<bool, VmError> {
+        let Some(local_idx) = self.direct_eval_binding_local_slot(env, key) else {
+            return Ok(false);
+        };
+        if self.direct_eval_binding_is_uninitialized(env, key) {
+            return Err(self.raise_task_builtin_error(
+                task,
+                "ReferenceError",
+                format!("{key} is not defined"),
+            ));
+        }
+        let locals_base = self.direct_eval_locals_base(env, task);
+        let local_slot = locals_base + local_idx as usize;
+        if self.direct_eval_binding_is_local_refcell(env, key) {
+            let refcell_value = self.peek_task_stack_value(task, stack, local_slot);
+            let Some(refcell_ptr): Option<NonNull<RefCell>> =
+                (unsafe { refcell_value.as_ptr::<RefCell>() })
+            else {
+                return Err(VmError::TypeError("Expected RefCell".to_string()));
+            };
+            let refcell = unsafe { &mut *refcell_ptr.as_ptr() };
+            refcell.set(value);
+        } else {
+            if let Err(error) = self.set_task_stack_value(task, stack, local_slot, value) {
+                if !matches!(error, VmError::StackUnderflow) {
+                    return Err(error);
+                }
+                if std::env::var("RAYA_DEBUG_DIRECT_EVAL_LOCALS").is_ok() {
+                    eprintln!(
+                        "[direct-eval-local-write] key={} env={:#x} locals_base={} local_idx={} slot={} fallback=snapshot-only value={:#x} string={:?}",
+                        key,
+                        env.raw(),
+                        locals_base,
+                        local_idx,
+                        local_slot,
+                        value.raw(),
+                        primitive_to_js_string(value),
+                    );
+                }
+            }
+        }
+        if let Some(binding) = self.env_binding_mut(env, key) {
+            binding.state = BindingState::Initialized;
+        }
+        let _ = self.set_property_value_via_js_semantics(env, key, value, env, task, module)?;
+        if self.direct_eval_binding_is_uninitialized(env, key) {
+            self.clear_direct_eval_binding_uninitialized(env, key)?;
+        }
+        Ok(true)
     }
 
     fn mark_direct_eval_binding_lexical(
@@ -4319,10 +4768,14 @@ impl<'a> Interpreter<'a> {
     }
 
     fn clear_direct_eval_binding_uninitialized(
-        &self,
+        &mut self,
         env: Value,
         key: &str,
     ) -> Result<(), VmError> {
+        if let Some(binding) = self.env_binding_mut(env, key) {
+            binding.state = BindingState::Initialized;
+            return Ok(());
+        }
         self.define_data_property_on_target(
             env,
             &direct_eval_uninitialized_marker_key(key),
@@ -4340,6 +4793,10 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<(), VmError> {
+        if let Some(binding) = self.env_binding_mut(env, key) {
+            binding.state = BindingState::Initialized;
+            binding.outer_snapshot = false;
+        }
         let _ = self.delete_property_from_target(
             env,
             self.alloc_string_value(&direct_eval_outer_snapshot_marker_key(key)),
@@ -4368,6 +4825,7 @@ impl<'a> Interpreter<'a> {
         module: &Module,
         key: &str,
         value: Value,
+        stack: Option<*mut Stack>,
     ) -> Result<bool, VmError> {
         let debug_direct_eval_set = std::env::var("RAYA_DEBUG_DIRECT_EVAL_SET").is_ok();
         let Some(reference) = self.resolve_activation_identifier_reference(
@@ -4411,7 +4869,7 @@ impl<'a> Interpreter<'a> {
                     env_record: JsEnvRecord::ObjectWith { .. },
                 } => false,
             };
-        let written = self.write_identifier_reference(task, module, key, value, reference)?;
+        let written = self.write_identifier_reference(task, module, key, value, reference, stack)?;
         if written && publish_to_script_global {
             let _ = self.set_shared_js_global_binding_value(key, value, task, module)?;
             self.sync_existing_script_global_property(key, value, task, module)?;
@@ -4425,6 +4883,7 @@ impl<'a> Interpreter<'a> {
         module: &Module,
         key: &str,
         value: Value,
+        stack: Option<*mut Stack>,
     ) -> Result<bool, VmError> {
         let Some(reference) = self.resolve_activation_identifier_reference(
             task,
@@ -4434,7 +4893,7 @@ impl<'a> Interpreter<'a> {
         )? else {
             return Ok(false);
         };
-        self.write_identifier_reference(task, module, key, value, reference)
+        self.write_identifier_reference(task, module, key, value, reference, stack)
     }
 
     fn activation_eval_env_create_mutable_binding(
@@ -4458,12 +4917,16 @@ impl<'a> Interpreter<'a> {
         key: &str,
         value: Value,
     ) -> Result<bool, VmError> {
-        if self.resolve_own_property_shape(env, key).is_some() {
-            if self.direct_eval_binding_is_outer_snapshot(env, key) {
-                let _ =
-                    self.set_property_value_via_js_semantics(env, key, value, env, task, module)?;
-                self.clear_direct_eval_binding_outer_snapshot(env, key, task, module)?;
-            }
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        if let Some(binding) = self.env_binding_mut(env, key) {
+            binding.value = value;
+            binding.state = BindingState::Initialized;
+            return Ok(true);
+        }
+        if let Some(record) = self.object_env_record_mut(env) {
+            record
+                .bindings
+                .insert(key.to_string(), EnvBinding::initialized_value(value));
             return Ok(true);
         }
         self.define_data_property_on_target(env, key, value, true, true, true)?;
@@ -4475,88 +4938,27 @@ impl<'a> Interpreter<'a> {
         env: Value,
         key: &str,
     ) -> Result<(), VmError> {
-        let debug_direct_eval_shadow = std::env::var("RAYA_DEBUG_DIRECT_EVAL_SHADOW").is_ok();
-        if self.resolve_own_property_shape(env, key).is_none() {
-            let mut cursor = self.direct_eval_outer_env(env);
-            while let Some(outer_env) = cursor {
-                if debug_direct_eval_shadow {
-                    eprintln!(
-                        "[direct-eval-shadow] key={} env={:#x} outer={:#x} own={} marker={}",
-                        key,
-                        env.raw(),
-                        outer_env.raw(),
-                        self.resolve_own_property_shape(outer_env, key).is_some(),
-                        self.direct_eval_binding_is_outer_snapshot(outer_env, key),
-                    );
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        if let Some(record) = self.object_env_record_mut(env) {
+            record.bindings.entry(key.to_string()).or_insert(EnvBinding {
+                storage: BindingStorageKind::Value,
+                state: BindingState::Uninitialized,
+                value: Value::undefined(),
+                lexical: true,
+                outer_snapshot: false,
+                deletable: false,
+                strict: true,
+            });
+            if let Some(binding) = record.bindings.get_mut(key) {
+                binding.lexical = true;
+                binding.deletable = false;
+                binding.strict = true;
+                if matches!(binding.storage, BindingStorageKind::Value) {
+                    binding.state = BindingState::Uninitialized;
+                    binding.value = Value::undefined();
                 }
-                if self.resolve_own_property_shape(outer_env, key).is_some() {
-                    if self.direct_eval_binding_is_outer_snapshot(outer_env, key) {
-                        if debug_direct_eval_shadow {
-                            eprintln!(
-                                "[direct-eval-shadow] clearing outer snapshot key={} outer={:#x}",
-                                key,
-                                outer_env.raw()
-                            );
-                        }
-                        self.define_data_property_on_target(
-                            env,
-                            &direct_eval_outer_snapshot_marker_key(key),
-                            Value::bool(false),
-                            true,
-                            false,
-                            true,
-                        )?;
-                        self.define_data_property_on_target(
-                            outer_env,
-                            &direct_eval_outer_snapshot_marker_key(key),
-                            Value::bool(false),
-                            true,
-                            false,
-                            true,
-                        )?;
-                        if debug_direct_eval_shadow {
-                            eprintln!(
-                                "[direct-eval-shadow] post-clear key={} env_marker={:?} outer_marker={:?}",
-                                key,
-                                self.get_own_js_property_value_by_name(
-                                    env,
-                                    &direct_eval_outer_snapshot_marker_key(key)
-                                )
-                                .map(|v| v.raw()),
-                                self.get_own_js_property_value_by_name(
-                                    outer_env,
-                                    &direct_eval_outer_snapshot_marker_key(key)
-                                )
-                                .map(|v| v.raw())
-                            );
-                        }
-                    }
-                    break;
-                }
-                cursor = self.direct_eval_outer_env(outer_env);
             }
-            self.define_data_property_on_target(env, key, Value::undefined(), true, false, true)?;
-        } else if self.direct_eval_binding_is_outer_snapshot(env, key) {
-            self.define_data_property_on_target(
-                env,
-                &direct_eval_outer_snapshot_marker_key(key),
-                Value::bool(false),
-                true,
-                false,
-                true,
-            )?;
-            if debug_direct_eval_shadow {
-                eprintln!(
-                    "[direct-eval-shadow] own-clear key={} env={:#x} env_marker={:?}",
-                    key,
-                    env.raw(),
-                    self.get_own_js_property_value_by_name(
-                        env,
-                        &direct_eval_outer_snapshot_marker_key(key)
-                    )
-                    .map(|v| v.raw())
-                );
-            }
+            return Ok(());
         }
         self.mark_direct_eval_binding_lexical(env, key, true)?;
         Ok(())
@@ -4576,25 +4978,6 @@ impl<'a> Interpreter<'a> {
                 JsEnvLookupMode::RespectWith,
             )?
             .is_some())
-    }
-
-    fn active_with_env_has(
-        &mut self,
-        task: &Arc<Task>,
-        module: &Module,
-        key: &str,
-    ) -> Result<bool, VmError> {
-        let mut cursor = task.current_active_direct_eval_env();
-        while let Some(current) = cursor {
-            let Some(target) = self.with_env_target(current) else {
-                break;
-            };
-            if self.with_env_has_binding(target, key, task, module)? {
-                return Ok(true);
-            }
-            cursor = self.direct_eval_outer_env(current);
-        }
-        Ok(false)
     }
 
     fn with_env_has_binding(
@@ -4658,46 +5041,95 @@ impl<'a> Interpreter<'a> {
     }
 
     fn direct_eval_outer_env(&self, env: Value) -> Option<Value> {
+        if let Some(ptr) = unsafe { env.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            if let Some(record) = obj.env_record() {
+                return record.outer;
+            }
+        }
         self.get_own_js_property_value_by_name(env, DIRECT_EVAL_OUTER_ENV_KEY)
     }
 
     fn with_env_target(&self, env: Value) -> Option<Value> {
+        if let Some(ptr) = unsafe { env.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            if let Some(record) = obj.env_record() {
+                return record.with_target;
+            }
+        }
         self.get_own_js_property_value_by_name(env, WITH_ENV_TARGET_KEY)
     }
 
-    fn set_direct_eval_outer_env(&self, env: Value, outer_env: Value) -> Result<(), VmError> {
+    fn set_direct_eval_outer_env(&mut self, env: Value, outer_env: Value) -> Result<(), VmError> {
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        if let Some(record) = self.object_env_record_mut(env) {
+            record.outer = Some(outer_env);
+            return Ok(());
+        }
+        self.define_data_property_on_target(env, DIRECT_EVAL_OUTER_ENV_KEY, outer_env, true, false, true)
+    }
+
+    fn set_direct_eval_completion(&mut self, env: Value, value: Value) -> Result<(), VmError> {
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        if let Some(record) = self.object_env_record_mut(env) {
+            record.completion = value;
+            return Ok(());
+        }
+        self.define_data_property_on_target(env, DIRECT_EVAL_COMPLETION_KEY, value, true, true, true)
+    }
+
+    fn direct_eval_completion(&self, env: Value) -> Option<Value> {
+        if let Some(ptr) = unsafe { env.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            if let Some(record) = obj.env_record() {
+                return Some(record.completion);
+            }
+        }
+        self.get_own_js_property_value_by_name(env, DIRECT_EVAL_COMPLETION_KEY)
+    }
+
+    fn set_direct_eval_locals_base(&mut self, env: Value, locals_base: usize) -> Result<(), VmError> {
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        if let Some(record) = self.object_env_record_mut(env) {
+            record.locals_base = Some(locals_base);
+            return Ok(());
+        }
         self.define_data_property_on_target(
             env,
-            DIRECT_EVAL_OUTER_ENV_KEY,
-            outer_env,
+            DIRECT_EVAL_LOCALS_BASE_KEY,
+            Value::i32(locals_base.min(i32::MAX as usize) as i32),
             true,
             false,
             true,
         )
     }
 
-    fn set_direct_eval_completion(&self, env: Value, value: Value) -> Result<(), VmError> {
-        self.define_data_property_on_target(
-            env,
-            DIRECT_EVAL_COMPLETION_KEY,
-            value,
-            true,
-            true,
-            true,
-        )
-    }
-
-    fn direct_eval_completion(&self, env: Value) -> Option<Value> {
-        self.get_own_js_property_value_by_name(env, DIRECT_EVAL_COMPLETION_KEY)
+    fn direct_eval_locals_base(&self, env: Value, task: &Arc<Task>) -> usize {
+        if let Some(ptr) = unsafe { env.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            if let Some(record) = obj.env_record() {
+                if let Some(base) = record.locals_base {
+                    return base;
+                }
+            }
+        }
+        self.get_own_js_property_value_by_name(env, DIRECT_EVAL_LOCALS_BASE_KEY)
+            .and_then(|value| value.as_i32())
+            .filter(|base| *base >= 0)
+            .map(|base| base as usize)
+            .unwrap_or_else(|| task.current_locals_base())
     }
 
     fn seal_direct_eval_snapshot_env(&self, env: Value) -> Result<(), VmError> {
         for key in self.js_own_property_names(env) {
             if key == DIRECT_EVAL_OUTER_ENV_KEY
                 || key == DIRECT_EVAL_COMPLETION_KEY
+                || key == DIRECT_EVAL_LOCALS_BASE_KEY
                 || key.starts_with(DIRECT_EVAL_LEXICAL_MARKER_PREFIX)
                 || key.starts_with(DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX)
                 || key.starts_with(DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX)
+                || key.starts_with(DIRECT_EVAL_LOCAL_SLOT_PREFIX)
+                || key.starts_with(DIRECT_EVAL_LOCAL_REFCELL_PREFIX)
             {
                 continue;
             }
@@ -4708,22 +5140,92 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
-    fn alloc_direct_eval_runtime_env(&self, outer_env: Value) -> Result<Value, VmError> {
+    fn alloc_direct_eval_runtime_env(&mut self, outer_env: Value) -> Result<Value, VmError> {
         let env = self.alloc_plain_object()?;
+        self.ensure_runtime_env_record(env, EnvRecordKind::DirectEval);
         self.set_direct_eval_outer_env(env, outer_env)?;
         self.set_direct_eval_completion(env, Value::undefined())?;
         Ok(env)
     }
 
     fn alloc_with_runtime_env(
-        &self,
+        &mut self,
         target: Value,
         outer_env: Option<Value>,
     ) -> Result<Value, VmError> {
         let env = self.alloc_plain_object()?;
-        self.define_data_property_on_target(env, WITH_ENV_TARGET_KEY, target, true, false, true)?;
+        self.ensure_runtime_env_record(env, EnvRecordKind::ObjectWith);
+        if let Some(record) = self.object_env_record_mut(env) {
+            record.with_target = Some(target);
+        }
         if let Some(outer_env) = outer_env {
             self.set_direct_eval_outer_env(env, outer_env)?;
+        }
+        Ok(env)
+    }
+
+    fn alloc_declarative_runtime_env(
+        &mut self,
+        outer_env: Option<Value>,
+    ) -> Result<Value, VmError> {
+        let env = self.alloc_plain_object()?;
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        if let Some(outer_env) = outer_env {
+            self.set_direct_eval_outer_env(env, outer_env)?;
+        }
+        self.set_direct_eval_completion(env, Value::undefined())?;
+        Ok(env)
+    }
+
+    fn clone_active_declarative_env_for_iteration(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        binding_names: &[String],
+        stack: Option<*mut Stack>,
+    ) -> Result<Value, VmError> {
+        let Some(current_env) = task.current_active_direct_eval_env() else {
+            return Err(VmError::RuntimeError(
+                "No active declarative env to clone for iteration".to_string(),
+            ));
+        };
+        let outer_env = self.env_outer_value(current_env);
+        let env = self.alloc_declarative_runtime_env(outer_env)?;
+        for binding_name in binding_names {
+            let Some(source_binding) = self.env_binding(current_env, binding_name) else {
+                return Err(VmError::RuntimeError(format!(
+                    "Missing loop binding '{}' in active declarative env",
+                    binding_name
+                )));
+            };
+            let mut cloned_binding = source_binding;
+            cloned_binding.storage = BindingStorageKind::Value;
+            cloned_binding.value = if matches!(source_binding.state, BindingState::Initialized) {
+                match source_binding.storage {
+                    BindingStorageKind::Value => source_binding.value,
+                    BindingStorageKind::LocalSlot | BindingStorageKind::LocalRefCellSlot => self
+                        .read_identifier_reference(
+                            task,
+                            module,
+                            binding_name,
+                            JsReference::IdentifierRef {
+                                env_record: JsEnvRecord::Declarative { handle: current_env },
+                            },
+                            stack,
+                        )?
+                        .unwrap_or(Value::undefined()),
+                }
+            } else {
+                Value::undefined()
+            };
+            let Some(record) = self.object_env_record_mut(env) else {
+                return Err(VmError::RuntimeError(
+                    "Cloned declarative env missing env record".to_string(),
+                ));
+            };
+            record
+                .bindings
+                .insert(binding_name.clone(), cloned_binding);
         }
         Ok(env)
     }
@@ -9689,6 +10191,27 @@ impl<'a> Interpreter<'a> {
         source: &str,
         options: &DynamicJsCompileOptions,
     ) -> Result<(), VmError> {
+        let trimmed = source.trim_start();
+        let starts_with_module_decl = trimmed.starts_with("export ")
+            || trimmed.starts_with("export{")
+            || trimmed.starts_with("export*")
+            || trimmed.starts_with("export\t")
+            || trimmed.starts_with("export\n")
+            || trimmed.starts_with("export\r")
+            || trimmed.starts_with("import ")
+            || trimmed.starts_with("import\"")
+            || trimmed.starts_with("import'")
+            || trimmed.starts_with("import{")
+            || trimmed.starts_with("import*")
+            || trimmed.starts_with("import\t")
+            || trimmed.starts_with("import\n")
+            || trimmed.starts_with("import\r");
+        if starts_with_module_decl {
+            return Err(VmError::SyntaxError(
+                "Dynamic eval parse error: import/export declarations are not allowed in eval code"
+                    .to_string(),
+            ));
+        }
         let parser = Parser::new_with_mode(source, TypeSystemMode::Js).map_err(|error| {
             VmError::SyntaxError(format!("Dynamic eval lexer error: {error:?}"))
         })?;
@@ -10002,6 +10525,36 @@ impl<'a> Interpreter<'a> {
         true
     }
 
+    fn fast_path_strip_trivial_eval_source<'s>(&self, source: &'s str) -> Option<&'s str> {
+        let source = source.trim_start_matches(|ch: char| {
+            matches!(ch, '\u{0009}' | '\u{000B}' | '\u{000C}' | '\u{0020}' | '\n' | '\r')
+        });
+
+        if let Some(rest) = source.strip_prefix("//") {
+            if let Some(line_end) = rest.find(['\n', '\r']) {
+                return Some(&rest[line_end + 1..]);
+            }
+            if let Some(line_end) = rest.find('\u{2028}') {
+                return Some(&rest[line_end + '\u{2028}'.len_utf8()..]);
+            }
+            if let Some(line_end) = rest.find('\u{2029}') {
+                return Some(&rest[line_end + '\u{2029}'.len_utf8()..]);
+            }
+            return Some("");
+        }
+
+        if let Some(rest) = source.strip_prefix("/*") {
+            if let Some(block_end) = rest.find("*/") {
+                let tail = &rest[block_end + 2..];
+                if tail.trim().is_empty() {
+                    return Some("");
+                }
+            }
+        }
+
+        None
+    }
+
     fn eval_dynamic_js_source(
         &mut self,
         source: &str,
@@ -10012,6 +10565,7 @@ impl<'a> Interpreter<'a> {
         module: &Module,
     ) -> Result<Value, VmError> {
         let source = self.strip_leading_hashbang_comment(source);
+        let source = self.fast_path_strip_trivial_eval_source(source).unwrap_or(source);
         if self.js_source_is_only_comments_and_whitespace(source) {
             return Ok(Value::undefined());
         }
@@ -10064,7 +10618,10 @@ impl<'a> Interpreter<'a> {
                 && !(caller_is_strict
                     || direct_eval_declarations
                         .as_ref()
-                        .is_some_and(|collector| collector.source_is_strict)),
+                        .is_some_and(|collector| collector.source_is_strict))
+                && direct_eval_declarations
+                    .as_ref()
+                    .is_some_and(|collector| !collector.is_empty()),
         };
         if std::env::var("RAYA_DEBUG_DIRECT_EVAL_BEHAVIOR").is_ok() {
             eprintln!(
@@ -10236,6 +10793,8 @@ impl<'a> Interpreter<'a> {
             "Dynamic eval compile did not produce wrapper function",
         )?;
         if let Some(caller_snapshot_env) = direct_env {
+            self.ensure_runtime_env_record(caller_snapshot_env, EnvRecordKind::DirectEval);
+            self.set_direct_eval_locals_base(caller_snapshot_env, task.current_locals_base())?;
             if std::env::var("RAYA_DEBUG_DIRECT_EVAL_ENV_IDS").is_ok() {
                 eprintln!(
                     "[direct-eval-env] caller_snapshot={:#x}",
@@ -10260,7 +10819,14 @@ impl<'a> Interpreter<'a> {
                 .current_activation_direct_eval_env()
                 .unwrap_or(caller_snapshot_env);
             let runtime_outer_env = active_with_env.unwrap_or(persisted_caller_env);
-            let runtime_env = if behavior.publish_script_global_bindings {
+            let requires_fresh_eval_env = behavior.publish_script_global_bindings
+                || behavior.persist_caller_declarations
+                || direct_eval_declarations
+                    .as_ref()
+                    .is_some_and(|collector| !collector.is_empty());
+            let runtime_env = if !requires_fresh_eval_env {
+                runtime_outer_env
+            } else if behavior.publish_script_global_bindings {
                 // Sloppy direct eval still needs a fresh lexical environment even
                 // when `var`/function declarations publish to the global object.
                 self.alloc_direct_eval_runtime_env(runtime_outer_env)?
@@ -10305,8 +10871,11 @@ impl<'a> Interpreter<'a> {
                 behavior.publish_script_global_bindings,
                 behavior.persist_caller_declarations,
             );
-            let result =
+            let mut result =
                 self.invoke_callable_sync_with_this(closure_val, explicit_this, &[], task, module);
+            if let Ok(value) = result {
+                result = Ok(self.direct_eval_completion(runtime_env).unwrap_or(value));
+            }
             if behavior.publish_script_global_bindings {
                 if let Some(declarations) = &direct_eval_declarations {
                     self.sync_direct_eval_global_bindings(runtime_env, declarations, task, module)?;
@@ -10439,7 +11008,7 @@ impl<'a> Interpreter<'a> {
 
         for name in &declarations.var_names {
             let value = self
-                .activation_eval_env_get_skip_with(task, module, name)?
+                .activation_eval_env_get_skip_with(task, module, name, None)?
                 .or_else(|| {
                     self.get_property_value_via_js_semantics_with_context(env, name, task, module)
                         .ok()
@@ -10472,7 +11041,7 @@ impl<'a> Interpreter<'a> {
 
         for name in &declarations.function_names {
             let value = self
-                .activation_eval_env_get_skip_with(task, module, name)?
+                .activation_eval_env_get_skip_with(task, module, name, None)?
                 .or_else(|| {
                     self.get_property_value_via_js_semantics_with_context(env, name, task, module)
                         .ok()
@@ -15341,7 +15910,12 @@ impl<'a> Interpreter<'a> {
                         let name = unsafe { &*name_ptr.as_ptr() };
                         let debug_ambient_global =
                             std::env::var("RAYA_DEBUG_AMBIENT_GLOBAL").is_ok();
-                        match self.activation_eval_env_get(task, module, &name.data) {
+                        match self.activation_eval_env_get(
+                            task,
+                            module,
+                            &name.data,
+                            Some(stack as *mut Stack),
+                        ) {
                             Ok(Some(value)) => {
                                 if debug_ambient_global {
                                     eprintln!(
@@ -15400,80 +15974,6 @@ impl<'a> Interpreter<'a> {
                         };
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
-                        }
-                        OpcodeResult::Continue
-                    }
-
-                    id if id == crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL_NO_WITH => {
-                        if args.len() != 1 {
-                            return OpcodeResult::Error(VmError::RuntimeError(
-                                "ambient global no-with lookup expects exactly one string argument"
-                                    .to_string(),
-                            ));
-                        }
-                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "ambient global no-with lookup expects a string name".to_string(),
-                            ));
-                        };
-                        let name = unsafe { &*name_ptr.as_ptr() };
-                        let debug_ambient_global =
-                            std::env::var("RAYA_DEBUG_AMBIENT_GLOBAL").is_ok();
-                        let value = match self.activation_eval_env_get_skip_with(
-                            task,
-                            module,
-                            &name.data,
-                        ) {
-                            Ok(Some(v)) => {
-                                if debug_ambient_global {
-                                    eprintln!(
-                                        "[ambient-global:get-no-with] name={} source=eval-env value={:#x}",
-                                        name.data,
-                                        v.raw()
-                                    );
-                                }
-                                Some(v)
-                            }
-                            Ok(None) => match self.shared_js_global_binding_value(&name.data) {
-                                Ok(Some(v)) => Some(v),
-                                Ok(None) => match self.ensure_builtin_global_value("globalThis", task)
-                                {
-                                    Ok(Some(gt)) => {
-                                        let has_prop =
-                                            self.has_property_via_js_semantics(gt, &name.data);
-                                        let value = if has_prop {
-                                            self.get_property_value_via_js_semantics_with_context(
-                                                gt, &name.data, task, module,
-                                            )
-                                            .ok()
-                                            .flatten()
-                                        } else {
-                                            None
-                                        };
-                                        if debug_ambient_global {
-                                            eprintln!(
-                                                "[ambient-global:get-no-with] name={} source=globalThis has={} value={:?}",
-                                                name.data,
-                                                has_prop,
-                                                value.map(|v| format!("{:#x}", v.raw()))
-                                            );
-                                        }
-                                        value
-                                    }
-                                    Ok(None) => None,
-                                    Err(error) => return OpcodeResult::Error(error),
-                                },
-                                Err(error) => return OpcodeResult::Error(error),
-                            },
-                            Err(error) => return OpcodeResult::Error(error),
-                        };
-                        let Some(value) = value else {
-                            return OpcodeResult::Error(
-                                self.raise_unresolved_identifier_error(task, &name.data),
-                            );
-                        };
-                        if let Err(error) = stack.push(value) {
-                            return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
                     }
@@ -15577,7 +16077,12 @@ impl<'a> Interpreter<'a> {
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
                         // 1. Check builtin_global_slots (builtins + module exports)
-                        let value = match self.activation_eval_env_get(task, module, &name.data) {
+                        let value = match self.activation_eval_env_get(
+                            task,
+                            module,
+                            &name.data,
+                            Some(stack as *mut Stack),
+                        ) {
                             Ok(Some(v)) => Some(v),
                             Ok(None) => match self.shared_js_global_binding_value(&name.data) {
                                 Ok(value) => match value {
@@ -15623,7 +16128,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_GET => {
+                    id if id == crate::compiler::native_id::OBJECT_JS_GET_IDENTIFIER => {
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "eval env get expects exactly one string argument".to_string(),
@@ -15635,7 +16140,12 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
-                        let value = match self.activation_eval_env_get(task, module, &name.data) {
+                        let value = match self.activation_eval_env_get(
+                            task,
+                            module,
+                            &name.data,
+                            Some(stack as *mut Stack),
+                        ) {
                             Ok(Some(v)) => v,
                             Ok(None) => {
                                 let name_reg = name.data.clone();
@@ -15680,7 +16190,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_TRY_GET => {
+                    id if id == crate::compiler::native_id::OBJECT_JS_TRY_GET_IDENTIFIER => {
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "eval env tryGet expects exactly one string argument".to_string(),
@@ -15692,7 +16202,12 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
-                        let value = match self.activation_eval_env_get(task, module, &name.data) {
+                        let value = match self.activation_eval_env_get(
+                            task,
+                            module,
+                            &name.data,
+                            Some(stack as *mut Stack),
+                        ) {
                             Ok(Some(v)) => v,
                             Ok(None) => {
                                 let name_reg = name.data.clone();
@@ -15729,124 +16244,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_GET_NO_WITH => {
-                        if args.len() != 1 {
-                            return OpcodeResult::Error(VmError::RuntimeError(
-                                "eval env getNoWith expects exactly one string argument"
-                                    .to_string(),
-                            ));
-                        }
-                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "eval env getNoWith expects a string name".to_string(),
-                            ));
-                        };
-                        let name = unsafe { &*name_ptr.as_ptr() };
-                        let value = match self
-                            .activation_eval_env_get_skip_with(task, module, &name.data)
-                        {
-                            Ok(Some(v)) => v,
-                            Ok(None) => {
-                                let name_reg = name.data.clone();
-                                match self.shared_js_global_binding_value(&name_reg) {
-                                    Ok(Some(v)) => v,
-                                    Ok(None) => {
-                                        if let Ok(Some(v)) =
-                                            self.ensure_builtin_global_value(&name_reg, task)
-                                        {
-                                            v
-                                        } else if let Ok(Some(gt)) =
-                                            self.ensure_builtin_global_value("globalThis", task)
-                                        {
-                                            match self
-                                                .get_property_value_via_js_semantics_with_context(
-                                                    gt,
-                                                    &name.data,
-                                                    task,
-                                                    module,
-                                                ) {
-                                                Ok(Some(v)) => v,
-                                                Ok(None) => {
-                                                    return OpcodeResult::Error(
-                                                        self.raise_unresolved_identifier_error(
-                                                            task, &name.data,
-                                                        ),
-                                                    )
-                                                }
-                                                Err(error) => return OpcodeResult::Error(error),
-                                            }
-                                        } else {
-                                            return OpcodeResult::Error(
-                                                self.raise_unresolved_identifier_error(
-                                                    task, &name.data,
-                                                ),
-                                            );
-                                        }
-                                    }
-                                    Err(error) => return OpcodeResult::Error(error),
-                                }
-                            }
-                            Err(error) => return OpcodeResult::Error(error),
-                        };
-                        if let Err(error) = stack.push(value) {
-                            return OpcodeResult::Error(error);
-                        }
-                        OpcodeResult::Continue
-                    }
-
-                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_TRY_GET_NO_WITH => {
-                        if args.len() != 1 {
-                            return OpcodeResult::Error(VmError::RuntimeError(
-                                "eval env tryGetNoWith expects exactly one string argument"
-                                    .to_string(),
-                            ));
-                        }
-                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "eval env tryGetNoWith expects a string name".to_string(),
-                            ));
-                        };
-                        let name = unsafe { &*name_ptr.as_ptr() };
-                        let value = match self
-                            .activation_eval_env_get_skip_with(task, module, &name.data)
-                        {
-                            Ok(Some(v)) => v,
-                            Ok(None) => {
-                                let name_reg = name.data.clone();
-                                match self.shared_js_global_binding_value(&name_reg) {
-                                    Ok(Some(v)) => v,
-                                    Ok(None) => self
-                                        .ensure_builtin_global_value(&name_reg, task)
-                                        .ok()
-                                        .flatten()
-                                        .or_else(|| {
-                                            self.ensure_builtin_global_value("globalThis", task)
-                                                .ok()
-                                                .flatten()
-                                                .and_then(|gt| {
-                                                    self.get_property_value_via_js_semantics_with_context(
-                                                        gt,
-                                                        &name.data,
-                                                        task,
-                                                        module,
-                                                    )
-                                                    .ok()
-                                                    .flatten()
-                                                })
-                                        })
-                                        .unwrap_or(Value::undefined()),
-                                    Err(error) => return OpcodeResult::Error(error),
-                                }
-                            }
-                            Err(error) => return OpcodeResult::Error(error),
-                        };
-                        if let Err(error) = stack.push(value) {
-                            return OpcodeResult::Error(error);
-                        }
-                        OpcodeResult::Continue
-                    }
-
-                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_SET => {
+                    id if id == crate::compiler::native_id::OBJECT_JS_SET_IDENTIFIER => {
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "eval env set expects name and value".to_string(),
@@ -15858,7 +16256,13 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
-                        match self.activation_eval_env_set(task, module, &name.data, args[1]) {
+                        match self.activation_eval_env_set(
+                            task,
+                            module,
+                            &name.data,
+                            args[1],
+                            Some(stack as *mut Stack),
+                        ) {
                             Ok(true) => {}
                             Ok(false) => {
                                 if let Ok(true) = self.set_shared_js_global_binding_value(
@@ -15899,7 +16303,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_VAR => {
+                    id if id == crate::compiler::native_id::OBJECT_JS_DECLARE_VAR => {
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "eval env declareVar expects a string name".to_string(),
@@ -15922,7 +16326,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_FUNCTION => {
+                    id if id == crate::compiler::native_id::OBJECT_JS_DECLARE_FUNCTION => {
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "eval env declareFunction expects name and value".to_string(),
@@ -15963,7 +16367,13 @@ impl<'a> Interpreter<'a> {
                                     return OpcodeResult::Error(error);
                                 }
                             } else {
-                                match self.activation_eval_env_set(task, module, &name.data, args[1]) {
+                                match self.activation_eval_env_set(
+                                    task,
+                                    module,
+                                    &name.data,
+                                    args[1],
+                                    Some(stack as *mut Stack),
+                                ) {
                                     Ok(true) => {}
                                     Ok(false) => {
                                         return OpcodeResult::Error(VmError::RuntimeError(
@@ -15997,7 +16407,13 @@ impl<'a> Interpreter<'a> {
                                     return OpcodeResult::Error(error);
                                 }
                             }
-                            match self.activation_eval_env_set(task, module, &name.data, args[1]) {
+                            match self.activation_eval_env_set(
+                                task,
+                                module,
+                                &name.data,
+                                args[1],
+                                Some(stack as *mut Stack),
+                            ) {
                                 Ok(true) => {}
                                 Ok(false) => {
                                     return OpcodeResult::Error(VmError::RuntimeError(
@@ -16013,7 +16429,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_LEXICAL => {
+                    id if id == crate::compiler::native_id::OBJECT_JS_DECLARE_LEXICAL => {
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "eval env declareLexical expects a string name".to_string(),
@@ -16179,6 +16595,84 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_PUSH_DECLARATIVE_ENV => {
+                        if !args.is_empty() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "pushDeclarativeEnv expects no arguments".to_string(),
+                            ));
+                        }
+                        let outer_env = self.current_activation_eval_env(task);
+                        let env = match self.alloc_declarative_runtime_env(outer_env) {
+                            Ok(env) => env,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let is_strict = task.current_active_direct_eval_is_strict()
+                            || self.current_function_is_strict_js(task, module);
+                        task.push_active_direct_eval_env(
+                            env,
+                            is_strict,
+                            task.current_active_direct_eval_uses_script_global_bindings(),
+                            task.current_active_direct_eval_persist_caller_declarations(),
+                        );
+                        if let Err(error) = stack.push(env) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_POP_DECLARATIVE_ENV => {
+                        if !args.is_empty() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "popDeclarativeEnv expects no arguments".to_string(),
+                            ));
+                        }
+                        let _ = task.pop_active_direct_eval_env();
+                        if let Err(error) = stack.push(Value::undefined()) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_REPLACE_DECLARATIVE_ENV => {
+                        let mut binding_names = Vec::with_capacity(args.len());
+                        for arg in args {
+                            let Some(name_ptr) = (unsafe { arg.as_ptr::<RayaString>() }) else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "replaceDeclarativeEnv expects string binding names"
+                                        .to_string(),
+                                ));
+                            };
+                            let name = unsafe { &*name_ptr.as_ptr() };
+                            binding_names.push(name.data.clone());
+                        }
+                        let next_env = match self.clone_active_declarative_env_for_iteration(
+                            task,
+                            module,
+                            &binding_names,
+                            Some(stack as *mut Stack),
+                        ) {
+                            Ok(env) => env,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let is_strict = task.current_active_direct_eval_is_strict()
+                            || self.current_function_is_strict_js(task, module);
+                        let uses_script_global_bindings =
+                            task.current_active_direct_eval_uses_script_global_bindings();
+                        let persist_caller_declarations =
+                            task.current_active_direct_eval_persist_caller_declarations();
+                        let _ = task.pop_active_direct_eval_env();
+                        task.push_active_direct_eval_env(
+                            next_env,
+                            is_strict,
+                            uses_script_global_bindings,
+                            persist_caller_declarations,
+                        );
+                        if let Err(error) = stack.push(next_env) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_JS_DELETE_IDENTIFIER => {
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -16206,7 +16700,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_HAS => {
+                    id if id == crate::compiler::native_id::OBJECT_JS_HAS_IDENTIFIER => {
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "eval env has expects a string name".to_string(),
@@ -16229,29 +16723,6 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_ACTIVE_WITH_ENV_HAS => {
-                        if args.len() != 1 {
-                            return OpcodeResult::Error(VmError::RuntimeError(
-                                "activeWithEnvHas expects a string name".to_string(),
-                            ));
-                        }
-                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "activeWithEnvHas expects a string name".to_string(),
-                            ));
-                        };
-                        let name = unsafe { &*name_ptr.as_ptr() };
-                        let has_binding = match self.active_with_env_has(task, module, &name.data)
-                        {
-                            Ok(result) => result,
-                            Err(error) => return OpcodeResult::Error(error),
-                        };
-                        if let Err(error) = stack.push(Value::bool(has_binding)) {
-                            return OpcodeResult::Error(error);
-                        }
-                        OpcodeResult::Continue
-                    }
-
                     id if id
                         == crate::compiler::native_id::OBJECT_ENSURE_ACTIVATION_EVAL_ENV =>
                     {
@@ -16264,6 +16735,11 @@ impl<'a> Interpreter<'a> {
                         let env = task
                             .current_activation_direct_eval_env()
                             .unwrap_or_else(|| {
+                                self.ensure_runtime_env_record(args[0], EnvRecordKind::DirectEval);
+                                let _ = self.set_direct_eval_locals_base(
+                                    args[0],
+                                    task.current_locals_base(),
+                                );
                                 task.set_activation_direct_eval_env(
                                     task.current_func_id(),
                                     task.current_locals_base(),
@@ -16277,28 +16753,6 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_SET_AMBIENT_GLOBAL => {
-                        if args.len() != 2 {
-                            return OpcodeResult::Error(VmError::RuntimeError(
-                                "setAmbientGlobal expects name and value".to_string(),
-                            ));
-                        }
-                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "setAmbientGlobal expects a string name".to_string(),
-                            ));
-                        };
-                        let name = unsafe { &*name_ptr.as_ptr() };
-                        if let Err(error) =
-                            self.assign_ambient_identifier_value(task, module, &name.data, args[1])
-                        {
-                            return OpcodeResult::Error(error);
-                        }
-                        if let Err(error) = stack.push(args[1]) {
-                            return OpcodeResult::Error(error);
-                        }
-                        OpcodeResult::Continue
-                    }
 
                     id if id == crate::compiler::native_id::OBJECT_SET_PROPERTY
                         || id == crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT =>
@@ -16405,72 +16859,6 @@ impl<'a> Interpreter<'a> {
                                 "TypeError",
                                 format!("Cannot assign to non-writable property '{}'", key_str),
                             ));
-                        }
-                        if let Err(error) = stack.push(args[2]) {
-                            return OpcodeResult::Error(error);
-                        }
-                        OpcodeResult::Continue
-                    }
-
-                    id if id
-                        == crate::compiler::native_id::OBJECT_CAPTURE_IDENTIFIER_ASSIGNMENT_TARGET =>
-                    {
-                        if args.len() != 1 {
-                            return OpcodeResult::Error(VmError::RuntimeError(
-                                "captureIdentifierAssignmentTarget expects a string name"
-                                    .to_string(),
-                            ));
-                        }
-                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "captureIdentifierAssignmentTarget expects a string name"
-                                    .to_string(),
-                            ));
-                        };
-                        let name = unsafe { &*name_ptr.as_ptr() };
-                        let target = match self.capture_activation_identifier_assignment_target(
-                            task,
-                            module,
-                            &name.data,
-                        ) {
-                            Ok(target) => target.unwrap_or(Value::null()),
-                            Err(error) => return OpcodeResult::Error(error),
-                        };
-                        if let Err(error) = stack.push(target) {
-                            return OpcodeResult::Error(error);
-                        }
-                        OpcodeResult::Continue
-                    }
-
-                    id if id
-                        == crate::compiler::native_id::OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET =>
-                    {
-                        if args.len() != 3 {
-                            return OpcodeResult::Error(VmError::RuntimeError(
-                                "storeIdentifierAssignmentTarget expects target, name, and value"
-                                    .to_string(),
-                            ));
-                        }
-                        let Some(name_ptr) = (unsafe { args[1].as_ptr::<RayaString>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "storeIdentifierAssignmentTarget expects a string name"
-                                    .to_string(),
-                            ));
-                        };
-                        let name = unsafe { &*name_ptr.as_ptr() };
-                        let target = if args[0].is_null() || args[0].is_undefined() {
-                            None
-                        } else {
-                            Some(args[0])
-                        };
-                        if let Err(error) = self.store_identifier_assignment_target(
-                            task,
-                            module,
-                            target,
-                            &name.data,
-                            args[2],
-                        ) {
-                            return OpcodeResult::Error(error);
                         }
                         if let Err(error) = stack.push(args[2]) {
                             return OpcodeResult::Error(error);

@@ -443,12 +443,6 @@ impl<'a> Interpreter<'a> {
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) };
             return Some(val);
         }
-        // Protocol aliases
-        for alias in protocol_alias_names(key) {
-            if let Some(value) = self.get_field_value_by_name(target, alias) {
-                return Some(value);
-            }
-        }
         None
     }
 
@@ -478,25 +472,11 @@ impl<'a> Interpreter<'a> {
         key: &str,
         accessor: &str,
     ) -> Option<Value> {
-        self.descriptor_accessor(target, key, accessor).or_else(|| {
-            for alias in protocol_alias_names(key) {
-                if let Some(value) = self.descriptor_accessor(target, alias, accessor) {
-                    return Some(value);
-                }
-            }
-            None
-        })
+        self.descriptor_accessor(target, key, accessor)
     }
 
     fn descriptor_data_value_with_protocol_alias(&self, target: Value, key: &str) -> Option<Value> {
-        self.descriptor_data_value(target, key).or_else(|| {
-            for alias in protocol_alias_names(key) {
-                if let Some(value) = self.descriptor_data_value(target, alias) {
-                    return Some(value);
-                }
-            }
-            None
-        })
+        self.descriptor_data_value(target, key)
     }
 
     fn is_symbol_constructor_value(&self, value: Value) -> bool {
@@ -568,17 +548,6 @@ impl<'a> Interpreter<'a> {
 
         if self.fixed_property_deleted(object_value, symbol_key) {
             return Ok(None);
-        }
-
-        for alias in protocol_alias_names(symbol_key) {
-            if let Some(value) = self.get_own_property_value_via_js_semantics_with_context(
-                object_value,
-                alias,
-                caller_task,
-                caller_module,
-            )? {
-                return Ok(Some(value));
-            }
         }
 
         if !self.is_symbol_constructor_value(object_value) {

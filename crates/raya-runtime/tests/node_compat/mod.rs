@@ -1,8 +1,34 @@
-use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, Session};
 
 fn expect_bool(value: raya_runtime::Value, expected: bool) {
     let actual = value.as_bool().unwrap_or(false);
     assert_eq!(actual, expected, "expected {}, got {:?}", expected, value);
+}
+
+fn expect_number(value: raya_runtime::Value, expected: f64) {
+    let actual = value
+        .as_f64()
+        .or_else(|| value.as_i32().map(|n| n as f64))
+        .unwrap_or(f64::NAN);
+    assert_eq!(actual, expected, "expected {}, got {:?}", expected, value);
+}
+
+fn expect_node_compat_string(source: &str, expected: &str) {
+    let options = RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    };
+    let mut session = Session::new(&options);
+    let value = session
+        .eval(source)
+        .expect("node-compat eval should succeed");
+    let formatted = session.format_value(&value);
+    let actual = formatted
+        .strip_prefix('"')
+        .and_then(|trimmed| trimmed.strip_suffix('"'))
+        .unwrap_or(&formatted)
+        .to_string();
+    assert_eq!(actual, expected, "expected {:?}, got {}", expected, formatted);
 }
 
 #[test]
@@ -262,4 +288,126 @@ fn test_node_compat_with_assignment_and_delete_use_identifier_reference() {
         .expect("node-compat eval should succeed");
 
     expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_top_level_direct_eval_assignment_updates_outer_binding() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let program = runtime
+        .compile_program_source(
+            r#"
+            let x = 1;
+            eval("x = 2");
+            x == 2;
+            "#,
+        )
+        .expect("node-compat top-level compile should succeed");
+    let value = runtime
+        .execute_program(&program)
+        .expect("node-compat top-level execute should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_with_assignment_falls_back_to_outer_binding() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let x = 1;
+            with ({}) {
+                x = 2;
+            }
+            return x == 2;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_for_let_empty_loop_returns() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            for (let i = 0; i < 1; i++) {}
+            return 42;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_number(value, 42.0);
+}
+
+#[test]
+fn test_node_compat_for_let_closure_captures_iteration_env() {
+    expect_node_compat_string(
+        r#"
+        let out = [];
+        for (let i = 0; i < 3; i++) {
+            out.push(() => i);
+        }
+        return out.map(f => f()).join(",");
+        "#,
+        "0,1,2",
+    );
+}
+
+#[test]
+fn test_node_compat_for_of_let_closure_captures_iteration_env() {
+    expect_node_compat_string(
+        r#"
+        let out = [];
+        for (let x of [0, 1, 2]) {
+            out.push(() => x);
+        }
+        return out.map(f => f()).join(",");
+        "#,
+        "0,1,2",
+    );
+}
+
+#[test]
+fn test_node_compat_for_in_let_closure_captures_iteration_env() {
+    expect_node_compat_string(
+        r#"
+        let obj = { a: 1, b: 2, c: 3 };
+        let out = [];
+        for (let k in obj) {
+            out.push(() => k);
+        }
+        return out.map(f => f()).join(",");
+        "#,
+        "a,b,c",
+    );
+}
+
+#[test]
+fn test_node_compat_for_let_direct_eval_uses_iteration_env() {
+    expect_node_compat_string(
+        r#"
+        let out = [];
+        for (let i = 0; i < 3; i++) {
+            eval("i = i + 1");
+            out.push(i);
+        }
+        return JSON.stringify(out);
+        "#,
+        "[1,3]",
+    );
 }

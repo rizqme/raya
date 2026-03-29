@@ -10,7 +10,10 @@ use raya_engine::parser::checker::{
     TypeChecker,
 };
 use raya_engine::parser::{Interner, LexError, ParseError, Parser, TypeContext};
-use raya_engine::semantics::{build_semantic_hir, SemanticHirModule, SemanticProfile, SourceKind};
+use raya_engine::semantics::{
+    build_semantic_hir, build_semantic_lowering_plan, SemanticHirModule, SemanticLoweringPlan,
+    SemanticProfile, SourceKind,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
@@ -362,6 +365,18 @@ pub fn inspect_semantic_hir_with_profile(
         .parse()
         .map_err(|errors| RuntimeError::Parse(format!("{errors:?}")))?;
     Ok(build_semantic_hir(&ast, &interner, profile))
+}
+
+pub fn inspect_semantic_plan_with_profile(
+    source: &str,
+    profile: SemanticProfile,
+) -> Result<SemanticLoweringPlan, RuntimeError> {
+    let parser = parser_for_profile(source, profile)
+        .map_err(|errors| RuntimeError::Lex(format!("{errors:?}")))?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|errors| RuntimeError::Parse(format!("{errors:?}")))?;
+    Ok(build_semantic_lowering_plan(&ast, &interner, profile))
 }
 
 /// Compile Raya source code to a bytecode module.
@@ -2792,6 +2807,69 @@ mod tests {
         }));
         assert!(hir.loop_scopes.iter().any(|plan| {
             plan.creates_per_iteration_env && plan.binding_names.iter().any(|name| name == "i")
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_marks_with_identifier_as_runtime_env_lookup() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            function main(target) {
+                with (target) {
+                    x;
+                }
+            }
+            "#,
+            SemanticProfile::js(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.resolved_identifiers.iter().any(|resolved| {
+            resolved.name == "x"
+                && resolved.kind == raya_engine::ResolvedIdentifierKind::RuntimeEnvLookup
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_tdz_class_name_as_binding() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            typeof C;
+            class C {}
+            "#,
+            SemanticProfile::js(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.resolved_identifiers.iter().any(|resolved| {
+            resolved.name == "C"
+                && resolved.kind == raya_engine::ResolvedIdentifierKind::ScriptGlobalBinding
+                && resolved.binding_kind == Some(raya_engine::BindingKind::Class)
+                && resolved.in_tdz
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_marks_loop_lexical_identifier_as_runtime_env_lookup() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            function main() {
+                for (let i = 0; i < 3; i++) {
+                    i;
+                }
+            }
+            "#,
+            SemanticProfile::js(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.loop_scopes.iter().any(|plan| {
+            plan.creates_per_iteration_env && plan.binding_names.iter().any(|name| name == "i")
+        }));
+        assert!(plan.hir.resolved_identifiers.iter().any(|resolved| {
+            resolved.name == "i"
+                && resolved.kind == raya_engine::ResolvedIdentifierKind::RuntimeEnvLookup
+                && resolved.binding_kind == Some(raya_engine::BindingKind::Lexical)
         }));
     }
 

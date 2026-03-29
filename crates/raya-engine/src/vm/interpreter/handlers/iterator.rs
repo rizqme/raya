@@ -131,8 +131,6 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        let direct_symbol =
-            self.well_known_symbol_property_value(iterable, "Symbol.iterator", task, module)?;
         let string_fallback_iterator = self.string_iterator_fallback(iterable, task, module)?;
         let direct_js = self.get_property_value_via_js_semantics_with_context(
             iterable,
@@ -140,30 +138,18 @@ impl<'a> Interpreter<'a> {
             task,
             module,
         )?;
-        let prototype_symbol = if let Some(prototype) = self.prototype_of_value(iterable) {
-            self.get_property_value_via_js_semantics_with_context(
-                prototype,
-                "Symbol.iterator",
-                task,
-                module,
-            )?
-        } else {
-            None
-        };
         if Self::iterator_debug_enabled() {
             eprintln!(
-                "[iter] methods iterable={:#x} direct_symbol={:?} string_fallback={:?} direct_js={:?} proto_symbol={:?}",
+                "[iter] methods iterable={:#x} string_fallback={:?} direct_js={:?}",
                 iterable.raw(),
-                direct_symbol.map(|value| format!("{:#x}", value.raw())),
                 string_fallback_iterator.map(|value| format!("{:#x}", value.raw())),
                 direct_js.map(|value| format!("{:#x}", value.raw())),
-                prototype_symbol.map(|value| format!("{:#x}", value.raw())),
             );
         }
         if let Some(iterator) = string_fallback_iterator {
             return Ok(Some(iterator));
         }
-        let Some(iterator_method) = direct_symbol.or(direct_js).or(prototype_symbol) else {
+        let Some(iterator_method) = direct_js else {
             return Ok(None);
         };
         if iterator_method.is_null() || iterator_method.is_undefined() {
