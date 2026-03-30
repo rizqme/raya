@@ -344,8 +344,8 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         // NativeCall has 3-byte operand (u16 nativeId + u8 argCount)
         Opcode::NativeCall => 3,
 
-        // ModuleNativeCall has 3-byte operand (u16 localIdx + u8 argCount)
-        Opcode::ModuleNativeCall => 3,
+        // KernelCall has 3-byte operand (u16 kernelOpId + u8 argCount)
+        Opcode::KernelCall => 3,
 
         // Debugger has no operands
         Opcode::Debugger => 0,
@@ -538,8 +538,8 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         // Native call
         Opcode::NativeCall => (0, 1), // Simplified - pops args (dynamic), pushes result
 
-        // Module native call
-        Opcode::ModuleNativeCall => (0, 1), // Simplified - pops args (dynamic), pushes result
+        // Kernel call
+        Opcode::KernelCall => (0, 1), // Simplified - pops args (dynamic), pushes result
 
         // Debugger has no stack effect
         Opcode::Debugger => (0, 0),

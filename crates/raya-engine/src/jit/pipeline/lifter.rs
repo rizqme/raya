@@ -6,10 +6,12 @@
 //! Phi nodes are inserted when registers differ.
 
 use crate::compiler::bytecode::{Function, Module, Opcode};
+use crate::compiler::ir::{encode_kernel_op_id, KernelOp};
 use crate::jit::analysis::cfg::{build_cfg, BlockId, BranchKind, CfgTerminator, ControlFlowGraph};
 use crate::jit::analysis::decoder::{decode_function, DecodedInstr, Operands};
 use crate::jit::ir::instr::*;
 use crate::jit::ir::types::JitType;
+use crate::semantics::HostHandleOpKind;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Error during lifting
@@ -1406,7 +1408,7 @@ fn lift_instruction(
                 stack.push(dest);
             }
         }
-        Opcode::NativeCall | Opcode::ModuleNativeCall => {
+        Opcode::NativeCall => {
             if let Operands::NativeCall {
                 native_id,
                 arg_count,
@@ -1418,9 +1420,30 @@ fn lift_instruction(
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::CallNative {
+                func.block_mut(block).instrs.push(JitInstr::CallKernel {
                     dest: Some(dest),
-                    native_id,
+                    kernel_op_id: encode_kernel_op_id(KernelOp::NativeCall(native_id)),
+                    args,
+                    bytecode_offset: instr.offset as u32,
+                });
+                stack.push(dest);
+            }
+        }
+        Opcode::KernelCall => {
+            if let Operands::KernelCall {
+                kernel_op_id,
+                arg_count,
+            } = instr.operands
+            {
+                let mut args = Vec::new();
+                for _ in 0..arg_count {
+                    args.push(stack.pop(instr.offset)?);
+                }
+                args.reverse();
+                let dest = func.alloc_reg(JitType::Value);
+                func.block_mut(block).instrs.push(JitInstr::CallKernel {
+                    dest: Some(dest),
+                    kernel_op_id,
                     args,
                     bytecode_offset: instr.offset as u32,
                 });
@@ -1576,9 +1599,14 @@ fn lift_instruction(
         }
         Opcode::NewMutex => {
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::NewMutex { dest });
+            func.block_mut(block).instrs.push(JitInstr::CallKernel {
+                dest: Some(dest),
+                kernel_op_id: encode_kernel_op_id(KernelOp::HostHandle(
+                    HostHandleOpKind::MutexConstructor,
+                )),
+                args: Vec::new(),
+                bytecode_offset: instr.offset as u32,
+            });
             stack.push(dest);
         }
         Opcode::MutexLock => {
@@ -1595,9 +1623,14 @@ fn lift_instruction(
         }
         Opcode::NewChannel => {
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::NewChannel { dest });
+            func.block_mut(block).instrs.push(JitInstr::CallKernel {
+                dest: Some(dest),
+                kernel_op_id: encode_kernel_op_id(KernelOp::HostHandle(
+                    HostHandleOpKind::ChannelConstructor,
+                )),
+                args: Vec::new(),
+                bytecode_offset: instr.offset as u32,
+            });
             stack.push(dest);
         }
         Opcode::NewSemaphore => {
@@ -1629,9 +1662,14 @@ fn lift_instruction(
         }
         Opcode::TaskCancel => {
             let task = stack.pop(instr.offset)?;
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::TaskCancel { task });
+            func.block_mut(block).instrs.push(JitInstr::CallKernel {
+                dest: None,
+                kernel_op_id: encode_kernel_op_id(KernelOp::HostHandle(
+                    HostHandleOpKind::TaskCancel,
+                )),
+                args: vec![task],
+                bytecode_offset: instr.offset as u32,
+            });
         }
         Opcode::TaskThen => {
             if let Operands::U32(callback_index) = instr.operands {

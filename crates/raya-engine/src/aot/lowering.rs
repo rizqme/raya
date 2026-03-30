@@ -1057,7 +1057,6 @@ impl LoweringCtx {
             | HelperCall::StoreElement
             | HelperCall::LoadFieldExact
             | HelperCall::StoreFieldExact
-            | HelperCall::ModuleNativeCall
             | HelperCall::MakeClosure
             | HelperCall::LoadCaptured
             | HelperCall::StoreCaptured
@@ -1073,11 +1072,8 @@ impl LoweringCtx {
             | HelperCall::YieldTask
             | HelperCall::SleepTask
             | HelperCall::SpawnClosure
-            | HelperCall::NewMutex
             | HelperCall::MutexLock
             | HelperCall::MutexUnlock
-            | HelperCall::NewChannel
-            | HelperCall::TaskCancel
             | HelperCall::SetupTry
             | HelperCall::EndTry => {
                 // TODO: Implement compound operations via extended helper table
@@ -1263,8 +1259,8 @@ impl LoweringCtx {
                 vec![ctx, slot, value]
             }
 
-            // (ctx, native_id: u16, args_ptr: i64, argc: u8) -> u64
-            HelperCall::NativeCall => {
+            // (ctx, op_id: u16, args_ptr: i64, argc: u8) -> u64
+            HelperCall::NativeCall | HelperCall::KernelCall => {
                 // Adapter convention: args = [native_id_imm, arg0, arg1, ...]
                 // Marshal arg values into a contiguous stack buffer and pass pointer+argc.
                 let mut v = vec![ctx];
@@ -1601,8 +1597,8 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
         }
-        // (ctx: i64, native_id: u16, args_ptr: i64, argc: u8) -> u64
-        HelperCall::NativeCall => {
+        // (ctx: i64, op_id: u16, args_ptr: i64, argc: u8) -> u64
+            HelperCall::NativeCall | HelperCall::KernelCall => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I16));
             sig.params.push(AbiParam::new(types::I64));
@@ -1735,7 +1731,7 @@ fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
         HelperCall::DynSetProp => offset_of!(AotHelperTable, dyn_set_prop),
         HelperCall::LoadGlobalValue => offset_of!(AotHelperTable, load_global_value),
         HelperCall::StoreGlobalValue => offset_of!(AotHelperTable, store_global_value),
-        HelperCall::NativeCall => offset_of!(AotHelperTable, native_call),
+        HelperCall::NativeCall | HelperCall::KernelCall => offset_of!(AotHelperTable, native_call),
         HelperCall::IsNativeSuspend => offset_of!(AotHelperTable, is_native_suspend),
         HelperCall::Spawn => offset_of!(AotHelperTable, spawn),
         HelperCall::CheckPreemption => offset_of!(AotHelperTable, check_preemption),

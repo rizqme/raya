@@ -8,7 +8,7 @@ use super::{
     REGEXP_TYPE_ID, STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::{
-    BasicBlock, BinaryOp, BuiltinKernelOp, FunctionId, IrConstant, IrInstr, IrValue,
+    BasicBlock, BinaryOp, KernelOp, FunctionId, IrConstant, IrInstr, IrValue,
     NominalTypeId, Register,
     Terminator, UnaryOp,
 };
@@ -577,10 +577,10 @@ impl<'a> Lowerer<'a> {
     fn emit_builtin_kernel_call(
         &mut self,
         dest: Option<Register>,
-        op: BuiltinKernelOp,
+        op: KernelOp,
         args: Vec<Register>,
     ) {
-        self.emit(IrInstr::BuiltinKernelCall { dest, op, args });
+        self.emit(IrInstr::KernelCall { dest, op, args });
     }
 
     fn emit_builtin_namespace_member_call(
@@ -606,13 +606,13 @@ impl<'a> Lowerer<'a> {
         if let Some(metaobject_op) = dispatch.metaobject_op {
             self.emit_builtin_kernel_call(
                 Some(dispatch_dest.clone()),
-                BuiltinKernelOp::Metaobject(metaobject_op),
+                KernelOp::Metaobject(metaobject_op),
                 args.to_vec(),
             );
         } else if let Some(native_id) = dispatch.native_id {
             self.emit_builtin_kernel_call(
                 Some(dispatch_dest.clone()),
-                BuiltinKernelOp::NativeCall(native_id),
+                KernelOp::NativeCall(native_id),
                 args.to_vec(),
             );
         } else {
@@ -720,10 +720,30 @@ impl<'a> Lowerer<'a> {
                     .clone()
                     .unwrap_or_else(|| self.lower_expr(&member.object));
                 match builtin_dispatch.host_handle_op {
+                    Some(crate::semantics::HostHandleOpKind::MutexLock) => {
+                        self.emit_builtin_kernel_call(
+                            Some(dest.clone()),
+                            KernelOp::HostHandle(
+                                crate::semantics::HostHandleOpKind::MutexLock,
+                            ),
+                            vec![object],
+                        );
+                        Some(dest)
+                    }
+                    Some(crate::semantics::HostHandleOpKind::MutexUnlock) => {
+                        self.emit_builtin_kernel_call(
+                            Some(dest.clone()),
+                            KernelOp::HostHandle(
+                                crate::semantics::HostHandleOpKind::MutexUnlock,
+                            ),
+                            vec![object],
+                        );
+                        Some(dest)
+                    }
                     Some(crate::semantics::HostHandleOpKind::TaskCancel) => {
                         self.emit_builtin_kernel_call(
-                            None,
-                            BuiltinKernelOp::HostHandle(
+                            Some(dest.clone()),
+                            KernelOp::HostHandle(
                                 crate::semantics::HostHandleOpKind::TaskCancel,
                             ),
                             vec![object],
@@ -733,7 +753,7 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::TaskIsDone) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            BuiltinKernelOp::HostHandle(
+                            KernelOp::HostHandle(
                                 crate::semantics::HostHandleOpKind::TaskIsDone,
                             ),
                             vec![object],
@@ -743,7 +763,7 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::TaskIsCancelled) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            BuiltinKernelOp::HostHandle(
+                            KernelOp::HostHandle(
                                 crate::semantics::HostHandleOpKind::TaskIsCancelled,
                             ),
                             vec![object],
@@ -1014,7 +1034,7 @@ impl<'a> Lowerer<'a> {
                 let dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    BuiltinKernelOp::PropertyOpcode(kind),
+                    KernelOp::PropertyOpcode(kind),
                     vec![object],
                 );
                 Some(dest)
@@ -1027,7 +1047,7 @@ impl<'a> Lowerer<'a> {
                 );
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    BuiltinKernelOp::NativeCall(native_id),
+                    KernelOp::NativeCall(native_id),
                     vec![object],
                 );
                 Some(dest)
@@ -1441,7 +1461,7 @@ impl<'a> Lowerer<'a> {
                 let len_dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
                 self.emit_builtin_kernel_call(
                     Some(len_dest.clone()),
-                    BuiltinKernelOp::PropertyOpcode(kind),
+                    KernelOp::PropertyOpcode(kind),
                     vec![object],
                 );
                 return Some(len_dest);
@@ -1482,7 +1502,7 @@ impl<'a> Lowerer<'a> {
                 native_args.extend(args.iter().cloned());
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    BuiltinKernelOp::NativeCall(id),
+                    KernelOp::NativeCall(id),
                     native_args,
                 );
                 Some(dest)
@@ -2163,7 +2183,7 @@ impl<'a> Lowerer<'a> {
                 };
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    BuiltinKernelOp::HostHandle(
+                    KernelOp::HostHandle(
                         crate::semantics::HostHandleOpKind::ChannelConstructor,
                     ),
                     vec![capacity],
@@ -2173,7 +2193,7 @@ impl<'a> Lowerer<'a> {
             Some(crate::semantics::HostHandleOpKind::MutexConstructor) => {
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    BuiltinKernelOp::HostHandle(
+                    KernelOp::HostHandle(
                         crate::semantics::HostHandleOpKind::MutexConstructor,
                     ),
                     vec![],
@@ -2886,7 +2906,7 @@ impl<'a> Lowerer<'a> {
         let iterator = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
             Some(iterator.clone()),
-            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::GetIterator),
+            KernelOp::Iterator(crate::semantics::IteratorOpKind::GetIterator),
             vec![iterable],
         );
         iterator
@@ -2896,7 +2916,7 @@ impl<'a> Lowerer<'a> {
         let step = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
             Some(step.clone()),
-            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::Step),
+            KernelOp::Iterator(crate::semantics::IteratorOpKind::Step),
             vec![iterator],
         );
         step
@@ -2906,7 +2926,7 @@ impl<'a> Lowerer<'a> {
         let value = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
             Some(value.clone()),
-            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::Value),
+            KernelOp::Iterator(crate::semantics::IteratorOpKind::Value),
             vec![step_result],
         );
         value
@@ -2915,7 +2935,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn emit_iterator_close_helper(&mut self, iterator: Register) {
         self.emit_builtin_kernel_call(
             None,
-            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::Close),
+            KernelOp::Iterator(crate::semantics::IteratorOpKind::Close),
             vec![iterator],
         );
     }
@@ -2923,7 +2943,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn emit_iterator_close_on_throw_helper(&mut self, iterator: Register) {
         self.emit_builtin_kernel_call(
             None,
-            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::CloseOnThrow),
+            KernelOp::Iterator(crate::semantics::IteratorOpKind::CloseOnThrow),
             vec![iterator],
         );
     }
@@ -2936,7 +2956,7 @@ impl<'a> Lowerer<'a> {
         let dest = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
             Some(dest.clone()),
-            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::CloseCompletion),
+            KernelOp::Iterator(crate::semantics::IteratorOpKind::CloseCompletion),
             vec![iterator, completion],
         );
         dest
@@ -2949,7 +2969,7 @@ impl<'a> Lowerer<'a> {
     ) {
         self.emit_builtin_kernel_call(
             None,
-            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::AppendToArray),
+            KernelOp::Iterator(crate::semantics::IteratorOpKind::AppendToArray),
             vec![target_array, iterable],
         );
     }
@@ -5548,11 +5568,11 @@ impl<'a> Lowerer<'a> {
 
             // Handle __NATIVE_CALL intrinsic: __NATIVE_CALL(native_id, args...)
             // First argument can be:
-            //   - StringLiteral: symbolic name → ModuleNativeCall (stdlib)
+            //   - StringLiteral: symbolic name → Registered native kernel call (stdlib)
             //   - IntLiteral/Identifier: numeric ID → NativeCall (engine-internal)
             if name == "__NATIVE_CALL" {
                 if let Some(first_arg) = call.argument_expression(0) {
-                    // Check for string literal first → ModuleNativeCall
+                    // Check for string literal first → registered native kernel op
                     if let Expression::StringLiteral(lit) = first_arg {
                         let fn_name = self.interner.resolve(lit.value);
                         let local_idx = self.resolve_native_name(fn_name);
@@ -5564,9 +5584,9 @@ impl<'a> Lowerer<'a> {
                             .map(|a| self.lower_expr(a.expression()))
                             .collect();
 
-                        self.emit(IrInstr::ModuleNativeCall {
+                        self.emit(IrInstr::KernelCall {
                             dest: Some(dest.clone()),
-                            local_idx,
+                            op: KernelOp::RegisteredNative(local_idx),
                             args: native_args,
                         });
                         // Apply type argument to dest register if provided
@@ -5635,16 +5655,21 @@ impl<'a> Lowerer<'a> {
                     });
                     zero_reg
                 };
-                self.emit(IrInstr::NewChannel {
-                    dest: dest.clone(),
-                    capacity,
+                self.emit(IrInstr::KernelCall {
+                    dest: Some(dest.clone()),
+                    op: KernelOp::HostHandle(crate::semantics::HostHandleOpKind::ChannelConstructor),
+                    args: vec![capacity],
                 });
                 return dest;
             }
 
             // Handle __OPCODE_MUTEX_NEW intrinsic: creates a new mutex handle
             if name == "__OPCODE_MUTEX_NEW" {
-                self.emit(IrInstr::NewMutex { dest: dest.clone() });
+                self.emit(IrInstr::KernelCall {
+                    dest: Some(dest.clone()),
+                    op: KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexConstructor),
+                    args: vec![],
+                });
                 return dest;
             }
 
@@ -5670,7 +5695,11 @@ impl<'a> Lowerer<'a> {
             if name == "__OPCODE_TASK_CANCEL" {
                 if let Some(arg) = call.argument_expression(0) {
                     let task = self.lower_expr(arg);
-                    self.emit(IrInstr::TaskCancel { task });
+                    self.emit(IrInstr::KernelCall {
+                        dest: None,
+                        op: KernelOp::HostHandle(crate::semantics::HostHandleOpKind::TaskCancel),
+                        args: vec![task],
+                    });
                 }
                 return dest;
             }

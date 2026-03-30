@@ -370,7 +370,7 @@ mod tests {
         _frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
     ) -> u64 {
-        ((*ctx).helpers.native_call)(ctx, u16::MAX, std::ptr::null(), 0)
+        ((*ctx).helpers.native_call)(ctx, 0x7FFF, std::ptr::null(), 0)
     }
 
     #[test]

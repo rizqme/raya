@@ -83,8 +83,7 @@ impl DeadCodeEliminator {
                 }
             }
             IrInstr::NativeCall { args, .. }
-            | IrInstr::BuiltinKernelCall { args, .. }
-            | IrInstr::ModuleNativeCall { args, .. } => {
+            | IrInstr::KernelCall { args, .. } => {
                 for arg in args {
                     used.insert(arg.id);
                 }
@@ -277,21 +276,11 @@ impl DeadCodeEliminator {
             IrInstr::Debugger => {
                 // No register uses
             }
-            IrInstr::NewMutex { .. } => {
-                // Creates a mutex, dest is handled by dest() method
-            }
-            IrInstr::NewChannel { capacity, .. } => {
-                // Uses capacity register
-                used.insert(capacity.id);
-            }
             IrInstr::MutexLock { mutex } => {
                 used.insert(mutex.id);
             }
             IrInstr::MutexUnlock { mutex } => {
                 used.insert(mutex.id);
-            }
-            IrInstr::TaskCancel { task } => {
-                used.insert(task.id);
             }
             IrInstr::SetupTry { .. } | IrInstr::EndTry | IrInstr::PopToLocal { .. } => {
                 // No register uses

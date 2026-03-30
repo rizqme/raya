@@ -400,11 +400,9 @@ pub enum Opcode {
     /// Call native function by ID (operand: u16 nativeId, u8 argCount)
     /// Stack: [args...] -> [result]
     NativeCall = 0xFD,
-    /// Call module-local native function (operand: u16 localIdx, u8 argCount)
-    /// The localIdx indexes into the module's native_functions table,
-    /// which is resolved to a handler at load time.
+    /// Call a backend kernel operation (operand: u16 kernelOpId, u8 argCount)
     /// Stack: [args...] -> [result]
-    ModuleNativeCall = 0xFE,
+    KernelCall = 0xFE,
 }
 
 impl Opcode {
@@ -605,7 +603,7 @@ impl Opcode {
             0xFB => Some(Self::Rethrow),
             0xFC => Some(Self::Trap),
             0xFD => Some(Self::NativeCall),
-            0xFE => Some(Self::ModuleNativeCall),
+            0xFE => Some(Self::KernelCall),
 
             // Invalid opcodes
             _ => None,
@@ -774,7 +772,7 @@ impl Opcode {
             Self::Rethrow => "RETHROW",
             Self::Trap => "TRAP",
             Self::NativeCall => "NATIVE_CALL",
-            Self::ModuleNativeCall => "MODULE_NATIVE_CALL",
+            Self::KernelCall => "KERNEL_CALL",
             Self::BindMethod => "BIND_METHOD",
         }
     }
@@ -879,7 +877,7 @@ mod tests {
         }
 
         let assigned_opcodes = [
-            Opcode::ModuleNativeCall,
+            Opcode::KernelCall,
             Opcode::LoadFieldShape,
             Opcode::StoreFieldShape,
             Opcode::NewChannel,
@@ -1115,7 +1113,7 @@ mod tests {
             Opcode::Rethrow,
             Opcode::Trap,
             Opcode::NativeCall,
-            Opcode::ModuleNativeCall,
+            Opcode::KernelCall,
             Opcode::Debugger,
         ];
 

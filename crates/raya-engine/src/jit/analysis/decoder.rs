@@ -50,6 +50,8 @@ pub enum Operands {
     },
     /// NativeCall: native_id (u16) + arg_count (u8)
     NativeCall { native_id: u16, arg_count: u8 },
+    /// KernelCall: kernel_op_id (u16) + arg_count (u8)
+    KernelCall { kernel_op_id: u16, arg_count: u8 },
     /// Nominal constructor on an existing object: nominal_type_id (u16) + arg_count (u8)
     ConstructType { nominal_type_id: u16, arg_count: u8 },
     /// MakeClosure: func_index (u32) + capture_count (u16)
@@ -369,12 +371,20 @@ fn decode_operands(
             })
         }
 
-        // u16 + u8 — NativeCall, ModuleNativeCall
-        Opcode::NativeCall | Opcode::ModuleNativeCall => {
+        // u16 + u8 — NativeCall, KernelCall
+        Opcode::NativeCall => {
             let native_id = read_u16(code, pos, offset)?;
             let arg_count = read_u8(code, pos, offset)?;
             Ok(Operands::NativeCall {
                 native_id,
+                arg_count,
+            })
+        }
+        Opcode::KernelCall => {
+            let kernel_op_id = read_u16(code, pos, offset)?;
+            let arg_count = read_u8(code, pos, offset)?;
+            Ok(Operands::KernelCall {
+                kernel_op_id,
                 arg_count,
             })
         }

@@ -2,7 +2,7 @@
 //!
 //! Defines the C-ABI interface between JIT-compiled code and the VM runtime.
 //! JIT code calls back into the runtime through function pointers in
-//! `RuntimeHelperTable` for GC, allocation, native calls, etc.
+//! `RuntimeHelperTable` for GC, allocation, kernel calls, etc.
 
 /// Entry point signature for JIT-compiled functions
 ///
@@ -121,8 +121,9 @@ pub struct RuntimeHelperTable {
     pub safepoint_poll: unsafe extern "C" fn(*const ()),
     /// Check if current task should be preempted: (current_task) -> should_yield
     pub check_preemption: unsafe extern "C" fn(*const ()) -> bool,
-    /// Dispatch a native call: (native_id, args_ptr, arg_count, shared_state) -> result
-    pub native_call_dispatch: unsafe extern "C" fn(u16, *const u64, u8, *mut ()) -> u64,
+    /// Dispatch a kernel call: (kernel_op_id, args_ptr, arg_count, module_ptr, shared_state) -> result/sentinel
+    pub kernel_call_dispatch:
+        unsafe extern "C" fn(u16, *const u64, u8, *const (), *mut ()) -> u64,
     /// Execute a call-family opcode through the interpreter runtime:
     /// (opcode, operand_u64, operand_u32, receiver, args_ptr, arg_count, module_ptr, shared_state) -> result/sentinel
     pub interpreter_call:

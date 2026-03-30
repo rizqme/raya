@@ -4,6 +4,7 @@
 //! - wire safepoint + preemption helpers used by lowered machine-code branches
 //! - provide conservative stubs for not-yet-lowered runtime helpers
 
+use crate::compiler::ir::{decode_kernel_op_id, KernelOp};
 use crate::compiler::{Module, Opcode};
 use crate::jit::runtime::trampoline::{RuntimeContext, RuntimeHelperTable};
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
@@ -203,7 +204,7 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
         alloc_string: helper_alloc_string,
         safepoint_poll: helper_safepoint_poll,
         check_preemption: helper_check_preemption,
-        native_call_dispatch: helper_native_call_dispatch,
+        kernel_call_dispatch: helper_kernel_call_dispatch,
         interpreter_call: helper_interpreter_call,
         throw_exception: helper_throw_exception,
         deoptimize: helper_deoptimize,
@@ -687,7 +688,7 @@ fn jit_function_is_sync_safe(
             | Opcode::MutexLock
             | Opcode::Yield
             | Opcode::NativeCall
-            | Opcode::ModuleNativeCall
+            | Opcode::KernelCall
             | Opcode::Spawn
             | Opcode::SpawnClosure
             | Opcode::TaskCancel => return false,
@@ -1139,12 +1140,27 @@ unsafe extern "C" fn helper_check_preemption(current_task: *const ()) -> bool {
     task.is_preempt_requested()
 }
 
-unsafe extern "C" fn helper_native_call_dispatch(
-    native_id: u16,
+unsafe extern "C" fn helper_kernel_call_dispatch(
+    kernel_op_id: u16,
     args_ptr: *const u64,
     arg_count: u8,
+    module_ptr: *const (),
     shared_state: *mut (),
 ) -> u64 {
+    let Some(kernel_op) = decode_kernel_op_id(kernel_op_id) else {
+        return Value::null().raw();
+    };
+
+    let value_args: Vec<Value> = if arg_count == 0 || args_ptr.is_null() {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(args_ptr, arg_count as usize)
+            .iter()
+            .copied()
+            .map(|raw| Value::from_raw(raw))
+            .collect()
+    };
+
     if !shared_state.is_null() {
         let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
         if !bridge.gc.is_null()
@@ -1167,34 +1183,100 @@ unsafe extern "C" fn helper_native_call_dispatch(
                 &*bridge.class_metadata,
             );
 
-            let value_args: Vec<Value> = if arg_count == 0 || args_ptr.is_null() {
-                Vec::new()
-            } else {
-                std::slice::from_raw_parts(args_ptr, arg_count as usize)
-                    .iter()
-                    .copied()
-                    .map(|raw| Value::from_raw(raw))
-                    .collect()
-            };
             let native_args: Vec<raya_sdk::NativeValue> =
                 value_args.iter().map(|v| value_to_native(*v)).collect();
 
-            let resolved = (&*bridge.resolved_natives).read();
-            match resolved.call(native_id, &ctx, &native_args) {
-                NativeCallResult::Value(v) => return native_to_value(v).raw(),
-                NativeCallResult::Suspend(io_request) => {
-                    if !bridge.io_submit_tx.is_null() {
-                        let tx = &*bridge.io_submit_tx;
-                        let _ = tx.send(IoSubmission {
-                            task_id,
-                            request: io_request,
-                        });
+            match kernel_op {
+                KernelOp::NativeCall(native_id) => {
+                    let resolved = (&*bridge.resolved_natives).read();
+                    match resolved.call(native_id, &ctx, &native_args) {
+                        NativeCallResult::Value(v) => return native_to_value(v).raw(),
+                        NativeCallResult::Suspend(io_request) => {
+                            if !bridge.io_submit_tx.is_null() {
+                                let tx = &*bridge.io_submit_tx;
+                                let _ = tx.send(IoSubmission {
+                                    task_id,
+                                    request: io_request,
+                                });
+                            }
+                            return JIT_NATIVE_SUSPEND_SENTINEL;
+                        }
+                        NativeCallResult::Unhandled | NativeCallResult::Error(_) => {}
                     }
-                    return JIT_NATIVE_SUSPEND_SENTINEL;
                 }
-                NativeCallResult::Unhandled | NativeCallResult::Error(_) => {}
+                KernelOp::RegisteredNative(local_idx) => {
+                    let resolved = if !module_ptr.is_null() && !bridge.module_layouts.is_null() {
+                        let module = &*(module_ptr.cast::<Module>());
+                        (&*bridge.module_layouts)
+                            .read()
+                            .get(&module.checksum)
+                            .map(|layout| layout.resolved_natives.clone())
+                            .unwrap_or_else(ResolvedNatives::empty)
+                    } else {
+                        (&*bridge.resolved_natives).read().clone()
+                    };
+                    match resolved.call(local_idx, &ctx, &native_args) {
+                        NativeCallResult::Value(v) => return native_to_value(v).raw(),
+                        NativeCallResult::Suspend(io_request) => {
+                            if !bridge.io_submit_tx.is_null() {
+                                let tx = &*bridge.io_submit_tx;
+                                let _ = tx.send(IoSubmission {
+                                    task_id,
+                                    request: io_request,
+                                });
+                            }
+                            return JIT_NATIVE_SUSPEND_SENTINEL;
+                        }
+                        NativeCallResult::Unhandled | NativeCallResult::Error(_) => {}
+                    }
+                }
+                _ => {}
             }
         }
+
+        let Some(module) = (!module_ptr.is_null()).then(|| &*(module_ptr.cast::<Module>())) else {
+            return JIT_INTERPRETER_FALLBACK_SENTINEL;
+        };
+        let Some(task) = (!bridge.task_arc.is_null()).then(|| &*bridge.task_arc) else {
+            return JIT_INTERPRETER_FALLBACK_SENTINEL;
+        };
+        let Some(mut interpreter) = jit_build_interpreter(bridge) else {
+            return JIT_INTERPRETER_FALLBACK_SENTINEL;
+        };
+
+        let mut stack = Stack::new();
+        for arg in &value_args {
+            if stack.push(*arg).is_err() {
+                return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+            }
+        }
+        let code = [
+            (kernel_op_id & 0x00FF) as u8,
+            ((kernel_op_id >> 8) & 0x00FF) as u8,
+            arg_count,
+        ];
+        let mut ip = 0usize;
+        return match interpreter.exec_native_ops(
+            &mut stack,
+            &mut ip,
+            &code,
+            module,
+            task,
+            Opcode::KernelCall,
+        ) {
+            crate::vm::interpreter::OpcodeResult::Continue => {
+                stack.pop().unwrap_or_else(|_| Value::null()).raw()
+            }
+            crate::vm::interpreter::OpcodeResult::Return(value) => value.raw(),
+            crate::vm::interpreter::OpcodeResult::Suspend(_) => JIT_NATIVE_SUSPEND_SENTINEL,
+            crate::vm::interpreter::OpcodeResult::Error(error) => {
+                jit_raise_vm_error(bridge, error);
+                JIT_INTERPRETER_EXCEPTION_SENTINEL
+            }
+            crate::vm::interpreter::OpcodeResult::PushFrame { .. } => {
+                JIT_INTERPRETER_FALLBACK_SENTINEL
+            }
+        };
     }
     Value::null().raw()
 }
@@ -1737,10 +1819,11 @@ mod tests {
         );
 
         let raw = unsafe {
-            helper_native_call_dispatch(
-                0,
+            helper_kernel_call_dispatch(
+                crate::compiler::ir::encode_kernel_op_id(KernelOp::NativeCall(0)),
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
                 (&bridge as *const JitRuntimeBridgeContext) as *mut (),
             )
         };
@@ -1811,10 +1894,11 @@ mod tests {
         );
 
         let raw = unsafe {
-            helper_native_call_dispatch(
-                0,
+            helper_kernel_call_dispatch(
+                crate::compiler::ir::encode_kernel_op_id(KernelOp::NativeCall(0)),
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
                 (&bridge as *const JitRuntimeBridgeContext) as *mut (),
             )
         };

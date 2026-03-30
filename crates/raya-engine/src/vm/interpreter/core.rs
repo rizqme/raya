@@ -3260,7 +3260,7 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             // Native Calls (needs MutexGuard for suspend/resume)
             // =========================================================
-            Opcode::NativeCall | Opcode::ModuleNativeCall => {
+            Opcode::NativeCall | Opcode::KernelCall => {
                 self.exec_native_ops(stack, ip, code, module, task, opcode)
             }
 
@@ -3527,7 +3527,7 @@ impl<'a> Interpreter<'a> {
 
     /// Conservative check for direct resume into a native-call suspension point.
     ///
-    /// Safe only for zero-arg NativeCall/ModuleNativeCall and when the
+    /// Safe only for zero-arg NativeCall/KernelCall and when the
     /// bytecode prefix guarantees an empty operand stack at resume point.
     #[cfg(feature = "jit")]
     fn native_resume_boundary_arg_count(
@@ -3540,7 +3540,7 @@ impl<'a> Interpreter<'a> {
             return None;
         }
         let op = code[offset];
-        if op != Opcode::NativeCall as u8 && op != Opcode::ModuleNativeCall as u8 {
+        if op != Opcode::NativeCall as u8 && op != Opcode::KernelCall as u8 {
             return None;
         }
         // Encoding: opcode (1) + native_id (2) + arg_count (1)

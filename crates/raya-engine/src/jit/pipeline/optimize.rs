@@ -621,7 +621,7 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
                 used.insert(*arg);
             }
         }
-        JitInstr::CallNative { args, .. } => {
+        JitInstr::CallKernel { args, .. } => {
             for arg in args {
                 used.insert(*arg);
             }

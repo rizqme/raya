@@ -68,12 +68,137 @@ impl std::fmt::Display for TypeAliasId {
 
 /// Compact builtin/metaobject execution surface selected from semantic dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BuiltinKernelOp {
+pub enum KernelOp {
     NativeCall(u16),
     PropertyOpcode(crate::compiler::type_registry::OpcodeKind),
     Metaobject(crate::semantics::MetaobjectOpKind),
     Iterator(crate::semantics::IteratorOpKind),
     HostHandle(crate::semantics::HostHandleOpKind),
+    RegisteredNative(u16),
+}
+
+pub type KernelOpId = u16;
+pub type RegisteredKernelNativeId = u16;
+
+const KERNEL_REGISTERED_NATIVE_BASE: KernelOpId = 0x8000;
+const KERNEL_PROPERTY_BASE: KernelOpId = 0xF100;
+const KERNEL_METAOBJECT_BASE: KernelOpId = 0xF200;
+const KERNEL_ITERATOR_BASE: KernelOpId = 0xF300;
+const KERNEL_HOST_HANDLE_BASE: KernelOpId = 0xF400;
+
+pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
+    match op {
+        KernelOp::NativeCall(native_id) => {
+            debug_assert!(native_id < KERNEL_REGISTERED_NATIVE_BASE);
+            native_id
+        }
+        KernelOp::RegisteredNative(local_idx) => {
+            debug_assert!(local_idx < (KERNEL_PROPERTY_BASE - KERNEL_REGISTERED_NATIVE_BASE));
+            KERNEL_REGISTERED_NATIVE_BASE + local_idx
+        }
+        KernelOp::PropertyOpcode(kind) => match kind {
+            crate::compiler::type_registry::OpcodeKind::StringLen => KERNEL_PROPERTY_BASE,
+            crate::compiler::type_registry::OpcodeKind::ArrayLen => KERNEL_PROPERTY_BASE + 1,
+        },
+        KernelOp::Metaobject(kind) => {
+            KERNEL_METAOBJECT_BASE
+                + match kind {
+                    crate::semantics::MetaobjectOpKind::DefineProperty => 0,
+                    crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor => 1,
+                    crate::semantics::MetaobjectOpKind::DefineProperties => 2,
+                    crate::semantics::MetaobjectOpKind::DeleteProperty => 3,
+                    crate::semantics::MetaobjectOpKind::GetPrototypeOf => 4,
+                    crate::semantics::MetaobjectOpKind::SetPrototypeOf => 5,
+                    crate::semantics::MetaobjectOpKind::PreventExtensions => 6,
+                    crate::semantics::MetaobjectOpKind::IsExtensible => 7,
+                    crate::semantics::MetaobjectOpKind::ReflectGet => 8,
+                    crate::semantics::MetaobjectOpKind::ReflectSet => 9,
+                    crate::semantics::MetaobjectOpKind::ReflectHas => 10,
+                    crate::semantics::MetaobjectOpKind::ReflectOwnKeys => 11,
+                    crate::semantics::MetaobjectOpKind::ReflectConstruct => 12,
+                }
+        }
+        KernelOp::Iterator(kind) => {
+            KERNEL_ITERATOR_BASE
+                + match kind {
+                    crate::semantics::IteratorOpKind::GetIterator => 0,
+                    crate::semantics::IteratorOpKind::Step => 1,
+                    crate::semantics::IteratorOpKind::Value => 2,
+                    crate::semantics::IteratorOpKind::Close => 3,
+                    crate::semantics::IteratorOpKind::CloseOnThrow => 4,
+                    crate::semantics::IteratorOpKind::CloseCompletion => 5,
+                    crate::semantics::IteratorOpKind::AppendToArray => 6,
+                }
+        }
+        KernelOp::HostHandle(kind) => {
+            KERNEL_HOST_HANDLE_BASE
+                + match kind {
+                    crate::semantics::HostHandleOpKind::ChannelConstructor => 0,
+                    crate::semantics::HostHandleOpKind::MutexConstructor => 1,
+                    crate::semantics::HostHandleOpKind::MutexLock => 2,
+                    crate::semantics::HostHandleOpKind::MutexUnlock => 3,
+                    crate::semantics::HostHandleOpKind::TaskCancel => 4,
+                    crate::semantics::HostHandleOpKind::TaskIsDone => 5,
+                    crate::semantics::HostHandleOpKind::TaskIsCancelled => 6,
+                }
+        }
+    }
+}
+
+pub fn decode_kernel_op_id(id: KernelOpId) -> Option<KernelOp> {
+    if id >= KERNEL_HOST_HANDLE_BASE {
+        return Some(KernelOp::HostHandle(match id - KERNEL_HOST_HANDLE_BASE {
+            0 => crate::semantics::HostHandleOpKind::ChannelConstructor,
+            1 => crate::semantics::HostHandleOpKind::MutexConstructor,
+            2 => crate::semantics::HostHandleOpKind::MutexLock,
+            3 => crate::semantics::HostHandleOpKind::MutexUnlock,
+            4 => crate::semantics::HostHandleOpKind::TaskCancel,
+            5 => crate::semantics::HostHandleOpKind::TaskIsDone,
+            6 => crate::semantics::HostHandleOpKind::TaskIsCancelled,
+            _ => return None,
+        }));
+    }
+    if id >= KERNEL_ITERATOR_BASE {
+        return Some(KernelOp::Iterator(match id - KERNEL_ITERATOR_BASE {
+            0 => crate::semantics::IteratorOpKind::GetIterator,
+            1 => crate::semantics::IteratorOpKind::Step,
+            2 => crate::semantics::IteratorOpKind::Value,
+            3 => crate::semantics::IteratorOpKind::Close,
+            4 => crate::semantics::IteratorOpKind::CloseOnThrow,
+            5 => crate::semantics::IteratorOpKind::CloseCompletion,
+            6 => crate::semantics::IteratorOpKind::AppendToArray,
+            _ => return None,
+        }));
+    }
+    if id >= KERNEL_METAOBJECT_BASE {
+        return Some(KernelOp::Metaobject(match id - KERNEL_METAOBJECT_BASE {
+            0 => crate::semantics::MetaobjectOpKind::DefineProperty,
+            1 => crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor,
+            2 => crate::semantics::MetaobjectOpKind::DefineProperties,
+            3 => crate::semantics::MetaobjectOpKind::DeleteProperty,
+            4 => crate::semantics::MetaobjectOpKind::GetPrototypeOf,
+            5 => crate::semantics::MetaobjectOpKind::SetPrototypeOf,
+            6 => crate::semantics::MetaobjectOpKind::PreventExtensions,
+            7 => crate::semantics::MetaobjectOpKind::IsExtensible,
+            8 => crate::semantics::MetaobjectOpKind::ReflectGet,
+            9 => crate::semantics::MetaobjectOpKind::ReflectSet,
+            10 => crate::semantics::MetaobjectOpKind::ReflectHas,
+            11 => crate::semantics::MetaobjectOpKind::ReflectOwnKeys,
+            12 => crate::semantics::MetaobjectOpKind::ReflectConstruct,
+            _ => return None,
+        }));
+    }
+    if id >= KERNEL_PROPERTY_BASE {
+        return Some(KernelOp::PropertyOpcode(match id - KERNEL_PROPERTY_BASE {
+            0 => crate::compiler::type_registry::OpcodeKind::StringLen,
+            1 => crate::compiler::type_registry::OpcodeKind::ArrayLen,
+            _ => return None,
+        }));
+    }
+    if id >= KERNEL_REGISTERED_NATIVE_BASE {
+        return Some(KernelOp::RegisteredNative(id - KERNEL_REGISTERED_NATIVE_BASE));
+    }
+    Some(KernelOp::NativeCall(id))
 }
 
 /// IR instruction (Three-Address Code)
@@ -148,17 +273,9 @@ pub enum IrInstr {
     },
 
     /// Builtin/metaobject/iterator/host-handle dispatch selected by the semantic planner.
-    BuiltinKernelCall {
+    KernelCall {
         dest: Option<Register>,
-        op: BuiltinKernelOp,
-        args: Vec<Register>,
-    },
-
-    /// Module-local native function call: dest = module_native_call(local_idx, args)
-    /// Used for stdlib native calls resolved via NativeFunctionRegistry at load time.
-    ModuleNativeCall {
-        dest: Option<Register>,
-        local_idx: u16,
+        op: KernelOp,
         args: Vec<Register>,
     },
 
@@ -474,23 +591,12 @@ pub enum IrInstr {
     /// Debugger breakpoint — pause if debugger is attached, no-op otherwise
     Debugger,
 
-    /// Create a new mutex
-    /// Returns a mutex reference
-    NewMutex { dest: Register },
-
     /// Acquire mutex lock (blocking)
     /// Suspends current task until lock is acquired
     MutexLock { mutex: Register },
 
     /// Release mutex lock
     MutexUnlock { mutex: Register },
-
-    /// Create a new channel with given capacity
-    /// capacity = 0 means unbuffered (synchronous)
-    NewChannel { dest: Register, capacity: Register },
-
-    /// Cancel a task
-    TaskCancel { task: Register },
 
     /// Set up exception handler for try block
     /// catch_block: BasicBlockId to jump to on exception (receives exception value)
@@ -539,8 +645,6 @@ impl IrInstr {
             | IrInstr::SpawnClosure { dest, .. }
             | IrInstr::Await { dest, .. }
             | IrInstr::AwaitAll { dest, .. }
-            | IrInstr::NewMutex { dest, .. }
-            | IrInstr::NewChannel { dest, .. }
             | IrInstr::IsNominal { dest, .. }
             | IrInstr::ImplementsShape { dest, .. }
             | IrInstr::CastNominal { dest, .. }
@@ -556,8 +660,7 @@ impl IrInstr {
             | IrInstr::CallMethodExact { dest, .. }
             | IrInstr::CallMethodShape { dest, .. }
             | IrInstr::NativeCall { dest, .. }
-            | IrInstr::BuiltinKernelCall { dest, .. }
-            | IrInstr::ModuleNativeCall { dest, .. }
+            | IrInstr::KernelCall { dest, .. }
             | IrInstr::CallClosure { dest, .. } => dest.as_ref(),
             IrInstr::StoreLocal { .. }
             | IrInstr::StoreGlobal { .. }
@@ -579,8 +682,7 @@ impl IrInstr {
             | IrInstr::GeneratorInitSuspend
             | IrInstr::Debugger
             | IrInstr::MutexLock { .. }
-            | IrInstr::MutexUnlock { .. }
-            | IrInstr::TaskCancel { .. } => None,
+            | IrInstr::MutexUnlock { .. } => None,
         }
     }
 
@@ -593,8 +695,7 @@ impl IrInstr {
                 | IrInstr::CallMethodExact { .. }
                 | IrInstr::CallMethodShape { .. }
                 | IrInstr::NativeCall { .. }
-                | IrInstr::BuiltinKernelCall { .. }
-                | IrInstr::ModuleNativeCall { .. }
+                | IrInstr::KernelCall { .. }
                 | IrInstr::CallClosure { .. }
                 | IrInstr::DynGetProp { .. }
                 | IrInstr::DynGetKeyed { .. }
@@ -629,11 +730,8 @@ impl IrInstr {
                 | IrInstr::GeneratorYield { .. }
                 | IrInstr::GeneratorInitSuspend
                 | IrInstr::Debugger
-                | IrInstr::NewMutex { .. }
-                | IrInstr::NewChannel { .. }
                 | IrInstr::MutexLock { .. }
                 | IrInstr::MutexUnlock { .. }
-                | IrInstr::TaskCancel { .. }
                 | IrInstr::ImplementsShape { .. }
                 | IrInstr::CastShape { .. }
                 | IrInstr::BindMethod { .. }

@@ -480,16 +480,16 @@ impl fmt::Display for JitInstr {
                 format_args_list(f, args)?;
                 write!(f, ")")
             }
-            JitInstr::CallNative {
+            JitInstr::CallKernel {
                 dest,
-                native_id,
+                kernel_op_id,
                 args,
                 ..
             } => {
                 if let Some(d) = dest {
                     write!(f, "{} = ", d)?;
                 }
-                write!(f, "call.native #{:#06x} (", native_id)?;
+                write!(f, "call.kernel #{:#06x} (", kernel_op_id)?;
                 format_args_list(f, args)?;
                 write!(f, ")")
             }
@@ -559,15 +559,12 @@ impl fmt::Display for JitInstr {
             JitInstr::Await { dest, task } => write!(f, "{} = await {}", dest, task),
             JitInstr::Yield => write!(f, "yield"),
             JitInstr::Sleep { duration } => write!(f, "sleep {}", duration),
-            JitInstr::NewMutex { dest } => write!(f, "{} = new.mutex", dest),
             JitInstr::MutexLock { mutex } => write!(f, "mutex.lock {}", mutex),
             JitInstr::MutexUnlock { mutex } => write!(f, "mutex.unlock {}", mutex),
-            JitInstr::NewChannel { dest } => write!(f, "{} = new.channel", dest),
             JitInstr::NewSemaphore { dest } => write!(f, "{} = new.semaphore", dest),
             JitInstr::SemAcquire { sem } => write!(f, "sem.acquire {}", sem),
             JitInstr::SemRelease { sem } => write!(f, "sem.release {}", sem),
             JitInstr::WaitAll { dest, tasks } => write!(f, "{} = wait.all {}", dest, tasks),
-            JitInstr::TaskCancel { task } => write!(f, "task.cancel {}", task),
             JitInstr::TaskThen {
                 task,
                 callback_index,

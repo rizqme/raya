@@ -4,6 +4,7 @@
 //! Instructions operate on virtual registers (Reg) and are grouped into basic
 //! blocks with explicit terminators.
 
+use crate::compiler::ir::KernelOpId;
 use super::types::JitType;
 use rustc_hash::FxHashMap;
 
@@ -562,9 +563,9 @@ pub enum JitInstr {
         stack: Vec<Reg>,
         bytecode_offset: u32,
     },
-    CallNative {
+    CallKernel {
         dest: Option<Reg>,
-        native_id: u16,
+        kernel_op_id: KernelOpId,
         args: Vec<Reg>,
         bytecode_offset: u32,
     },
@@ -632,17 +633,11 @@ pub enum JitInstr {
     Sleep {
         duration: Reg,
     },
-    NewMutex {
-        dest: Reg,
-    },
     MutexLock {
         mutex: Reg,
     },
     MutexUnlock {
         mutex: Reg,
-    },
-    NewChannel {
-        dest: Reg,
     },
     NewSemaphore {
         dest: Reg,
@@ -656,9 +651,6 @@ pub enum JitInstr {
     WaitAll {
         dest: Reg,
         tasks: Reg,
-    },
-    TaskCancel {
-        task: Reg,
     },
     TaskThen {
         task: Reg,
@@ -891,7 +883,7 @@ impl JitInstr {
             | JitInstr::CallMethodShape { dest, .. }
             | JitInstr::CallSuper { dest, .. }
             | JitInstr::CallStatic { dest, .. }
-            | JitInstr::CallNative { dest, .. }
+            | JitInstr::CallKernel { dest, .. }
             | JitInstr::CallClosure { dest, .. } => *dest,
             JitInstr::ConstructType { dest, .. } | JitInstr::CallConstructor { dest, .. } => {
                 Some(*dest)
@@ -907,8 +899,6 @@ impl JitInstr {
             JitInstr::Spawn { dest, .. }
             | JitInstr::SpawnClosure { dest, .. }
             | JitInstr::Await { dest, .. }
-            | JitInstr::NewMutex { dest }
-            | JitInstr::NewChannel { dest }
             | JitInstr::NewSemaphore { dest }
             | JitInstr::WaitAll { dest, .. } => Some(*dest),
 
@@ -951,7 +941,6 @@ impl JitInstr {
             | JitInstr::MutexUnlock { .. }
             | JitInstr::SemAcquire { .. }
             | JitInstr::SemRelease { .. }
-            | JitInstr::TaskCancel { .. }
             | JitInstr::TaskThen { .. }
             | JitInstr::GcSafepoint { .. }
             | JitInstr::CheckPreemption { .. }

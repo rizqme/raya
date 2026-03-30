@@ -152,18 +152,9 @@ impl TypeSubstitution {
                 native_id: *native_id,
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
             },
-            IrInstr::BuiltinKernelCall { dest, op, args } => IrInstr::BuiltinKernelCall {
+            IrInstr::KernelCall { dest, op, args } => IrInstr::KernelCall {
                 dest: dest.as_ref().map(|d| self.apply_register(d)),
                 op: *op,
-                args: args.iter().map(|a| self.apply_register(a)).collect(),
-            },
-            IrInstr::ModuleNativeCall {
-                dest,
-                local_idx,
-                args,
-            } => IrInstr::ModuleNativeCall {
-                dest: dest.as_ref().map(|d| self.apply_register(d)),
-                local_idx: *local_idx,
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
             },
             IrInstr::IsNominal {
@@ -506,21 +497,11 @@ impl TypeSubstitution {
                 value: self.apply_register(value),
             },
             IrInstr::Debugger => IrInstr::Debugger,
-            IrInstr::NewMutex { dest } => IrInstr::NewMutex {
-                dest: self.apply_register(dest),
-            },
-            IrInstr::NewChannel { dest, capacity } => IrInstr::NewChannel {
-                dest: self.apply_register(dest),
-                capacity: self.apply_register(capacity),
-            },
             IrInstr::MutexLock { mutex } => IrInstr::MutexLock {
                 mutex: self.apply_register(mutex),
             },
             IrInstr::MutexUnlock { mutex } => IrInstr::MutexUnlock {
                 mutex: self.apply_register(mutex),
-            },
-            IrInstr::TaskCancel { task } => IrInstr::TaskCancel {
-                task: self.apply_register(task),
             },
             IrInstr::ArrayPush { array, element } => IrInstr::ArrayPush {
                 array: self.apply_register(array),

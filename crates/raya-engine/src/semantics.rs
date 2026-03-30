@@ -697,6 +697,8 @@ pub enum IteratorOpKind {
 pub enum HostHandleOpKind {
     ChannelConstructor,
     MutexConstructor,
+    MutexLock,
+    MutexUnlock,
     TaskCancel,
     TaskIsDone,
     TaskIsCancelled,
@@ -2110,6 +2112,8 @@ impl<'a> SemanticHirBuilder<'a> {
     ) -> Option<HostHandleOpKind> {
         let type_name = receiver_type_id.and_then(|ty| self.type_name_for_type_id(ty))?;
         match (type_name.as_str(), member_name) {
+            (TypeContext::MUTEX_TYPE_NAME, "lock") => Some(HostHandleOpKind::MutexLock),
+            (TypeContext::MUTEX_TYPE_NAME, "unlock") => Some(HostHandleOpKind::MutexUnlock),
             (TypeContext::PROMISE_TYPE_NAME, "cancel") => Some(HostHandleOpKind::TaskCancel),
             (TypeContext::PROMISE_TYPE_NAME, "isDone") => Some(HostHandleOpKind::TaskIsDone),
             (TypeContext::PROMISE_TYPE_NAME, "isCancelled") => {

@@ -196,7 +196,7 @@ fn bytecode_function_is_sync_safe(
             | Opcode::MutexLock
             | Opcode::Yield
             | Opcode::NativeCall
-            | Opcode::ModuleNativeCall
+            | Opcode::KernelCall
             | Opcode::Spawn
             | Opcode::SpawnClosure
             | Opcode::TaskCancel
@@ -390,7 +390,7 @@ fn classify_suspension(instr: &JitInstr) -> Option<SuspensionKind> {
         JitInstr::Sleep { .. } => Some(SuspensionKind::Sleep),
 
         // May suspend - native call
-        JitInstr::CallNative { .. } => Some(SuspensionKind::NativeCall),
+        JitInstr::CallKernel { .. } => Some(SuspensionKind::NativeCall),
 
         // May suspend - AOT function call
         JitInstr::Call { .. } => Some(SuspensionKind::AotCall),
@@ -1105,17 +1105,17 @@ impl LiftedFunction {
                 helper: HelperCall::DynSetProp,
                 args: vec![object.0, index.0, value.0],
             }),
-            JitInstr::CallNative {
+            JitInstr::CallKernel {
                 dest,
-                native_id,
+                kernel_op_id,
                 args,
                 ..
             } => {
-                let mut call_args = vec![*native_id as u32];
+                let mut call_args = vec![*kernel_op_id as u32];
                 call_args.extend(args.iter().map(|reg| reg.0));
                 out.push(SmInstr::CallHelper {
                     dest: dest.as_ref().map(|reg| reg.0),
-                    helper: HelperCall::NativeCall,
+                    helper: HelperCall::KernelCall,
                     args: call_args,
                 });
             }
@@ -1410,7 +1410,7 @@ fn classify_sm_suspension(instr: &SmInstr) -> Option<SuspensionKind> {
     match instr {
         SmInstr::CallAot { .. } => Some(SuspensionKind::AotCall),
         SmInstr::CallHelper { helper, .. } => match helper {
-            HelperCall::NativeCall | HelperCall::ModuleNativeCall => {
+            HelperCall::NativeCall | HelperCall::KernelCall => {
                 Some(SuspensionKind::NativeCall)
             }
             HelperCall::AwaitTask | HelperCall::AwaitAll => Some(SuspensionKind::Await),

@@ -124,8 +124,7 @@ impl Inliner {
             | IrInstr::CallMethodExact { .. }
             | IrInstr::CallClosure { .. }
             | IrInstr::NativeCall { .. }
-            | IrInstr::BuiltinKernelCall { .. }
-            | IrInstr::ModuleNativeCall { .. }
+            | IrInstr::KernelCall { .. }
             | IrInstr::LoadLocal { .. }
             | IrInstr::LoadFieldExact { .. }
             | IrInstr::StoreFieldExact { .. }
@@ -150,15 +149,12 @@ impl Inliner {
             | IrInstr::CastArrayElemKind { .. }
             | IrInstr::CastKindMask { .. }
             | IrInstr::MakeClosure { .. }
-            | IrInstr::NewMutex { .. }
             | IrInstr::MutexLock { .. }
             | IrInstr::MutexUnlock { .. }
-            | IrInstr::NewChannel { .. }
             | IrInstr::Sleep { .. }
             | IrInstr::Yield
             | IrInstr::GeneratorInitSuspend
-            | IrInstr::GeneratorYield { .. }
-            | IrInstr::TaskCancel { .. } => true,
+            | IrInstr::GeneratorYield { .. } => true,
             // Any other instruction: not safe to inline (renamer doesn't handle it)
             _ => false,
         }
@@ -284,13 +280,7 @@ impl Inliner {
             }
             IrInstr::MutexLock { mutex } => f(mutex.id.as_u32()),
             IrInstr::MutexUnlock { mutex } => f(mutex.id.as_u32()),
-            IrInstr::NewMutex { dest } => f(dest.id.as_u32()),
-            IrInstr::NewChannel { dest, capacity } => {
-                f(dest.id.as_u32());
-                f(capacity.id.as_u32());
-            }
             IrInstr::Sleep { duration_ms } => f(duration_ms.id.as_u32()),
-            IrInstr::TaskCancel { task } => f(task.id.as_u32()),
             IrInstr::ArrayLen { dest, array } => {
                 f(dest.id.as_u32());
                 f(array.id.as_u32());
@@ -337,8 +327,7 @@ impl Inliner {
                 f(value.id.as_u32());
             }
             IrInstr::NativeCall { dest, args, .. }
-            | IrInstr::BuiltinKernelCall { dest, args, .. }
-            | IrInstr::ModuleNativeCall { dest, args, .. } => {
+            | IrInstr::KernelCall { dest, args, .. } => {
                 if let Some(d) = dest {
                     f(d.id.as_u32());
                 }
@@ -567,8 +556,8 @@ impl Inliner {
                     .map(|a| self.rename_register(a, reg_map))
                     .collect(),
             }),
-            IrInstr::BuiltinKernelCall { dest, op, args: native_args } => {
-                Some(IrInstr::BuiltinKernelCall {
+            IrInstr::KernelCall { dest, op, args: native_args } => {
+                Some(IrInstr::KernelCall {
                     dest: dest
                         .as_ref()
                         .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
@@ -579,32 +568,11 @@ impl Inliner {
                         .collect(),
                 })
             }
-            IrInstr::ModuleNativeCall {
-                dest,
-                local_idx,
-                args: native_args,
-            } => Some(IrInstr::ModuleNativeCall {
-                dest: dest
-                    .as_ref()
-                    .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
-                local_idx: *local_idx,
-                args: native_args
-                    .iter()
-                    .map(|a| self.rename_register(a, reg_map))
-                    .collect(),
-            }),
             IrInstr::MutexLock { mutex } => Some(IrInstr::MutexLock {
                 mutex: self.rename_register(mutex, reg_map),
             }),
             IrInstr::MutexUnlock { mutex } => Some(IrInstr::MutexUnlock {
                 mutex: self.rename_register(mutex, reg_map),
-            }),
-            IrInstr::NewMutex { dest } => Some(IrInstr::NewMutex {
-                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
-            }),
-            IrInstr::NewChannel { dest, capacity } => Some(IrInstr::NewChannel {
-                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
-                capacity: self.rename_register(capacity, reg_map),
             }),
             IrInstr::Sleep { duration_ms } => Some(IrInstr::Sleep {
                 duration_ms: self.rename_register(duration_ms, reg_map),
@@ -613,9 +581,6 @@ impl Inliner {
             IrInstr::GeneratorInitSuspend => Some(IrInstr::GeneratorInitSuspend),
             IrInstr::GeneratorYield { value } => Some(IrInstr::GeneratorYield {
                 value: self.rename_register(value, reg_map),
-            }),
-            IrInstr::TaskCancel { task } => Some(IrInstr::TaskCancel {
-                task: self.rename_register(task, reg_map),
             }),
             IrInstr::ArrayLen { dest, array } => Some(IrInstr::ArrayLen {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),

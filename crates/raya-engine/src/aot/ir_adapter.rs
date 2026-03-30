@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use crate::compiler::ir::block::Terminator;
 use crate::compiler::ir::function::IrFunction;
-use crate::compiler::ir::instr::{BinaryOp, BuiltinKernelOp, IrInstr, UnaryOp};
+use crate::compiler::ir::instr::{BinaryOp, KernelOp, IrInstr, UnaryOp};
 use crate::compiler::ir::module::{IrClass, IrModule};
 use crate::compiler::ir::value::{IrConstant, IrValue};
 use crate::parser::TypeId;
@@ -375,10 +375,7 @@ impl<'a> IrFunctionAdapter<'a> {
             | IrInstr::NativeCall {
                 dest: Some(dest), ..
             }
-            | IrInstr::BuiltinKernelCall {
-                dest: Some(dest), ..
-            }
-            | IrInstr::ModuleNativeCall {
+            | IrInstr::KernelCall {
                 dest: Some(dest), ..
             }
             | IrInstr::IsNominal { dest, .. }
@@ -401,8 +398,6 @@ impl<'a> IrFunctionAdapter<'a> {
             | IrInstr::Typeof { dest, .. }
             | IrInstr::MakeClosure { dest, .. }
             | IrInstr::NewRefCell { dest, .. }
-            | IrInstr::NewMutex { dest }
-            | IrInstr::NewChannel { dest, .. }
             | IrInstr::Spawn { dest, .. }
             | IrInstr::SpawnClosure { dest, .. }
             | IrInstr::Await { dest, .. }
@@ -416,8 +411,7 @@ impl<'a> IrFunctionAdapter<'a> {
             | IrInstr::CallMethodExact { dest: None, .. }
             | IrInstr::CallMethodShape { dest: None, .. }
             | IrInstr::NativeCall { dest: None, .. }
-            | IrInstr::BuiltinKernelCall { dest: None, .. }
-            | IrInstr::ModuleNativeCall { dest: None, .. }
+            | IrInstr::KernelCall { dest: None, .. }
             | IrInstr::StoreGlobal { .. }
             | IrInstr::StoreFieldExact { .. }
             | IrInstr::StoreFieldShape { .. }
@@ -428,8 +422,7 @@ impl<'a> IrFunctionAdapter<'a> {
             | IrInstr::PopToLocal { .. }
             | IrInstr::MutexUnlock { .. }
             | IrInstr::MutexLock { .. }
-            | IrInstr::Sleep { .. }
-            | IrInstr::TaskCancel { .. } => {}
+            | IrInstr::Sleep { .. } => {}
             IrInstr::LoadCaptured { dest, .. } => {
                 set_reg_layout(reg_state, dest, None);
             }
@@ -1118,165 +1111,12 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: call_args,
                 });
             }
-            IrInstr::BuiltinKernelCall { dest, op, args } => match op {
-                BuiltinKernelOp::NativeCall(native_id) => {
-                    let mut call_args = vec![*native_id as u32];
-                    call_args.extend(args.iter().map(Self::reg));
-                    out.push(SmInstr::CallHelper {
-                        dest: dest.as_ref().map(Self::reg),
-                        helper: HelperCall::NativeCall,
-                        args: call_args,
-                    });
-                }
-                BuiltinKernelOp::PropertyOpcode(kind) => {
-                    let helper = match kind {
-                        crate::compiler::type_registry::OpcodeKind::StringLen => {
-                            HelperCall::StringLen
-                        }
-                        crate::compiler::type_registry::OpcodeKind::ArrayLen => {
-                            HelperCall::ArrayLen
-                        }
-                    };
-                    out.push(SmInstr::CallHelper {
-                        dest: dest.as_ref().map(Self::reg),
-                        helper,
-                        args: args.iter().map(Self::reg).collect(),
-                    });
-                }
-                BuiltinKernelOp::Metaobject(kind) => {
-                    let native_id = match kind {
-                        crate::semantics::MetaobjectOpKind::DefineProperty => {
-                            crate::compiler::native_id::OBJECT_DEFINE_PROPERTY
-                        }
-                        crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor => {
-                            crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
-                        }
-                        crate::semantics::MetaobjectOpKind::DefineProperties => {
-                            crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES
-                        }
-                        crate::semantics::MetaobjectOpKind::DeleteProperty => {
-                            crate::compiler::native_id::OBJECT_DELETE_PROPERTY
-                        }
-                        crate::semantics::MetaobjectOpKind::GetPrototypeOf => {
-                            crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF
-                        }
-                        crate::semantics::MetaobjectOpKind::SetPrototypeOf => {
-                            crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF
-                        }
-                        crate::semantics::MetaobjectOpKind::PreventExtensions => {
-                            crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS
-                        }
-                        crate::semantics::MetaobjectOpKind::IsExtensible => {
-                            crate::compiler::native_id::OBJECT_IS_EXTENSIBLE
-                        }
-                        crate::semantics::MetaobjectOpKind::ReflectGet => {
-                            crate::compiler::native_id::REFLECT_GET
-                        }
-                        crate::semantics::MetaobjectOpKind::ReflectSet => {
-                            crate::compiler::native_id::REFLECT_SET
-                        }
-                        crate::semantics::MetaobjectOpKind::ReflectHas => {
-                            crate::compiler::native_id::REFLECT_HAS
-                        }
-                        crate::semantics::MetaobjectOpKind::ReflectOwnKeys => {
-                            crate::compiler::native_id::REFLECT_OWN_KEYS
-                        }
-                        crate::semantics::MetaobjectOpKind::ReflectConstruct => {
-                            crate::compiler::native_id::REFLECT_CONSTRUCT
-                        }
-                    };
-                    let mut call_args = vec![native_id as u32];
-                    call_args.extend(args.iter().map(Self::reg));
-                    out.push(SmInstr::CallHelper {
-                        dest: dest.as_ref().map(Self::reg),
-                        helper: HelperCall::NativeCall,
-                        args: call_args,
-                    });
-                }
-                BuiltinKernelOp::Iterator(kind) => {
-                    let native_id = match kind {
-                        crate::semantics::IteratorOpKind::GetIterator => {
-                            crate::compiler::native_id::OBJECT_ITERATOR_GET
-                        }
-                        crate::semantics::IteratorOpKind::Step => {
-                            crate::compiler::native_id::OBJECT_ITERATOR_STEP
-                        }
-                        crate::semantics::IteratorOpKind::Value => {
-                            crate::compiler::native_id::OBJECT_ITERATOR_VALUE
-                        }
-                        crate::semantics::IteratorOpKind::Close => {
-                            crate::compiler::native_id::OBJECT_ITERATOR_CLOSE
-                        }
-                        crate::semantics::IteratorOpKind::CloseOnThrow => {
-                            crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_ON_THROW
-                        }
-                        crate::semantics::IteratorOpKind::CloseCompletion => {
-                            crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_COMPLETION
-                        }
-                        crate::semantics::IteratorOpKind::AppendToArray => {
-                            crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY
-                        }
-                    };
-                    let mut call_args = vec![native_id as u32];
-                    call_args.extend(args.iter().map(Self::reg));
-                    out.push(SmInstr::CallHelper {
-                        dest: dest.as_ref().map(Self::reg),
-                        helper: HelperCall::NativeCall,
-                        args: call_args,
-                    });
-                }
-                BuiltinKernelOp::HostHandle(kind) => match kind {
-                    crate::semantics::HostHandleOpKind::ChannelConstructor => {
-                        out.push(SmInstr::CallHelper {
-                            dest: dest.as_ref().map(Self::reg),
-                            helper: HelperCall::NewChannel,
-                            args: args.iter().map(Self::reg).collect(),
-                        });
-                    }
-                    crate::semantics::HostHandleOpKind::MutexConstructor => {
-                        out.push(SmInstr::CallHelper {
-                            dest: dest.as_ref().map(Self::reg),
-                            helper: HelperCall::NewMutex,
-                            args: vec![],
-                        });
-                    }
-                    crate::semantics::HostHandleOpKind::TaskCancel => {
-                        out.push(SmInstr::CallHelper {
-                            dest: None,
-                            helper: HelperCall::TaskCancel,
-                            args: args.iter().map(Self::reg).collect(),
-                        });
-                    }
-                    crate::semantics::HostHandleOpKind::TaskIsDone => {
-                        let mut call_args = vec![0x0500u32];
-                        call_args.extend(args.iter().map(Self::reg));
-                        out.push(SmInstr::CallHelper {
-                            dest: dest.as_ref().map(Self::reg),
-                            helper: HelperCall::NativeCall,
-                            args: call_args,
-                        });
-                    }
-                    crate::semantics::HostHandleOpKind::TaskIsCancelled => {
-                        let mut call_args = vec![0x0501u32];
-                        call_args.extend(args.iter().map(Self::reg));
-                        out.push(SmInstr::CallHelper {
-                            dest: dest.as_ref().map(Self::reg),
-                            helper: HelperCall::NativeCall,
-                            args: call_args,
-                        });
-                    }
-                },
-            },
-            IrInstr::ModuleNativeCall {
-                dest,
-                local_idx,
-                args,
-            } => {
-                let mut call_args = vec![*local_idx as u32];
+            IrInstr::KernelCall { dest, op, args } => {
+                let mut call_args = vec![crate::compiler::ir::encode_kernel_op_id(*op) as u32];
                 call_args.extend(args.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
                     dest: dest.as_ref().map(Self::reg),
-                    helper: HelperCall::ModuleNativeCall,
+                    helper: HelperCall::KernelCall,
                     args: call_args,
                 });
             }
@@ -1556,13 +1396,6 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![Self::reg(value)],
                 });
             }
-            IrInstr::NewMutex { dest } => {
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::NewMutex,
-                    args: vec![],
-                });
-            }
             IrInstr::MutexLock { mutex } => {
                 out.push(SmInstr::CallHelper {
                     dest: None,
@@ -1577,21 +1410,6 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![Self::reg(mutex)],
                 });
             }
-            IrInstr::NewChannel { dest, capacity } => {
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::NewChannel,
-                    args: vec![Self::reg(capacity)],
-                });
-            }
-            IrInstr::TaskCancel { task } => {
-                out.push(SmInstr::CallHelper {
-                    dest: None,
-                    helper: HelperCall::TaskCancel,
-                    args: vec![Self::reg(task)],
-                });
-            }
-
             // === SSA ===
             IrInstr::Phi { dest, sources } => {
                 let sm_sources: Vec<(SmBlockId, u32)> = sources
@@ -1744,8 +1562,7 @@ impl<'a> IrFunctionAdapter<'a> {
             IrInstr::GeneratorYield { .. } => Some(SuspensionKind::Yield),
             IrInstr::Sleep { .. } => Some(SuspensionKind::Sleep),
             IrInstr::NativeCall { .. } => Some(SuspensionKind::NativeCall),
-            IrInstr::BuiltinKernelCall { .. } => Some(SuspensionKind::NativeCall),
-            IrInstr::ModuleNativeCall { .. } => Some(SuspensionKind::NativeCall),
+            IrInstr::KernelCall { .. } => Some(SuspensionKind::NativeCall),
             IrInstr::Call { .. } => Some(SuspensionKind::AotCall),
             IrInstr::CallMethodExact { .. } | IrInstr::CallMethodShape { .. } => {
                 Some(SuspensionKind::NativeCall)

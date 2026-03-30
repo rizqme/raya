@@ -40,8 +40,8 @@ pub struct LoweringContext<'a> {
     sig_safepoint_poll: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.check_preemption
     sig_check_preemption: Option<ir::SigRef>,
-    /// Imported signature for RuntimeHelperTable.native_call_dispatch
-    sig_native_call_dispatch: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.kernel_call_dispatch
+    sig_kernel_call_dispatch: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.alloc_object
     sig_alloc_object: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.alloc_string
@@ -165,7 +165,7 @@ impl<'a> LoweringContext<'a> {
             phi_copies,
             sig_safepoint_poll: None,
             sig_check_preemption: None,
-            sig_native_call_dispatch: None,
+            sig_kernel_call_dispatch: None,
             sig_alloc_object: None,
             sig_alloc_string: None,
             sig_object_get_field: None,
@@ -1844,54 +1844,85 @@ impl<'a> LoweringContext<'a> {
                 );
                 builder.switch_to_block(cont);
             }
-            JitInstr::CallNative {
-                native_id,
+            JitInstr::CallKernel {
+                kernel_op_id,
                 bytecode_offset,
                 args,
                 dest,
             } => {
                 if args.is_empty() {
-                    // Zero-arg fast path:
-                    // If runtime context is available, dispatch helper-native directly.
-                    // If helper reports suspend sentinel, hand off to interpreter boundary.
-                    // Otherwise continue with immediate native result.
+                    // Zero-arg fast path through the unified kernel dispatcher.
                     let ctx = self.params.ctx_ptr;
                     let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
-                    let fallback_suspend = builder.create_block();
+                    let fallback_exit = builder.create_block();
                     let do_dispatch = builder.create_block();
                     builder
                         .ins()
-                        .brif(is_ctx_null, fallback_suspend, &[], do_dispatch, &[]);
+                        .brif(is_ctx_null, fallback_exit, &[], do_dispatch, &[]);
                     builder.seal_block(do_dispatch);
                     builder.switch_to_block(do_dispatch);
 
                     let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                    let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
                     let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 64); // 24 + 40
-                    let sig = self.native_call_dispatch_sig(builder);
-                    let native_id_val = builder.ins().iconst(types::I16, *native_id as i64);
+                    let sig = self.kernel_call_dispatch_sig(builder);
+                    let kernel_op_id_val =
+                        builder.ins().iconst(types::I16, *kernel_op_id as i64);
                     let null_args_ptr = builder.ins().iconst(types::I64, 0);
                     let zero_arg_count = builder.ins().iconst(types::I8, 0);
                     let call = builder.ins().call_indirect(
                         sig,
                         fn_ptr,
-                        &[native_id_val, null_args_ptr, zero_arg_count, shared_state],
+                        &[
+                            kernel_op_id_val,
+                            null_args_ptr,
+                            zero_arg_count,
+                            module_ptr,
+                            shared_state,
+                        ],
                     );
                     let result = builder.inst_results(call)[0];
                     let suspend_sentinel = builder
                         .ins()
                         .iconst(types::I64, JIT_NATIVE_SUSPEND_SENTINEL as i64);
+                    let fallback_sentinel = builder
+                        .ins()
+                        .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
+                    let exception_sentinel = builder
+                        .ins()
+                        .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
                     let is_suspend =
                         builder
                             .ins()
                             .icmp(condcodes::IntCC::Equal, result, suspend_sentinel);
+                    let is_fallback = builder
+                        .ins()
+                        .icmp(condcodes::IntCC::Equal, result, fallback_sentinel);
+                    let is_exception = builder
+                        .ins()
+                        .icmp(condcodes::IntCC::Equal, result, exception_sentinel);
                     let suspend_exit = builder.create_block();
+                    let fallback_dispatch = builder.create_block();
+                    let exception_check = builder.create_block();
+                    let exception_exit = builder.create_block();
                     let fast_continue = builder.create_block();
                     builder
                         .ins()
-                        .brif(is_suspend, suspend_exit, &[], fast_continue, &[]);
+                        .brif(is_suspend, suspend_exit, &[], fallback_dispatch, &[]);
                     builder.seal_block(suspend_exit);
+                    builder.seal_block(fallback_dispatch);
+                    builder.switch_to_block(fallback_dispatch);
+                    builder
+                        .ins()
+                        .brif(is_fallback, fallback_exit, &[], exception_check, &[]);
+                    builder.seal_block(exception_check);
+                    builder.switch_to_block(exception_check);
+                    builder
+                        .ins()
+                        .brif(is_exception, exception_exit, &[], fast_continue, &[]);
+                    builder.seal_block(exception_exit);
                     builder.seal_block(fast_continue);
-                    builder.seal_block(fallback_suspend);
+                    builder.seal_block(fallback_exit);
 
                     builder.switch_to_block(suspend_exit);
                     let zero_count = builder.ins().iconst(types::I32, 0);
@@ -1908,20 +1939,11 @@ impl<'a> LoweringContext<'a> {
                         *bytecode_offset as i64,
                     );
 
-                    builder.switch_to_block(fallback_suspend);
-                    let zero_count = builder.ins().iconst(types::I32, 0);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        zero_count,
-                        self.params.exit_info_ptr,
-                        40,
-                    );
-                    self.emit_exit_return(
-                        builder,
-                        JitExitKind::Suspended as i64,
-                        JitSuspendReason::NativeCallBoundary as i64,
-                        *bytecode_offset as i64,
-                    );
+                    builder.switch_to_block(fallback_exit);
+                    self.emit_interpreter_boundary_exit(builder, &[], *bytecode_offset);
+
+                    builder.switch_to_block(exception_exit);
+                    self.emit_failed_exit(builder, &[], *bytecode_offset);
 
                     builder.switch_to_block(fast_continue);
                     if let Some(d) = dest {
@@ -1929,17 +1951,14 @@ impl<'a> LoweringContext<'a> {
                     }
                     return Ok(false);
                 } else {
-                    // Arg-carrying fast path:
-                    // If runtime context is available, marshal args and dispatch helper-native directly.
-                    // On sentinel suspend token (or missing ctx), fall back to boundary suspend and
-                    // materialize operands into exit_info for interpreter resume.
+                    // Arg-carrying fast path through the unified kernel dispatcher.
                     let ctx = self.params.ctx_ptr;
                     let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
-                    let fallback_suspend = builder.create_block();
+                    let fallback_exit = builder.create_block();
                     let do_dispatch = builder.create_block();
                     builder
                         .ins()
-                        .brif(is_ctx_null, fallback_suspend, &[], do_dispatch, &[]);
+                        .brif(is_ctx_null, fallback_exit, &[], do_dispatch, &[]);
                     builder.seal_block(do_dispatch);
                     builder.switch_to_block(do_dispatch);
 
@@ -1967,31 +1986,65 @@ impl<'a> LoweringContext<'a> {
                     }
 
                     let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                    let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
                     let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 64); // 24 + 40
-                    let sig = self.native_call_dispatch_sig(builder);
-                    let native_id_val = builder.ins().iconst(types::I16, *native_id as i64);
+                    let sig = self.kernel_call_dispatch_sig(builder);
+                    let kernel_op_id_val =
+                        builder.ins().iconst(types::I16, *kernel_op_id as i64);
                     let arg_count_i8 = builder.ins().iconst(types::I8, arg_count as i64);
                     let call = builder.ins().call_indirect(
                         sig,
                         fn_ptr,
-                        &[native_id_val, args_ptr, arg_count_i8, shared_state],
+                        &[
+                            kernel_op_id_val,
+                            args_ptr,
+                            arg_count_i8,
+                            module_ptr,
+                            shared_state,
+                        ],
                     );
                     let result = builder.inst_results(call)[0];
                     let suspend_sentinel = builder
                         .ins()
                         .iconst(types::I64, JIT_NATIVE_SUSPEND_SENTINEL as i64);
+                    let fallback_sentinel = builder
+                        .ins()
+                        .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
+                    let exception_sentinel = builder
+                        .ins()
+                        .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
                     let is_suspend =
                         builder
                             .ins()
                             .icmp(condcodes::IntCC::Equal, result, suspend_sentinel);
+                    let is_fallback = builder
+                        .ins()
+                        .icmp(condcodes::IntCC::Equal, result, fallback_sentinel);
+                    let is_exception = builder
+                        .ins()
+                        .icmp(condcodes::IntCC::Equal, result, exception_sentinel);
                     let suspend_exit = builder.create_block();
+                    let fallback_dispatch = builder.create_block();
+                    let exception_check = builder.create_block();
+                    let exception_exit = builder.create_block();
                     let fast_continue = builder.create_block();
                     builder
                         .ins()
-                        .brif(is_suspend, suspend_exit, &[], fast_continue, &[]);
+                        .brif(is_suspend, suspend_exit, &[], fallback_dispatch, &[]);
                     builder.seal_block(suspend_exit);
+                    builder.seal_block(fallback_dispatch);
+                    builder.switch_to_block(fallback_dispatch);
+                    builder
+                        .ins()
+                        .brif(is_fallback, fallback_exit, &[], exception_check, &[]);
+                    builder.seal_block(exception_check);
+                    builder.switch_to_block(exception_check);
+                    builder
+                        .ins()
+                        .brif(is_exception, exception_exit, &[], fast_continue, &[]);
+                    builder.seal_block(exception_exit);
                     builder.seal_block(fast_continue);
-                    builder.seal_block(fallback_suspend);
+                    builder.seal_block(fallback_exit);
 
                     builder.switch_to_block(suspend_exit);
                     let count = args.len().min(JIT_EXIT_MAX_NATIVE_ARGS) as i64;
@@ -2028,40 +2081,11 @@ impl<'a> LoweringContext<'a> {
                         *bytecode_offset as i64,
                     );
 
-                    builder.switch_to_block(fallback_suspend);
-                    let count = args.len().min(JIT_EXIT_MAX_NATIVE_ARGS) as i64;
-                    let count_val = builder.ins().iconst(types::I32, count);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        count_val,
-                        self.params.exit_info_ptr,
-                        40,
-                    );
-                    for (i, reg) in args.iter().take(JIT_EXIT_MAX_NATIVE_ARGS).enumerate() {
-                        let raw = self.use_reg(builder, *reg);
-                        let boxed = match self.func.reg_type(*reg) {
-                            crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
-                            crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
-                            crate::jit::ir::types::JitType::Bool => {
-                                abi::emit_box_bool(builder, raw)
-                            }
-                            crate::jit::ir::types::JitType::Ptr => abi::emit_box_ptr(builder, raw),
-                            _ => raw,
-                        };
-                        let off = 48 + (i as i32) * 8;
-                        builder.ins().store(
-                            MemFlags::trusted(),
-                            boxed,
-                            self.params.exit_info_ptr,
-                            off,
-                        );
-                    }
-                    self.emit_exit_return(
-                        builder,
-                        JitExitKind::Suspended as i64,
-                        JitSuspendReason::NativeCallBoundary as i64,
-                        *bytecode_offset as i64,
-                    );
+                    builder.switch_to_block(fallback_exit);
+                    self.emit_interpreter_boundary_exit(builder, args, *bytecode_offset);
+
+                    builder.switch_to_block(exception_exit);
+                    self.emit_failed_exit(builder, args, *bytecode_offset);
 
                     builder.switch_to_block(fast_continue);
                     if let Some(d) = dest {
@@ -2131,18 +2155,19 @@ impl<'a> LoweringContext<'a> {
         sig_ref
     }
 
-    fn native_call_dispatch_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
-        if let Some(sig) = self.sig_native_call_dispatch {
+    fn kernel_call_dispatch_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_kernel_call_dispatch {
             return sig;
         }
         let mut sig = ir::Signature::new(builder.func.signature.call_conv);
-        sig.params.push(AbiParam::new(types::I16)); // native_id
+        sig.params.push(AbiParam::new(types::I16)); // kernel_op_id
         sig.params.push(AbiParam::new(types::I64)); // args_ptr
         sig.params.push(AbiParam::new(types::I8)); // arg_count
+        sig.params.push(AbiParam::new(types::I64)); // module ptr
         sig.params.push(AbiParam::new(types::I64)); // shared_state
         sig.returns.push(AbiParam::new(types::I64)); // NaN-boxed value or suspend sentinel
         let sig_ref = builder.func.import_signature(sig);
-        self.sig_native_call_dispatch = Some(sig_ref);
+        self.sig_kernel_call_dispatch = Some(sig_ref);
         sig_ref
     }
 

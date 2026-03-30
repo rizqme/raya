@@ -342,6 +342,7 @@ pub enum HelperCall {
     LoadGlobalValue,
     StoreGlobalValue,
     NativeCall,
+    KernelCall,
     IsNativeSuspend,
     Spawn,
     CheckPreemption,
@@ -383,9 +384,6 @@ pub enum HelperCall {
     StoreFieldExact,
     StoreFieldShape,
 
-    // Native/module call dispatch
-    ModuleNativeCall,
-
     // Closures
     MakeClosure,
     LoadCaptured,
@@ -418,11 +416,8 @@ pub enum HelperCall {
     YieldTask,
     SleepTask,
     SpawnClosure,
-    NewMutex,
     MutexLock,
     MutexUnlock,
-    NewChannel,
-    TaskCancel,
 
     // Exception handling
     SetupTry,
@@ -443,7 +438,7 @@ impl HelperCall {
                 | HelperCall::SleepTask
                 | HelperCall::MutexLock
                 | HelperCall::NativeCall
-                | HelperCall::ModuleNativeCall
+                | HelperCall::KernelCall
         )
     }
 }
@@ -1182,11 +1177,8 @@ fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
         | HelperCall::YieldTask
         | HelperCall::SleepTask
         | HelperCall::SpawnClosure
-        | HelperCall::NewMutex
         | HelperCall::MutexLock
         | HelperCall::MutexUnlock
-        | HelperCall::NewChannel
-        | HelperCall::TaskCancel
         | HelperCall::SetupTry
         | HelperCall::EndTry
         | HelperCall::StringCompare => true,
@@ -1194,7 +1186,7 @@ fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
         HelperCall::ObjectSetField => arg_index == 0 || arg_index == 2,
         HelperCall::LoadGlobalValue => false,
         HelperCall::StoreGlobalValue => arg_index == 1,
-        HelperCall::NativeCall => arg_index > 0,
+        HelperCall::NativeCall | HelperCall::KernelCall => arg_index > 0,
         HelperCall::IsNativeSuspend => true,
         HelperCall::Spawn => arg_index > 0,
         HelperCall::CheckPreemption => false,
@@ -1211,7 +1203,6 @@ fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
         HelperCall::LoadFieldShape => arg_index == 0,
         HelperCall::StoreFieldExact => arg_index == 0 || arg_index == 2,
         HelperCall::StoreFieldShape => arg_index == 0 || arg_index == 4,
-        HelperCall::ModuleNativeCall => arg_index > 0,
         HelperCall::InstanceOf | HelperCall::Cast | HelperCall::Typeof => arg_index == 0,
         HelperCall::ImplementsShape | HelperCall::CastShape => arg_index == 0,
         HelperCall::ConstructType => arg_index != 1,

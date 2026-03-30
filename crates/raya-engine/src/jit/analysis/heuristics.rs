@@ -219,7 +219,7 @@ impl HeuristicsAnalyzer {
                 }
 
                 // === Penalties: calls ===
-                Opcode::NativeCall | Opcode::ModuleNativeCall => {
+                Opcode::NativeCall | Opcode::KernelCall => {
                     score += PENALTY_NATIVE_CALL;
                 }
                 Opcode::Call
@@ -381,7 +381,7 @@ pub fn function_supported_for_jit(func: &Function) -> bool {
                 | Opcode::JmpIfNull
                 | Opcode::JmpIfNotNull
                 | Opcode::NativeCall
-                | Opcode::ModuleNativeCall
+                | Opcode::KernelCall
                 | Opcode::NewType
                 | Opcode::IsNominal
                 | Opcode::CastNominal

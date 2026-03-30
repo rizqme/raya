@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 impl<'a> Interpreter<'a> {
-    fn cancel_task_and_await_chain(&self, root_task: Arc<Task>) {
+    pub(crate) fn cancel_task_and_await_chain(&self, root_task: Arc<Task>) {
         let mut pending = vec![root_task];
         let mut seen = HashSet::new();
 

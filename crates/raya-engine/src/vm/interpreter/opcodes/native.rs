@@ -1,7 +1,9 @@
-//! Native call opcode handlers: NativeCall, ModuleNativeCall
+//! Native call opcode handlers: NativeCall, KernelCall, ModuleNativeCall
 //!
 //! NativeCall dispatches to built-in operations (channel, buffer, map, set, date, regexp, etc.)
-//! and reflect/runtime methods. ModuleNativeCall dispatches through the resolved natives table.
+//! and reflect/runtime methods. KernelCall is the unified backend surface for dispatch-like
+//! builtin/metaobject/iterator/host-handle/module-native execution. ModuleNativeCall remains as
+//! a compatibility path for pre-kernel bytecode.
 
 use crate::compiler::native_id::{
     CHANNEL_CAPACITY, CHANNEL_CLOSE, CHANNEL_IS_CLOSED, CHANNEL_LENGTH, CHANNEL_NEW,
@@ -16506,7 +16508,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    pub(in crate::vm::interpreter) fn exec_native_ops(
+    pub(crate) fn exec_native_ops(
         &mut self,
         stack: &mut Stack,
         ip: &mut usize,
@@ -16516,6 +16518,301 @@ impl<'a> Interpreter<'a> {
         opcode: Opcode,
     ) -> OpcodeResult {
         match opcode {
+            Opcode::KernelCall => {
+                let kernel_op_id = match Self::read_u16(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let arg_count = match Self::read_u8(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let Some(kernel_op) = crate::compiler::ir::decode_kernel_op_id(kernel_op_id) else {
+                    return OpcodeResult::Error(VmError::RuntimeError(format!(
+                        "Unknown KernelCall op id {kernel_op_id:#06x}"
+                    )));
+                };
+
+                let mut dispatch_native = |this: &mut Self, native_id: u16| {
+                    let fake_code = [
+                        (native_id & 0x00FF) as u8,
+                        ((native_id >> 8) & 0x00FF) as u8,
+                        arg_count,
+                    ];
+                    let mut nested_ip = 0usize;
+                    this.exec_native_ops(
+                        stack,
+                        &mut nested_ip,
+                        &fake_code,
+                        module,
+                        task,
+                        Opcode::NativeCall,
+                    )
+                };
+
+                match kernel_op {
+                    crate::compiler::ir::KernelOp::NativeCall(native_id) => {
+                        dispatch_native(self, native_id)
+                    }
+                    crate::compiler::ir::KernelOp::RegisteredNative(local_idx) => {
+                        use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
+                        use raya_sdk::NativeCallResult;
+
+                        let mut args = Vec::with_capacity(arg_count as usize);
+                        for _ in 0..arg_count {
+                            match stack.pop() {
+                                Ok(v) => args.push(v),
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+                        args.reverse();
+
+                        let ctx = EngineContext::new(
+                            self.gc,
+                            self.classes,
+                            self.layouts,
+                            task.id(),
+                            self.class_metadata,
+                        );
+                        let native_args: Vec<raya_sdk::NativeValue> =
+                            args.iter().map(|v| value_to_native(*v)).collect();
+                        let resolved = self.module_resolved_natives(module);
+                        match resolved.call(local_idx, &ctx, &native_args) {
+                            NativeCallResult::Value(val) => {
+                                if let Err(e) = stack.push(native_to_value(val)) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                OpcodeResult::Continue
+                            }
+                            NativeCallResult::Suspend(io_request) => {
+                                use crate::vm::scheduler::{IoSubmission, SuspendReason};
+                                if let Some(tx) = self.io_submit_tx {
+                                    let _ = tx.send(IoSubmission {
+                                        task_id: task.id(),
+                                        request: io_request,
+                                    });
+                                }
+                                OpcodeResult::Suspend(SuspendReason::IoWait)
+                            }
+                            NativeCallResult::Unhandled => OpcodeResult::Error(
+                                VmError::RuntimeError(format!(
+                                    "Registered kernel native index {} unhandled",
+                                    local_idx
+                                )),
+                            ),
+                            NativeCallResult::Error(msg) => {
+                                OpcodeResult::Error(VmError::RuntimeError(msg))
+                            }
+                        }
+                    }
+                    crate::compiler::ir::KernelOp::PropertyOpcode(kind) => match kind {
+                        crate::compiler::type_registry::OpcodeKind::StringLen => {
+                            self.exec_string_ops(stack, Opcode::Slen)
+                        }
+                        crate::compiler::type_registry::OpcodeKind::ArrayLen => {
+                            let mut nested_ip = 0usize;
+                            self.exec_array_ops(stack, &mut nested_ip, &[], Opcode::ArrayLen)
+                        }
+                    },
+                    crate::compiler::ir::KernelOp::Metaobject(kind) => {
+                        let native_id = match kind {
+                            crate::semantics::MetaobjectOpKind::DefineProperty => {
+                                crate::compiler::native_id::OBJECT_DEFINE_PROPERTY
+                            }
+                            crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor => {
+                                crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
+                            }
+                            crate::semantics::MetaobjectOpKind::DefineProperties => {
+                                crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES
+                            }
+                            crate::semantics::MetaobjectOpKind::DeleteProperty => {
+                                crate::compiler::native_id::OBJECT_DELETE_PROPERTY
+                            }
+                            crate::semantics::MetaobjectOpKind::GetPrototypeOf => {
+                                crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF
+                            }
+                            crate::semantics::MetaobjectOpKind::SetPrototypeOf => {
+                                crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF
+                            }
+                            crate::semantics::MetaobjectOpKind::PreventExtensions => {
+                                crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS
+                            }
+                            crate::semantics::MetaobjectOpKind::IsExtensible => {
+                                crate::compiler::native_id::OBJECT_IS_EXTENSIBLE
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectGet => {
+                                crate::compiler::native_id::REFLECT_GET
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectSet => {
+                                crate::compiler::native_id::REFLECT_SET
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectHas => {
+                                crate::compiler::native_id::REFLECT_HAS
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectOwnKeys => {
+                                crate::compiler::native_id::REFLECT_OWN_KEYS
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectConstruct => {
+                                crate::compiler::native_id::REFLECT_CONSTRUCT
+                            }
+                        };
+                        dispatch_native(self, native_id)
+                    }
+                    crate::compiler::ir::KernelOp::Iterator(kind) => {
+                        let native_id = match kind {
+                            crate::semantics::IteratorOpKind::GetIterator => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_GET
+                            }
+                            crate::semantics::IteratorOpKind::Step => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_STEP
+                            }
+                            crate::semantics::IteratorOpKind::Value => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_VALUE
+                            }
+                            crate::semantics::IteratorOpKind::Close => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_CLOSE
+                            }
+                            crate::semantics::IteratorOpKind::CloseOnThrow => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_ON_THROW
+                            }
+                            crate::semantics::IteratorOpKind::CloseCompletion => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_COMPLETION
+                            }
+                            crate::semantics::IteratorOpKind::AppendToArray => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY
+                            }
+                        };
+                        dispatch_native(self, native_id)
+                    }
+                    crate::compiler::ir::KernelOp::HostHandle(kind) => match kind {
+                        crate::semantics::HostHandleOpKind::ChannelConstructor => {
+                            self.safepoint.poll();
+                            let capacity_val = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            let capacity = capacity_val.as_i32().unwrap_or(0) as usize;
+                            let channel = ChannelObject::new(capacity);
+                            let handle = self.allocate_pinned_handle(channel);
+                            if let Err(e) = stack.push(Value::u64(handle)) {
+                                return OpcodeResult::Error(e);
+                            }
+                            OpcodeResult::Continue
+                        }
+                        crate::semantics::HostHandleOpKind::MutexConstructor => {
+                            let (mutex_id, _) = self.mutex_registry.create_mutex();
+                            if let Err(e) = stack.push(Value::i64(mutex_id.as_u64() as i64)) {
+                                return OpcodeResult::Error(e);
+                            }
+                            OpcodeResult::Continue
+                        }
+                        crate::semantics::HostHandleOpKind::MutexLock => {
+                            let mutex_id_val = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            let mutex_id =
+                                MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
+                            let result = if let Some(mutex) =
+                                self.mutex_registry.get_mutex(mutex_id)
+                            {
+                                match mutex.try_lock() {
+                                    Some(_guard) => {
+                                        self.mutex_registry.set_guard(mutex_id, _guard);
+                                        OpcodeResult::Continue
+                                    }
+                                    None => OpcodeResult::Suspend(
+                                        crate::vm::scheduler::SuspendReason::MutexLock { mutex_id },
+                                    ),
+                                }
+                            } else {
+                                OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Mutex {:?} not found",
+                                    mutex_id
+                                )))
+                            };
+                            match result {
+                                OpcodeResult::Continue => {
+                                    stack
+                                        .push(Value::undefined())
+                                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                                }
+                                other => other,
+                            }
+                        }
+                        crate::semantics::HostHandleOpKind::MutexUnlock => {
+                            let mutex_id_val = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            let mutex_id =
+                                MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
+                            let result = if let Some(_mutex) =
+                                self.mutex_registry.get_mutex(mutex_id)
+                            {
+                                self.mutex_registry.clear_guard(mutex_id);
+                                let waiters = self.mutex_registry.wake_waiters(mutex_id);
+                                for waiter_task in waiters {
+                                    if let Some(reason) = waiter_task.suspend_reason() {
+                                        if matches!(
+                                            reason,
+                                            Some(crate::vm::scheduler::SuspendReason::MutexLockCall { .. })
+                                        ) {
+                                            waiter_task.set_resume_value(Value::undefined());
+                                        }
+                                    }
+                                    waiter_task.set_state(TaskState::Resumed);
+                                    waiter_task.clear_suspend_reason();
+                                    self.injector.push(waiter_task.clone());
+                                }
+                                OpcodeResult::Continue
+                            } else {
+                                OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Mutex {:?} not found",
+                                    mutex_id
+                                )))
+                            };
+                            match result {
+                                OpcodeResult::Continue => {
+                                    stack
+                                        .push(Value::undefined())
+                                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                                }
+                                other => other,
+                            }
+                        }
+                        crate::semantics::HostHandleOpKind::TaskCancel => {
+                            let task_id_val = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            let handle = match self.promise_handle_from_value(task_id_val) {
+                                Some(handle) => handle,
+                                None => {
+                                    return OpcodeResult::Error(VmError::TypeError(
+                                        "TaskCancel: expected task-backed promise handle"
+                                            .to_string(),
+                                    ));
+                                }
+                            };
+                            let target_id = handle.task_id();
+                            if let Some(target_task) = self.tasks.read().get(&target_id).cloned() {
+                                self.cancel_task_and_await_chain(target_task);
+                            }
+                            stack
+                                .push(Value::undefined())
+                                .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                        }
+                        crate::semantics::HostHandleOpKind::TaskIsDone => {
+                            dispatch_native(self, crate::compiler::native_id::TASK_IS_DONE)
+                        }
+                        crate::semantics::HostHandleOpKind::TaskIsCancelled => dispatch_native(
+                            self,
+                            crate::compiler::native_id::TASK_IS_CANCELLED,
+                        ),
+                    },
+                }
+            }
             Opcode::NativeCall => {
                 let native_id = match Self::read_u16(code, ip) {
                     Ok(v) => v,
@@ -22215,69 +22512,6 @@ impl<'a> Interpreter<'a> {
                     }
                 }
             }
-
-            Opcode::ModuleNativeCall => {
-                use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
-                use raya_sdk::NativeCallResult;
-
-                let local_idx = match Self::read_u16(code, ip) {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-                let arg_count = match Self::read_u8(code, ip) {
-                    Ok(v) => v as usize,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
-                // Pop arguments
-                let mut args = Vec::with_capacity(arg_count);
-                for _ in 0..arg_count {
-                    match stack.pop() {
-                        Ok(v) => args.push(v),
-                        Err(e) => return OpcodeResult::Error(e),
-                    }
-                }
-                args.reverse();
-
-                // Create EngineContext for handler
-                let ctx = EngineContext::new(
-                    self.gc,
-                    self.classes,
-                    self.layouts,
-                    task.id(),
-                    self.class_metadata,
-                );
-
-                // Convert arguments to NativeValue (zero-cost)
-                let native_args: Vec<raya_sdk::NativeValue> =
-                    args.iter().map(|v| value_to_native(*v)).collect();
-
-                // Dispatch via module-local resolved native table.
-                let resolved = self.module_resolved_natives(module);
-                match resolved.call(local_idx, &ctx, &native_args) {
-                    NativeCallResult::Value(val) => {
-                        if let Err(e) = stack.push(native_to_value(val)) {
-                            return OpcodeResult::Error(e);
-                        }
-                        OpcodeResult::Continue
-                    }
-                    NativeCallResult::Suspend(io_request) => {
-                        use crate::vm::scheduler::{IoSubmission, SuspendReason};
-                        if let Some(tx) = self.io_submit_tx {
-                            let _ = tx.send(IoSubmission {
-                                task_id: task.id(),
-                                request: io_request,
-                            });
-                        }
-                        OpcodeResult::Suspend(SuspendReason::IoWait)
-                    }
-                    NativeCallResult::Unhandled => OpcodeResult::Error(VmError::RuntimeError(
-                        format!("ModuleNativeCall index {} unhandled", local_idx),
-                    )),
-                    NativeCallResult::Error(msg) => OpcodeResult::Error(VmError::RuntimeError(msg)),
-                }
-            }
-
             _ => OpcodeResult::Error(VmError::RuntimeError(format!(
                 "Unexpected opcode in exec_native_ops: {:?}",
                 opcode

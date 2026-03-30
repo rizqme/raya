@@ -230,22 +230,25 @@ fn format_instr(instr: &IrInstr) -> String {
                 format!("native_call {}({})", native_name, args_str.join(", "))
             }
         }
-        IrInstr::BuiltinKernelCall { dest, op, args } => {
+        IrInstr::KernelCall { dest, op, args } => {
             let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
             let op_name = match op {
-                crate::compiler::ir::BuiltinKernelOp::NativeCall(native_id) => {
+                crate::compiler::ir::KernelOp::NativeCall(native_id) => {
                     format!("native:{}", crate::native_id::native_name(*native_id))
                 }
-                crate::compiler::ir::BuiltinKernelOp::PropertyOpcode(kind) => {
+                crate::compiler::ir::KernelOp::RegisteredNative(local_idx) => {
+                    format!("registered:[{}]", local_idx)
+                }
+                crate::compiler::ir::KernelOp::PropertyOpcode(kind) => {
                     format!("property:{kind:?}")
                 }
-                crate::compiler::ir::BuiltinKernelOp::Metaobject(kind) => {
+                crate::compiler::ir::KernelOp::Metaobject(kind) => {
                     format!("metaobject:{kind:?}")
                 }
-                crate::compiler::ir::BuiltinKernelOp::Iterator(kind) => {
+                crate::compiler::ir::KernelOp::Iterator(kind) => {
                     format!("iterator:{kind:?}")
                 }
-                crate::compiler::ir::BuiltinKernelOp::HostHandle(kind) => {
+                crate::compiler::ir::KernelOp::HostHandle(kind) => {
                     format!("host:{kind:?}")
                 }
             };
@@ -253,27 +256,6 @@ fn format_instr(instr: &IrInstr) -> String {
                 format!("{} = builtin_kernel {}({})", d, op_name, args_str.join(", "))
             } else {
                 format!("builtin_kernel {}({})", op_name, args_str.join(", "))
-            }
-        }
-        IrInstr::ModuleNativeCall {
-            dest,
-            local_idx,
-            args,
-        } => {
-            let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-            if let Some(d) = dest {
-                format!(
-                    "{} = module_native_call [{}]({})",
-                    d,
-                    local_idx,
-                    args_str.join(", ")
-                )
-            } else {
-                format!(
-                    "module_native_call [{}]({})",
-                    local_idx,
-                    args_str.join(", ")
-                )
             }
         }
         IrInstr::IsNominal {
@@ -607,20 +589,11 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::Yield => "yield".to_string(),
         IrInstr::GeneratorInitSuspend => "generator_init_suspend".to_string(),
         IrInstr::GeneratorYield { value } => format!("generator_yield {}", value),
-        IrInstr::NewMutex { dest } => {
-            format!("{} = new_mutex", dest)
-        }
-        IrInstr::NewChannel { dest, capacity } => {
-            format!("{} = new_channel({})", dest, capacity)
-        }
         IrInstr::MutexLock { mutex } => {
             format!("mutex_lock {}", mutex)
         }
         IrInstr::MutexUnlock { mutex } => {
             format!("mutex_unlock {}", mutex)
-        }
-        IrInstr::TaskCancel { task } => {
-            format!("task_cancel {}", task)
         }
         IrInstr::SetupTry {
             catch_block,

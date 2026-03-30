@@ -23,11 +23,15 @@ use super::abi;
 use super::frame::{
     AotEntryFn, AotFrame, AotHelperTable, AotTaskContext, SuspendReason, AOT_SUSPEND,
 };
+use crate::compiler::ir::{decode_kernel_op_id, KernelOp};
+use crate::compiler::Opcode;
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
+use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::SharedVmState;
 use crate::vm::json::view::{js_classify, JSView};
 use crate::vm::object::{Array, DynProp, Object, RayaString};
 use crate::vm::scheduler::{IoSubmission, Task};
+use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use parking_lot::RwLock;
 use raya_sdk::NativeCallResult;
@@ -119,8 +123,8 @@ pub fn clear_registered_aot_functions() {
 }
 
 /// Temporary marker native ID for exercising suspend handoff in default AOT helpers.
-/// Real runtime dispatch will replace this stub behavior.
-const STUB_NATIVE_SUSPEND_ID: u16 = u16::MAX;
+/// This must stay in the plain `KernelOp::NativeCall` encoding range.
+const STUB_NATIVE_SUSPEND_ID: u16 = 0x7FFF;
 const CAST_KIND_MASK_FLAG: u16 = 0x8000;
 const CAST_TUPLE_LEN_FLAG: u16 = 0x4000;
 const CAST_OBJECT_MIN_FIELDS_FLAG: u16 = 0x2000;
@@ -182,6 +186,44 @@ unsafe extern "C" fn helper_alloc_frame(
     }
 
     ptr
+}
+
+fn aot_build_interpreter<'a>(shared: &'a SharedVmState) -> Interpreter<'a> {
+    Interpreter::new(
+        &shared.gc,
+        &shared.classes,
+        &shared.layouts,
+        &shared.mutex_registry,
+        &shared.semaphore_registry,
+        shared.safepoint.as_ref(),
+        &shared.globals_by_index,
+        &shared.builtin_global_slots,
+        &shared.js_global_bindings,
+        &shared.js_global_binding_slots,
+        &shared.constant_string_cache,
+        &shared.ephemeral_gc_roots,
+        &shared.pinned_handles,
+        &shared.tasks,
+        &shared.injector,
+        &shared.promise_microtasks,
+        &shared.test262_async_state,
+        &shared.test262_async_failure,
+        &shared.metadata,
+        &shared.class_metadata,
+        &shared.native_handler,
+        &shared.module_layouts,
+        &shared.module_registry,
+        &shared.structural_shape_adapters,
+        &shared.structural_shape_names,
+        &shared.structural_layout_shapes,
+        &shared.type_handles,
+        &shared.class_value_slots,
+        &shared.prop_keys,
+        &shared.aot_profile,
+        None,
+        shared.max_preemptions,
+        &shared.stack_pool,
+    )
 }
 
 /// Free an AotFrame allocated by `helper_alloc_frame`.
@@ -1162,10 +1204,14 @@ unsafe extern "C" fn helper_object_set_field(obj: u64, field_index: u32, value: 
 
 unsafe extern "C" fn helper_native_call(
     ctx: *mut AotTaskContext,
-    native_id: u16,
+    kernel_op_id: u16,
     args_ptr: *const u64,
     argc: u8,
 ) -> u64 {
+    let Some(kernel_op) = decode_kernel_op_id(kernel_op_id) else {
+        return abi::NULL_VALUE;
+    };
+
     if !ctx.is_null() && !(*ctx).shared_state.is_null() {
         let shared = &*((*ctx).shared_state as *const SharedVmState);
 
@@ -1198,6 +1244,104 @@ unsafe extern "C" fn helper_native_call(
         };
         let native_args: Vec<raya_sdk::NativeValue> =
             value_args.iter().map(|v| value_to_native(*v)).collect();
+
+        if let KernelOp::RegisteredNative(local_idx) = kernel_op {
+            let resolved = if !(*ctx).module.is_null() {
+                let module = &*((*ctx).module as *const crate::compiler::Module);
+                shared
+                    .module_layouts
+                    .read()
+                    .get(&module.checksum)
+                    .map(|layout| layout.resolved_natives.clone())
+                    .unwrap_or_else(crate::vm::native_registry::ResolvedNatives::empty)
+            } else {
+                shared.resolved_natives.read().clone()
+            };
+            match resolved.call(local_idx, &engine_ctx, &native_args) {
+                NativeCallResult::Value(val) => return native_to_value(val).raw(),
+                NativeCallResult::Suspend(io_request) => {
+                    if let Some(tx) = shared.io_submit_tx.lock().as_ref() {
+                        let _ = tx.send(IoSubmission {
+                            task_id,
+                            request: io_request,
+                        });
+                    }
+                    (*ctx).suspend_reason = SuspendReason::IoWait;
+                    (*ctx).suspend_payload = 0;
+                    return AOT_SUSPEND;
+                }
+                NativeCallResult::Unhandled | NativeCallResult::Error(_) => return abi::NULL_VALUE,
+            }
+        }
+
+        if !matches!(kernel_op, KernelOp::NativeCall(_)) {
+            let Some(module) =
+                (!(*ctx).module.is_null()).then(|| &*((*ctx).module as *const crate::compiler::Module))
+            else {
+                return abi::NULL_VALUE;
+            };
+            let Some(current_task) =
+                (!(*ctx).current_task.is_null()).then(|| &*((*ctx).current_task as *const Task))
+            else {
+                return abi::NULL_VALUE;
+            };
+            let task_arc = shared.tasks.read().get(&current_task.id()).cloned();
+            let Some(task) = task_arc.as_ref() else {
+                return abi::NULL_VALUE;
+            };
+            let mut interpreter = aot_build_interpreter(shared);
+            let mut stack = Stack::new();
+            for arg in &value_args {
+                if stack.push(*arg).is_err() {
+                    return abi::NULL_VALUE;
+                }
+            }
+            let code = [
+                (kernel_op_id & 0x00FF) as u8,
+                ((kernel_op_id >> 8) & 0x00FF) as u8,
+                argc,
+            ];
+            let mut ip = 0usize;
+            return match interpreter.exec_native_ops(
+                &mut stack,
+                &mut ip,
+                &code,
+                module,
+                task,
+                Opcode::KernelCall,
+            ) {
+                crate::vm::interpreter::OpcodeResult::Continue => {
+                    stack.pop().unwrap_or_else(|_| Value::null()).raw()
+                }
+                crate::vm::interpreter::OpcodeResult::Return(value) => value.raw(),
+                crate::vm::interpreter::OpcodeResult::Suspend(reason) => {
+                    (*ctx).suspend_reason = match reason {
+                        crate::vm::scheduler::SuspendReason::IoWait => SuspendReason::IoWait,
+                        crate::vm::scheduler::SuspendReason::MutexLock { .. }
+                        | crate::vm::scheduler::SuspendReason::MutexLockCall { .. } => {
+                            SuspendReason::MutexLock
+                        }
+                        crate::vm::scheduler::SuspendReason::ChannelReceive { .. } => {
+                            SuspendReason::ChannelRecv
+                        }
+                        crate::vm::scheduler::SuspendReason::ChannelSend { .. } => {
+                            SuspendReason::ChannelSend
+                        }
+                        crate::vm::scheduler::SuspendReason::Sleep { .. } => SuspendReason::Sleep,
+                        _ => SuspendReason::NativeCallBoundary,
+                    };
+                    (*ctx).suspend_payload = 0;
+                    AOT_SUSPEND
+                }
+                crate::vm::interpreter::OpcodeResult::Error(_) => abi::NULL_VALUE,
+                crate::vm::interpreter::OpcodeResult::PushFrame { .. } => abi::NULL_VALUE,
+            };
+        }
+
+        let native_id = match kernel_op {
+            KernelOp::NativeCall(native_id) => native_id,
+            _ => unreachable!(),
+        };
 
         match native_id {
             crate::compiler::native_id::JSON_PARSE => {
@@ -1296,7 +1440,8 @@ unsafe extern "C" fn helper_native_call(
     // Stub split behavior:
     // - Most IDs take an immediate "completed" fast path (null result placeholder).
     // - STUB_NATIVE_SUSPEND_ID exercises boundary suspend handoff behavior.
-    if native_id == STUB_NATIVE_SUSPEND_ID {
+    if matches!(kernel_op, KernelOp::NativeCall(native_id) if native_id == STUB_NATIVE_SUSPEND_ID)
+    {
         if !ctx.is_null() {
             (*ctx).suspend_reason = SuspendReason::NativeCallBoundary;
             (*ctx).suspend_payload = 0;
