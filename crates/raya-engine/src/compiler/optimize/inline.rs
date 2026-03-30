@@ -124,6 +124,7 @@ impl Inliner {
             | IrInstr::CallMethodExact { .. }
             | IrInstr::CallClosure { .. }
             | IrInstr::NativeCall { .. }
+            | IrInstr::BuiltinKernelCall { .. }
             | IrInstr::ModuleNativeCall { .. }
             | IrInstr::LoadLocal { .. }
             | IrInstr::LoadFieldExact { .. }
@@ -336,6 +337,7 @@ impl Inliner {
                 f(value.id.as_u32());
             }
             IrInstr::NativeCall { dest, args, .. }
+            | IrInstr::BuiltinKernelCall { dest, args, .. }
             | IrInstr::ModuleNativeCall { dest, args, .. } => {
                 if let Some(d) = dest {
                     f(d.id.as_u32());
@@ -565,6 +567,18 @@ impl Inliner {
                     .map(|a| self.rename_register(a, reg_map))
                     .collect(),
             }),
+            IrInstr::BuiltinKernelCall { dest, op, args: native_args } => {
+                Some(IrInstr::BuiltinKernelCall {
+                    dest: dest
+                        .as_ref()
+                        .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+                    op: *op,
+                    args: native_args
+                        .iter()
+                        .map(|a| self.rename_register(a, reg_map))
+                        .collect(),
+                })
+            }
             IrInstr::ModuleNativeCall {
                 dest,
                 local_idx,

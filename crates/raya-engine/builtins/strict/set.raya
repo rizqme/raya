@@ -18,15 +18,21 @@ class Set<T> {
     private setPtr: number;
     size: number;
 
-    constructor() {
+    constructor(iterable: any = undefined) {
         this.setPtr = __NATIVE_CALL<number>(SET_NEW);
         this.size = 0;
+        if (iterable != undefined && iterable != null) {
+            for (let value of iterable) {
+                this.add(value);
+            }
+        }
     }
 
     // Add a value to the set
-    add(value: T): void {
+    add(value: T): Set<T> {
         __NATIVE_CALL<void>(SET_ADD, this.setPtr, value);
         this.size = __NATIVE_CALL<number>(SET_SIZE, this.setPtr);
+        return this;
     }
 
     // Check if value exists

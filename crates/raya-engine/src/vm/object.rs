@@ -771,11 +771,18 @@ impl Object {
             self.fields[index] = value;
             Ok(())
         } else {
-            Err(format!(
-                "Field index {} out of bounds (object has {} fields)",
+            let mut message = format!(
+                "Field index {} out of bounds (object has {} fields, layout={}, nominal={:?})",
                 index,
-                self.fields.len()
-            ))
+                self.fields.len(),
+                self.layout_id(),
+                self.nominal_type_id()
+            );
+            if std::env::var("RAYA_DEBUG_SET_FIELD_BOUNDS").is_ok() {
+                let backtrace = std::backtrace::Backtrace::force_capture();
+                message.push_str(&format!("\n{backtrace}"));
+            }
+            Err(message)
         }
     }
 

@@ -230,6 +230,31 @@ fn format_instr(instr: &IrInstr) -> String {
                 format!("native_call {}({})", native_name, args_str.join(", "))
             }
         }
+        IrInstr::BuiltinKernelCall { dest, op, args } => {
+            let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            let op_name = match op {
+                crate::compiler::ir::BuiltinKernelOp::NativeCall(native_id) => {
+                    format!("native:{}", crate::native_id::native_name(*native_id))
+                }
+                crate::compiler::ir::BuiltinKernelOp::PropertyOpcode(kind) => {
+                    format!("property:{kind:?}")
+                }
+                crate::compiler::ir::BuiltinKernelOp::Metaobject(kind) => {
+                    format!("metaobject:{kind:?}")
+                }
+                crate::compiler::ir::BuiltinKernelOp::Iterator(kind) => {
+                    format!("iterator:{kind:?}")
+                }
+                crate::compiler::ir::BuiltinKernelOp::HostHandle(kind) => {
+                    format!("host:{kind:?}")
+                }
+            };
+            if let Some(d) = dest {
+                format!("{} = builtin_kernel {}({})", d, op_name, args_str.join(", "))
+            } else {
+                format!("builtin_kernel {}({})", op_name, args_str.join(", "))
+            }
+        }
         IrInstr::ModuleNativeCall {
             dest,
             local_idx,

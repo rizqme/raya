@@ -607,7 +607,9 @@ impl<'a> Lowerer<'a> {
             native_id: crate::compiler::native_id::OBJECT_PUSH_WITH_ENV,
             args: vec![object],
         });
+        self.active_with_env_depth += 1;
         self.lower_stmt(&with_stmt.body);
+        self.active_with_env_depth = self.active_with_env_depth.saturating_sub(1);
         if !self.current_block_is_terminated() {
             self.emit(IrInstr::NativeCall {
                 dest: None,

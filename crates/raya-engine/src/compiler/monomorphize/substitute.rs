@@ -152,6 +152,11 @@ impl TypeSubstitution {
                 native_id: *native_id,
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
             },
+            IrInstr::BuiltinKernelCall { dest, op, args } => IrInstr::BuiltinKernelCall {
+                dest: dest.as_ref().map(|d| self.apply_register(d)),
+                op: *op,
+                args: args.iter().map(|a| self.apply_register(a)).collect(),
+            },
             IrInstr::ModuleNativeCall {
                 dest,
                 local_idx,

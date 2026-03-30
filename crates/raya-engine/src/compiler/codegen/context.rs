@@ -681,6 +681,189 @@ impl IrCodeGenerator {
                 }
             }
 
+            IrInstr::BuiltinKernelCall { dest, op, args } => {
+                match op {
+                    crate::compiler::ir::BuiltinKernelOp::NativeCall(native_id) => {
+                        for arg in args {
+                            self.emit_load_register(ctx, arg);
+                        }
+                        ctx.emit(Opcode::NativeCall);
+                        ctx.emit_u16(*native_id);
+                        ctx.emit_u8(args.len() as u8);
+                        if let Some(dest) = dest {
+                            let slot = ctx.get_or_alloc_slot(dest);
+                            self.emit_store_local(ctx, slot);
+                        } else {
+                            ctx.emit(Opcode::Pop);
+                        }
+                    }
+                    crate::compiler::ir::BuiltinKernelOp::PropertyOpcode(kind) => {
+                        if let Some(first_arg) = args.first() {
+                            self.emit_load_register(ctx, first_arg);
+                        }
+                        match kind {
+                            crate::compiler::type_registry::OpcodeKind::StringLen => {
+                                ctx.emit(Opcode::Slen);
+                            }
+                            crate::compiler::type_registry::OpcodeKind::ArrayLen => {
+                                ctx.emit(Opcode::ArrayLen);
+                            }
+                        }
+                        if let Some(dest) = dest {
+                            let slot = ctx.get_or_alloc_slot(dest);
+                            self.emit_store_local(ctx, slot);
+                        } else {
+                            ctx.emit(Opcode::Pop);
+                        }
+                    }
+                    crate::compiler::ir::BuiltinKernelOp::Metaobject(kind) => {
+                        let native_id = match kind {
+                            crate::semantics::MetaobjectOpKind::DefineProperty => {
+                                crate::compiler::native_id::OBJECT_DEFINE_PROPERTY
+                            }
+                            crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor => {
+                                crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
+                            }
+                            crate::semantics::MetaobjectOpKind::DefineProperties => {
+                                crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES
+                            }
+                            crate::semantics::MetaobjectOpKind::DeleteProperty => {
+                                crate::compiler::native_id::OBJECT_DELETE_PROPERTY
+                            }
+                            crate::semantics::MetaobjectOpKind::GetPrototypeOf => {
+                                crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF
+                            }
+                            crate::semantics::MetaobjectOpKind::SetPrototypeOf => {
+                                crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF
+                            }
+                            crate::semantics::MetaobjectOpKind::PreventExtensions => {
+                                crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS
+                            }
+                            crate::semantics::MetaobjectOpKind::IsExtensible => {
+                                crate::compiler::native_id::OBJECT_IS_EXTENSIBLE
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectGet => {
+                                crate::compiler::native_id::REFLECT_GET
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectSet => {
+                                crate::compiler::native_id::REFLECT_SET
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectHas => {
+                                crate::compiler::native_id::REFLECT_HAS
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectOwnKeys => {
+                                crate::compiler::native_id::REFLECT_OWN_KEYS
+                            }
+                            crate::semantics::MetaobjectOpKind::ReflectConstruct => {
+                                crate::compiler::native_id::REFLECT_CONSTRUCT
+                            }
+                        };
+                        for arg in args {
+                            self.emit_load_register(ctx, arg);
+                        }
+                        ctx.emit(Opcode::NativeCall);
+                        ctx.emit_u16(native_id);
+                        ctx.emit_u8(args.len() as u8);
+                        if let Some(dest) = dest {
+                            let slot = ctx.get_or_alloc_slot(dest);
+                            self.emit_store_local(ctx, slot);
+                        } else {
+                            ctx.emit(Opcode::Pop);
+                        }
+                    }
+                    crate::compiler::ir::BuiltinKernelOp::Iterator(kind) => {
+                        let native_id = match kind {
+                            crate::semantics::IteratorOpKind::GetIterator => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_GET
+                            }
+                            crate::semantics::IteratorOpKind::Step => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_STEP
+                            }
+                            crate::semantics::IteratorOpKind::Value => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_VALUE
+                            }
+                            crate::semantics::IteratorOpKind::Close => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_CLOSE
+                            }
+                            crate::semantics::IteratorOpKind::CloseOnThrow => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_ON_THROW
+                            }
+                            crate::semantics::IteratorOpKind::CloseCompletion => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_COMPLETION
+                            }
+                            crate::semantics::IteratorOpKind::AppendToArray => {
+                                crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY
+                            }
+                        };
+                        for arg in args {
+                            self.emit_load_register(ctx, arg);
+                        }
+                        ctx.emit(Opcode::NativeCall);
+                        ctx.emit_u16(native_id);
+                        ctx.emit_u8(args.len() as u8);
+                        if let Some(dest) = dest {
+                            let slot = ctx.get_or_alloc_slot(dest);
+                            self.emit_store_local(ctx, slot);
+                        } else {
+                            ctx.emit(Opcode::Pop);
+                        }
+                    }
+                    crate::compiler::ir::BuiltinKernelOp::HostHandle(kind) => match kind {
+                        crate::semantics::HostHandleOpKind::ChannelConstructor => {
+                            if let Some(first_arg) = args.first() {
+                                self.emit_load_register(ctx, first_arg);
+                            }
+                            ctx.emit(Opcode::NewChannel);
+                            if let Some(dest) = dest {
+                                let slot = ctx.get_or_alloc_slot(dest);
+                                self.emit_store_local(ctx, slot);
+                            } else {
+                                ctx.emit(Opcode::Pop);
+                            }
+                        }
+                        crate::semantics::HostHandleOpKind::MutexConstructor => {
+                            ctx.emit(Opcode::NewMutex);
+                            if let Some(dest) = dest {
+                                let slot = ctx.get_or_alloc_slot(dest);
+                                self.emit_store_local(ctx, slot);
+                            } else {
+                                ctx.emit(Opcode::Pop);
+                            }
+                        }
+                        crate::semantics::HostHandleOpKind::TaskCancel => {
+                            if let Some(first_arg) = args.first() {
+                                self.emit_load_register(ctx, first_arg);
+                            }
+                            ctx.emit(Opcode::TaskCancel);
+                        }
+                        crate::semantics::HostHandleOpKind::TaskIsDone
+                        | crate::semantics::HostHandleOpKind::TaskIsCancelled => {
+                            let native_id = match kind {
+                                crate::semantics::HostHandleOpKind::TaskIsDone => {
+                                    crate::compiler::native_id::TASK_IS_DONE
+                                }
+                                crate::semantics::HostHandleOpKind::TaskIsCancelled => {
+                                    crate::compiler::native_id::TASK_IS_CANCELLED
+                                }
+                                _ => unreachable!(),
+                            };
+                            for arg in args {
+                                self.emit_load_register(ctx, arg);
+                            }
+                            ctx.emit(Opcode::NativeCall);
+                            ctx.emit_u16(native_id);
+                            ctx.emit_u8(args.len() as u8);
+                            if let Some(dest) = dest {
+                                let slot = ctx.get_or_alloc_slot(dest);
+                                self.emit_store_local(ctx, slot);
+                            } else {
+                                ctx.emit(Opcode::Pop);
+                            }
+                        }
+                    },
+                }
+            }
+
             IrInstr::ModuleNativeCall {
                 dest,
                 local_idx,

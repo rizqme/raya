@@ -297,31 +297,37 @@ fn test_node_compat_direct_eval_assignment_updates_outer_binding() {
 
 #[test]
 fn test_node_compat_direct_eval_function_binding_delete_uses_runtime_env() {
-    let runtime = Runtime::with_options(RuntimeOptions {
-        builtin_mode: BuiltinMode::NodeCompat,
-        ..Default::default()
-    });
+    expect_node_compat_string(
+        r#"
+        let initialResult = 0;
+        let postDeletion = null;
+        let thrownName = "";
+        (function() {
+            eval("initialResult = f(); delete f; postDeletion = function() { f; }; function f() { return 33; }");
+        }());
+        try {
+            postDeletion();
+        } catch (error) {
+            thrownName = error != null && error.name ? error.name : String(error);
+        }
+        return JSON.stringify({
+            initialResult,
+            hasPostDeletion: postDeletion != null,
+            thrownName
+        });
+        "#,
+        r#"{"hasPostDeletion":true,"initialResult":33,"thrownName":"ReferenceError"}"#,
+    );
+}
 
-    let value = runtime
-        .eval(
-            r#"
-            let initialResult = 0;
-            let postDeletion = null;
-            let thrownName = "";
-            (function() {
-                eval("initialResult = f(); delete f; postDeletion = function() { f; }; function f() { return 33; }");
-            }());
-            try {
-                postDeletion();
-            } catch (error) {
-                thrownName = error != null && error.name ? error.name : String(error);
-            }
-            return initialResult == 33 && thrownName == "ReferenceError";
-            "#,
-        )
-        .expect("node-compat eval should succeed");
-
-    expect_bool(value, true);
+#[test]
+fn test_node_compat_direct_eval_arrow_params_use_local_bindings() {
+    expect_node_compat_string(
+        r#"
+        return (() => ((a, b) => a + ":" + b)("x", "y"))();
+        "#,
+        "x:y",
+    );
 }
 
 #[test]
@@ -391,6 +397,49 @@ fn test_node_compat_with_assignment_falls_back_to_outer_binding() {
         .expect("node-compat eval should succeed");
 
     expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_with_expression_preserves_body_completion() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let env = {};
+            let o = { p: 1 };
+            with (env) {
+                o.p;
+            }
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_number(value, 1.0);
+}
+
+#[test]
+fn test_node_compat_with_expression_preserves_prior_completion_when_body_is_empty() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            1;
+            with ({}) {
+                var x = 1;
+            }
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_number(value, 1.0);
 }
 
 #[test]

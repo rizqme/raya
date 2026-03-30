@@ -18,9 +18,17 @@ class Map<K, V> {
     private mapPtr: number;
     size: number;
 
-    constructor() {
+    constructor(iterable: any = undefined) {
         this.mapPtr = __NATIVE_CALL<number>(MAP_NEW);
         this.size = 0;
+        if (iterable != undefined && iterable != null) {
+            for (let entry of iterable) {
+                if (entry == null) {
+                    throw new TypeError("Iterator value " + entry + " is not an entry object");
+                }
+                this.set(entry[0], entry[1]);
+            }
+        }
     }
 
     // Get value by key (returns null if not found)
@@ -29,9 +37,10 @@ class Map<K, V> {
     }
 
     // Set a key-value pair
-    set(key: K, value: V): void {
+    set(key: K, value: V): Map<K, V> {
         __NATIVE_CALL<void>(MAP_SET, this.mapPtr, key, value);
         this.size = __NATIVE_CALL<number>(MAP_SIZE, this.mapPtr);
+        return this;
     }
 
     // Check if key exists

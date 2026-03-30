@@ -21,7 +21,8 @@ pub mod value;
 pub use block::{BasicBlock, BasicBlockId, Terminator};
 pub use function::IrFunction;
 pub use instr::{
-    BinaryOp, FunctionId, IrInstr, NominalTypeId, StringCompareMode, TypeAliasId, UnaryOp,
+    BinaryOp, BuiltinKernelOp, FunctionId, IrInstr, NominalTypeId, StringCompareMode,
+    TypeAliasId, UnaryOp,
 };
 pub use module::{IrClass, IrField, IrMethodKind, IrModule, IrTypeAlias, IrTypeAliasField};
 pub use pretty::{format_instr_pub, PrettyPrint};

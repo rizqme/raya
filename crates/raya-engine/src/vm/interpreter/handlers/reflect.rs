@@ -1155,6 +1155,24 @@ impl<'a> Interpreter<'a> {
                 }
             }
 
+            reflect::OWN_KEYS => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "ownKeys requires 1 argument (target)".to_string(),
+                    ));
+                }
+                let target = args[0];
+                let mut keys = Array::new(0, 0);
+                for name in self.js_own_property_names(target) {
+                    keys.push(self.reflect_alloc_string_value(name));
+                }
+                for symbol in self.js_own_property_symbols(target) {
+                    keys.push(symbol);
+                }
+                let keys_ptr = self.gc.lock().allocate(keys);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(keys_ptr.as_ptr()).unwrap()) }
+            }
+
             reflect::ALLOCATE => {
                 // allocate(typeRef) -> allocate uninitialized instance
                 if args.is_empty() {

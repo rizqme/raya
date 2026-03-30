@@ -671,6 +671,8 @@ pub const REFLECT_CONSTRUCT: u16 = 0x0D40;
 pub const REFLECT_ALLOCATE: u16 = 0x0D41;
 /// Reflect.clone(obj) - shallow clone
 pub const REFLECT_CLONE: u16 = 0x0D42;
+/// Reflect.ownKeys(target) - get all own property keys
+pub const REFLECT_OWN_KEYS: u16 = 0x0D46;
 
 /// Get the name of a native function for debugging purposes
 pub fn native_name(id: u16) -> &'static str {
@@ -889,6 +891,7 @@ pub fn native_name(id: u16) -> &'static str {
 
         // Reflect - Object Creation
         REFLECT_CONSTRUCT => "Reflect.construct",
+        REFLECT_OWN_KEYS => "Reflect.ownKeys",
         REFLECT_ALLOCATE => "Reflect.allocate",
         REFLECT_CLONE => "Reflect.clone",
 

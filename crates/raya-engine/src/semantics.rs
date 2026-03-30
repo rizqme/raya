@@ -639,6 +639,102 @@ pub struct SemanticConstructorDispatch {
     pub result_type_id: Option<TypeId>,
 }
 
+/// Semantic builtin value origin classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuiltinOriginKind {
+    BuiltinNamespace,
+    BuiltinClassValue,
+    BuiltinInstance,
+    HostHandleValue,
+    ImportedBuiltinBinding,
+    ImportedBuiltinNamespace,
+    DynamicValue,
+}
+
+/// Semantic builtin/metaobject dispatch classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuiltinDispatchKind {
+    NamespaceProperty,
+    NamespaceCall,
+    Constructor,
+    InstanceProperty,
+    InstanceMethod,
+    MetaobjectOp,
+    IteratorOp,
+    HostHandleOp,
+    DynamicFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetaobjectOpKind {
+    DefineProperty,
+    GetOwnPropertyDescriptor,
+    DefineProperties,
+    DeleteProperty,
+    GetPrototypeOf,
+    SetPrototypeOf,
+    PreventExtensions,
+    IsExtensible,
+    ReflectGet,
+    ReflectSet,
+    ReflectHas,
+    ReflectOwnKeys,
+    ReflectConstruct,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IteratorOpKind {
+    GetIterator,
+    Step,
+    Value,
+    Close,
+    CloseOnThrow,
+    CloseCompletion,
+    AppendToArray,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostHandleOpKind {
+    ChannelConstructor,
+    MutexConstructor,
+    TaskCancel,
+    TaskIsDone,
+    TaskIsCancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuiltinNamespaceCallKind {
+    ObjectSameValue,
+    JsonParse,
+    JsonStringify,
+    StringFromCharCode,
+    NumberIsNaN,
+    NumberIsFinite,
+    DateNow,
+    DateParse,
+}
+
+/// Semantic builtin/metaobject dispatch summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticBuiltinDispatch {
+    pub span_start: usize,
+    pub span_end: usize,
+    pub origin: BuiltinOriginKind,
+    pub kind: BuiltinDispatchKind,
+    pub metaobject_op: Option<MetaobjectOpKind>,
+    pub iterator_op: Option<IteratorOpKind>,
+    pub host_handle_op: Option<HostHandleOpKind>,
+    pub namespace_call: Option<BuiltinNamespaceCallKind>,
+    pub registry_dispatch: Option<crate::compiler::type_registry::DispatchAction>,
+    pub native_id: Option<u16>,
+    pub receiver_type_id: Option<TypeId>,
+    pub callee_type_id: Option<TypeId>,
+    pub result_type_id: Option<TypeId>,
+    pub property_name: Option<String>,
+    pub member_name: Option<String>,
+    pub export_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScopeSnapshotBinding {
     pub symbol: Symbol,
@@ -684,6 +780,7 @@ pub struct SemanticHirModule {
     pub object_shapes: Vec<SemanticObjectShape>,
     pub member_targets: Vec<SemanticMemberTarget>,
     pub property_dispatches: Vec<SemanticPropertyDispatch>,
+    pub builtin_dispatches: Vec<SemanticBuiltinDispatch>,
     pub binding_ops: Vec<SemanticBindingOp>,
     pub update_ops: Vec<SemanticUpdateOp>,
     pub call_ops: Vec<SemanticCallOp>,
@@ -722,6 +819,7 @@ pub struct SemanticLoweringPlan {
     object_shapes_by_span: FxHashMap<SpanKey, SemanticObjectShape>,
     member_targets_by_span: FxHashMap<SpanKey, SemanticMemberTarget>,
     property_dispatches_by_span: FxHashMap<SpanKey, SemanticPropertyDispatch>,
+    builtin_dispatches_by_span: FxHashMap<SpanKey, SemanticBuiltinDispatch>,
     binding_ops_by_span: FxHashMap<usize, SemanticBindingOp>,
     update_ops_by_span: FxHashMap<usize, SemanticUpdateOp>,
     call_ops_by_span: FxHashMap<SpanKey, SemanticCallOp>,
@@ -753,6 +851,7 @@ impl SemanticLoweringPlan {
                 object_shapes: Vec::new(),
                 member_targets: Vec::new(),
                 property_dispatches: Vec::new(),
+                builtin_dispatches: Vec::new(),
                 binding_ops: Vec::new(),
                 update_ops: Vec::new(),
                 call_ops: Vec::new(),
@@ -772,6 +871,7 @@ impl SemanticLoweringPlan {
             object_shapes_by_span: FxHashMap::default(),
             member_targets_by_span: FxHashMap::default(),
             property_dispatches_by_span: FxHashMap::default(),
+            builtin_dispatches_by_span: FxHashMap::default(),
             binding_ops_by_span: FxHashMap::default(),
             update_ops_by_span: FxHashMap::default(),
             call_ops_by_span: FxHashMap::default(),
@@ -851,6 +951,15 @@ impl SemanticLoweringPlan {
         span_end: usize,
     ) -> Option<&SemanticPropertyDispatch> {
         self.property_dispatches_by_span
+            .get(&span_key(span_start, span_end))
+    }
+
+    pub fn builtin_dispatch_at_span(
+        &self,
+        span_start: usize,
+        span_end: usize,
+    ) -> Option<&SemanticBuiltinDispatch> {
+        self.builtin_dispatches_by_span
             .get(&span_key(span_start, span_end))
     }
 
@@ -982,6 +1091,7 @@ pub fn build_semantic_lowering_plan_with_types(
         object_shapes: Vec::new(),
         member_targets: Vec::new(),
         property_dispatches: Vec::new(),
+        builtin_dispatches: Vec::new(),
         binding_ops: Vec::new(),
         update_ops: Vec::new(),
         call_ops: Vec::new(),
@@ -1040,6 +1150,7 @@ pub fn build_semantic_lowering_plan_with_types(
         object_shapes: builder.object_shapes,
         member_targets: builder.member_targets,
         property_dispatches: builder.property_dispatches,
+        builtin_dispatches: builder.builtin_dispatches,
         binding_ops: builder.binding_ops,
         update_ops: builder.update_ops,
         call_ops: builder.call_ops,
@@ -1089,6 +1200,12 @@ pub fn build_semantic_lowering_plan_with_types(
         .collect();
     let property_dispatches_by_span = hir
         .property_dispatches
+        .iter()
+        .cloned()
+        .map(|dispatch| (span_key(dispatch.span_start, dispatch.span_end), dispatch))
+        .collect();
+    let builtin_dispatches_by_span = hir
+        .builtin_dispatches
         .iter()
         .cloned()
         .map(|dispatch| (span_key(dispatch.span_start, dispatch.span_end), dispatch))
@@ -1156,6 +1273,7 @@ pub fn build_semantic_lowering_plan_with_types(
         object_shapes_by_span,
         member_targets_by_span,
         property_dispatches_by_span,
+        builtin_dispatches_by_span,
         binding_ops_by_span,
         update_ops_by_span,
         call_ops_by_span,
@@ -1255,6 +1373,7 @@ struct SemanticHirBuilder<'a> {
     object_shapes: Vec<SemanticObjectShape>,
     member_targets: Vec<SemanticMemberTarget>,
     property_dispatches: Vec<SemanticPropertyDispatch>,
+    builtin_dispatches: Vec<SemanticBuiltinDispatch>,
     binding_ops: Vec<SemanticBindingOp>,
     update_ops: Vec<SemanticUpdateOp>,
     call_ops: Vec<SemanticCallOp>,
@@ -1814,14 +1933,196 @@ impl<'a> SemanticHirBuilder<'a> {
             .is_some()
     }
 
+    fn receiver_builtin_registry_property_dispatch(
+        &self,
+        receiver_ty: Option<TypeId>,
+        name: &str,
+    ) -> Option<crate::compiler::type_registry::DispatchAction> {
+        let Some(receiver_ty) = receiver_ty else {
+            return None;
+        };
+        let registry = self.type_registry.as_ref()?;
+        self.dispatch_type_id_for_type_id(receiver_ty)
+            .and_then(|dispatch_ty| registry.lookup_property(dispatch_ty, name))
+    }
+
+    fn receiver_builtin_registry_method_dispatch(
+        &self,
+        receiver_ty: Option<TypeId>,
+        name: &str,
+    ) -> Option<crate::compiler::type_registry::DispatchAction> {
+        let Some(receiver_ty) = receiver_ty else {
+            return None;
+        };
+        let registry = self.type_registry.as_ref()?;
+        self.dispatch_type_id_for_type_id(receiver_ty)
+            .and_then(|dispatch_ty| registry.lookup_method(dispatch_ty, name))
+    }
+
+    fn type_name_is_host_handle(name: &str) -> bool {
+        matches!(
+            name,
+            TypeContext::PROMISE_TYPE_NAME
+                | TypeContext::CHANNEL_TYPE_NAME
+                | TypeContext::MUTEX_TYPE_NAME
+        )
+    }
+
+    fn builtin_origin_kind_for_expr(&self, expr: &Expression) -> BuiltinOriginKind {
+        let value_origin = self.value_origin_kind_for_expr(expr);
+        let ty = self.expr_type(expr);
+        let shape_kind = self.object_shape_for_expr(expr).map(|shape| shape.kind);
+        let type_name = ty.and_then(|ty| self.type_name_for_type_id(ty));
+        match value_origin {
+            ValueOriginKind::ImportedBinding => BuiltinOriginKind::ImportedBuiltinBinding,
+            ValueOriginKind::ImportedNamespace => BuiltinOriginKind::ImportedBuiltinNamespace,
+            ValueOriginKind::BuiltinNamespace => BuiltinOriginKind::BuiltinNamespace,
+            ValueOriginKind::BuiltinGlobalValue => {
+                if type_name
+                    .as_deref()
+                    .is_some_and(Self::type_name_is_host_handle)
+                {
+                    BuiltinOriginKind::HostHandleValue
+                } else if matches!(shape_kind, Some(ObjectShapeKind::ClassValue)) {
+                    BuiltinOriginKind::BuiltinClassValue
+                } else {
+                    BuiltinOriginKind::BuiltinInstance
+                }
+            }
+            _ => {
+                if type_name
+                    .as_deref()
+                    .is_some_and(Self::type_name_is_host_handle)
+                {
+                    BuiltinOriginKind::HostHandleValue
+                } else if self
+                    .type_registry
+                    .as_ref()
+                    .is_some_and(|registry| {
+                        type_name
+                            .as_deref()
+                            .is_some_and(|name| registry.has_builtin_dispatch_type(name))
+                    })
+                {
+                    if matches!(shape_kind, Some(ObjectShapeKind::ClassValue)) {
+                        BuiltinOriginKind::BuiltinClassValue
+                    } else {
+                        BuiltinOriginKind::BuiltinInstance
+                    }
+                } else {
+                    BuiltinOriginKind::DynamicValue
+                }
+            }
+        }
+    }
+
+    fn namespace_metaobject_op(object_name: &str, member_name: &str) -> Option<MetaobjectOpKind> {
+        match (object_name, member_name) {
+            ("Object", "defineProperty") => Some(MetaobjectOpKind::DefineProperty),
+            ("Object", "getOwnPropertyDescriptor") => {
+                Some(MetaobjectOpKind::GetOwnPropertyDescriptor)
+            }
+            ("Object", "defineProperties") => Some(MetaobjectOpKind::DefineProperties),
+            ("Object", "getPrototypeOf") => Some(MetaobjectOpKind::GetPrototypeOf),
+            ("Object", "setPrototypeOf") => Some(MetaobjectOpKind::SetPrototypeOf),
+            ("Object", "preventExtensions") => Some(MetaobjectOpKind::PreventExtensions),
+            ("Object", "isExtensible") => Some(MetaobjectOpKind::IsExtensible),
+            ("Reflect", "get") => Some(MetaobjectOpKind::ReflectGet),
+            ("Reflect", "set") => Some(MetaobjectOpKind::ReflectSet),
+            ("Reflect", "has") => Some(MetaobjectOpKind::ReflectHas),
+            ("Reflect", "ownKeys") => Some(MetaobjectOpKind::ReflectOwnKeys),
+            ("Reflect", "construct") => Some(MetaobjectOpKind::ReflectConstruct),
+            _ => None,
+        }
+    }
+
+    fn namespace_call_kind(
+        object_name: &str,
+        member_name: &str,
+    ) -> Option<BuiltinNamespaceCallKind> {
+        match (object_name, member_name) {
+            ("Object", "is") => Some(BuiltinNamespaceCallKind::ObjectSameValue),
+            ("JSON", "parse") => Some(BuiltinNamespaceCallKind::JsonParse),
+            ("JSON", "stringify") => Some(BuiltinNamespaceCallKind::JsonStringify),
+            ("String", "fromCharCode") => Some(BuiltinNamespaceCallKind::StringFromCharCode),
+            ("Number", "isNaN") => Some(BuiltinNamespaceCallKind::NumberIsNaN),
+            ("Number", "isFinite") => Some(BuiltinNamespaceCallKind::NumberIsFinite),
+            ("Date", "now") => Some(BuiltinNamespaceCallKind::DateNow),
+            ("Date", "parse") => Some(BuiltinNamespaceCallKind::DateParse),
+            _ => None,
+        }
+    }
+
+    fn namespace_call_native_id(
+        &self,
+        object_name: &str,
+        member_name: &str,
+    ) -> Option<u16> {
+        match (object_name, member_name) {
+            ("Object", "is") => Some(crate::compiler::native_id::OBJECT_SAME_VALUE),
+            ("JSON", "parse") => Some(crate::compiler::native_id::JSON_PARSE),
+            ("JSON", "stringify") => Some(crate::compiler::native_id::JSON_STRINGIFY),
+            ("String", "fromCharCode") => {
+                Some(crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE)
+            }
+            ("Number", "isNaN") => Some(crate::vm::builtin::number::IS_NAN),
+            ("Number", "isFinite") => Some(crate::vm::builtin::number::IS_FINITE),
+            ("Date", "now") => Some(crate::compiler::native_id::DATE_NOW),
+            ("Date", "parse") => Some(crate::compiler::native_id::DATE_PARSE),
+            _ => None,
+        }
+    }
+
+    fn metaobject_native_id(op: MetaobjectOpKind) -> Option<u16> {
+        match op {
+            MetaobjectOpKind::DefineProperty => Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY),
+            MetaobjectOpKind::GetOwnPropertyDescriptor => {
+                Some(crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR)
+            }
+            MetaobjectOpKind::DefineProperties => {
+                Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES)
+            }
+            MetaobjectOpKind::DeleteProperty => Some(crate::compiler::native_id::OBJECT_DELETE_PROPERTY),
+            MetaobjectOpKind::GetPrototypeOf => {
+                Some(crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF)
+            }
+            MetaobjectOpKind::SetPrototypeOf => {
+                Some(crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF)
+            }
+            MetaobjectOpKind::PreventExtensions => {
+                Some(crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS)
+            }
+            MetaobjectOpKind::IsExtensible => {
+                Some(crate::compiler::native_id::OBJECT_IS_EXTENSIBLE)
+            }
+            MetaobjectOpKind::ReflectGet => Some(crate::compiler::native_id::REFLECT_GET),
+            MetaobjectOpKind::ReflectSet => Some(crate::compiler::native_id::REFLECT_SET),
+            MetaobjectOpKind::ReflectHas => Some(crate::compiler::native_id::REFLECT_HAS),
+            MetaobjectOpKind::ReflectOwnKeys => Some(crate::compiler::native_id::REFLECT_OWN_KEYS),
+            MetaobjectOpKind::ReflectConstruct => Some(crate::compiler::native_id::REFLECT_CONSTRUCT),
+        }
+    }
+
+    fn host_handle_op_for_member(
+        &self,
+        receiver_type_id: Option<TypeId>,
+        member_name: &str,
+    ) -> Option<HostHandleOpKind> {
+        let type_name = receiver_type_id.and_then(|ty| self.type_name_for_type_id(ty))?;
+        match (type_name.as_str(), member_name) {
+            (TypeContext::PROMISE_TYPE_NAME, "cancel") => Some(HostHandleOpKind::TaskCancel),
+            (TypeContext::PROMISE_TYPE_NAME, "isDone") => Some(HostHandleOpKind::TaskIsDone),
+            (TypeContext::PROMISE_TYPE_NAME, "isCancelled") => {
+                Some(HostHandleOpKind::TaskIsCancelled)
+            }
+            _ => None,
+        }
+    }
+
     fn is_builtin_constructor_type_name(&self, name: &str) -> bool {
         self.type_registry
             .as_ref()
             .is_some_and(|registry| registry.constructor_native_id(name).is_some())
-    }
-
-    fn receiver_is_builtin_namespace(&self, expr: &Expression) -> bool {
-        self.value_origin_kind_for_expr(expr) == ValueOriginKind::BuiltinNamespace
     }
 
     fn runtime_late_bound_receiver(&self, expr: &Expression, receiver_ty: Option<TypeId>) -> bool {
@@ -2086,6 +2387,288 @@ impl<'a> SemanticHirBuilder<'a> {
             property_name: Some(name),
             result_type_id: self.expr_type(&Expression::Member(member.clone())),
         });
+    }
+
+    fn record_builtin_dispatch_for_expr(&mut self, expr: &Expression) {
+        match expr {
+            Expression::Member(member) => {
+                let property_name = self.identifier(&member.property);
+                let receiver_origin = self.value_origin_kind_for_expr(&member.object);
+                let receiver_type_id = self.expr_type(&member.object);
+                let origin = self.builtin_origin_kind_for_expr(&member.object);
+                let registry_dispatch = self
+                    .receiver_builtin_registry_property_dispatch(receiver_type_id, &property_name);
+                let dispatch = match origin {
+                    BuiltinOriginKind::BuiltinNamespace | BuiltinOriginKind::BuiltinClassValue => {
+                        Some(SemanticBuiltinDispatch {
+                        span_start: member.span.start,
+                        span_end: member.span.end,
+                        origin,
+                        kind: BuiltinDispatchKind::NamespaceProperty,
+                        metaobject_op: None,
+                        iterator_op: None,
+                        host_handle_op: None,
+                        namespace_call: None,
+                        registry_dispatch: None,
+                        native_id: None,
+                        receiver_type_id,
+                        callee_type_id: None,
+                        result_type_id: self.expr_type(expr),
+                        property_name: Some(property_name.clone()),
+                        member_name: None,
+                        export_name: Some(property_name),
+                    })
+                    }
+                    _ if registry_dispatch.is_some() => Some(SemanticBuiltinDispatch {
+                        span_start: member.span.start,
+                        span_end: member.span.end,
+                        origin,
+                        kind: BuiltinDispatchKind::InstanceProperty,
+                        metaobject_op: None,
+                        iterator_op: None,
+                        host_handle_op: None,
+                        namespace_call: None,
+                        registry_dispatch,
+                        native_id: None,
+                        receiver_type_id,
+                        callee_type_id: None,
+                        result_type_id: self.expr_type(expr),
+                        property_name: Some(property_name),
+                        member_name: None,
+                        export_name: None,
+                    }),
+                    _ => None,
+                };
+                if let Some(dispatch) = dispatch {
+                    self.builtin_dispatches.push(dispatch);
+                }
+            }
+            Expression::Call(call) => {
+                let dispatch = match &*call.callee {
+                    Expression::Member(member) => {
+                        let member_name = self.identifier(&member.property);
+                        let receiver_type_id = self.expr_type(&member.object);
+                        let receiver_origin = self.value_origin_kind_for_expr(&member.object);
+                        let origin = self.builtin_origin_kind_for_expr(&member.object);
+                        let builtin_static_surface = matches!(
+                            origin,
+                            BuiltinOriginKind::BuiltinNamespace
+                                | BuiltinOriginKind::BuiltinClassValue
+                        );
+                        if builtin_static_surface {
+                            let object_name = match &*member.object {
+                                Expression::Identifier(ident) => self.interner.resolve(ident.name),
+                                _ => "",
+                            };
+                            if let Some(metaobject_op) =
+                                Self::namespace_metaobject_op(object_name, &member_name)
+                            {
+                                Some(SemanticBuiltinDispatch {
+                                    span_start: call.span.start,
+                                    span_end: call.span.end,
+                                    origin,
+                                    kind: BuiltinDispatchKind::MetaobjectOp,
+                                    metaobject_op: Some(metaobject_op),
+                                    iterator_op: None,
+                                    host_handle_op: None,
+                                    namespace_call: None,
+                                    registry_dispatch: None,
+                                    native_id: Self::metaobject_native_id(metaobject_op),
+                                    receiver_type_id,
+                                    callee_type_id: self.expr_type(&call.callee),
+                                    result_type_id: self.expr_type(expr),
+                                    property_name: None,
+                                    member_name: Some(member_name),
+                                    export_name: None,
+                                })
+                            } else if let Some(namespace_call) =
+                                Self::namespace_call_kind(object_name, &member_name)
+                            {
+                                Some(SemanticBuiltinDispatch {
+                                    span_start: call.span.start,
+                                    span_end: call.span.end,
+                                    origin,
+                                    kind: BuiltinDispatchKind::NamespaceCall,
+                                    metaobject_op: None,
+                                    iterator_op: None,
+                                    host_handle_op: None,
+                                    namespace_call: Some(namespace_call),
+                                    registry_dispatch: None,
+                                    native_id: self.namespace_call_native_id(object_name, &member_name),
+                                    receiver_type_id,
+                                    callee_type_id: self.expr_type(&call.callee),
+                                    result_type_id: self.expr_type(expr),
+                                    property_name: None,
+                                    member_name: Some(member_name),
+                                    export_name: None,
+                                })
+                            } else if matches!(origin, BuiltinOriginKind::BuiltinNamespace) {
+                                Some(SemanticBuiltinDispatch {
+                                    span_start: call.span.start,
+                                    span_end: call.span.end,
+                                    origin,
+                                    kind: BuiltinDispatchKind::NamespaceCall,
+                                    metaobject_op: None,
+                                    iterator_op: None,
+                                    host_handle_op: None,
+                                    namespace_call: None,
+                                    registry_dispatch: None,
+                                    native_id: None,
+                                    receiver_type_id,
+                                    callee_type_id: self.expr_type(&call.callee),
+                                    result_type_id: self.expr_type(expr),
+                                    property_name: None,
+                                    member_name: Some(member_name),
+                                    export_name: None,
+                                })
+                            } else {
+                                None
+                            }
+                        } else if let Some(host_handle_op) =
+                            self.host_handle_op_for_member(receiver_type_id, &member_name)
+                        {
+                            Some(SemanticBuiltinDispatch {
+                                span_start: call.span.start,
+                                span_end: call.span.end,
+                                origin,
+                                kind: BuiltinDispatchKind::HostHandleOp,
+                                metaobject_op: None,
+                                iterator_op: None,
+                                host_handle_op: Some(host_handle_op),
+                                namespace_call: None,
+                                registry_dispatch: None,
+                                native_id: None,
+                                receiver_type_id,
+                                callee_type_id: self.expr_type(&call.callee),
+                                result_type_id: self.expr_type(expr),
+                                property_name: None,
+                                member_name: Some(member_name),
+                                export_name: None,
+                            })
+                        } else {
+                            self.receiver_builtin_registry_method_dispatch(
+                                receiver_type_id,
+                                &member_name,
+                            )
+                            .map(|registry_dispatch| SemanticBuiltinDispatch {
+                                span_start: call.span.start,
+                                span_end: call.span.end,
+                                origin,
+                                kind: BuiltinDispatchKind::InstanceMethod,
+                                metaobject_op: None,
+                                iterator_op: None,
+                                host_handle_op: None,
+                                namespace_call: None,
+                                native_id: None,
+                                registry_dispatch: Some(registry_dispatch),
+                                receiver_type_id,
+                                callee_type_id: self.expr_type(&call.callee),
+                                result_type_id: self.expr_type(expr),
+                                property_name: None,
+                                member_name: Some(member_name),
+                                export_name: None,
+                            })
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(dispatch) = dispatch {
+                    self.builtin_dispatches.push(dispatch);
+                }
+            }
+            Expression::New(new_expr) => {
+                let constructor_dispatch = self
+                    .constructor_dispatches
+                    .iter()
+                    .find(|dispatch| {
+                        dispatch.span_start == new_expr.span.start
+                            && dispatch.span_end == new_expr.span.end
+                    })
+                    .cloned();
+                let callee_origin = self.builtin_origin_kind_for_expr(&new_expr.callee);
+                let callee_name = match &*new_expr.callee {
+                    Expression::Identifier(ident) => Some(self.interner.resolve(ident.name).to_string()),
+                    _ => None,
+                };
+                let dispatch = match constructor_dispatch.map(|dispatch| dispatch.kind) {
+                    Some(ConstructorDispatchKind::BuiltinNativeConstructor) => {
+                        let host_handle_op = match callee_name.as_deref() {
+                            Some(TypeContext::CHANNEL_TYPE_NAME) => Some(HostHandleOpKind::ChannelConstructor),
+                            Some(TypeContext::MUTEX_TYPE_NAME) => Some(HostHandleOpKind::MutexConstructor),
+                            _ => None,
+                        };
+                        Some(SemanticBuiltinDispatch {
+                            span_start: new_expr.span.start,
+                            span_end: new_expr.span.end,
+                            origin: callee_origin,
+                            kind: BuiltinDispatchKind::HostHandleOp,
+                            metaobject_op: None,
+                            iterator_op: None,
+                            host_handle_op,
+                            namespace_call: None,
+                            registry_dispatch: None,
+                            native_id: None,
+                            receiver_type_id: None,
+                            callee_type_id: self.expr_type(&new_expr.callee),
+                            result_type_id: self.expr_type(expr),
+                            property_name: None,
+                            member_name: None,
+                            export_name: callee_name,
+                        })
+                    }
+                    Some(ConstructorDispatchKind::NominalClass)
+                        if matches!(
+                            callee_origin,
+                            BuiltinOriginKind::BuiltinClassValue | BuiltinOriginKind::ImportedBuiltinBinding
+                        ) =>
+                    {
+                        Some(SemanticBuiltinDispatch {
+                            span_start: new_expr.span.start,
+                            span_end: new_expr.span.end,
+                            origin: callee_origin,
+                            kind: BuiltinDispatchKind::Constructor,
+                            metaobject_op: None,
+                            iterator_op: None,
+                            host_handle_op: None,
+                            namespace_call: None,
+                            registry_dispatch: None,
+                            native_id: None,
+                            receiver_type_id: None,
+                            callee_type_id: self.expr_type(&new_expr.callee),
+                            result_type_id: self.expr_type(expr),
+                            property_name: None,
+                            member_name: None,
+                            export_name: callee_name,
+                        })
+                    }
+                    Some(ConstructorDispatchKind::ImportedConstructorValue) => Some(
+                        SemanticBuiltinDispatch {
+                            span_start: new_expr.span.start,
+                            span_end: new_expr.span.end,
+                            origin: BuiltinOriginKind::ImportedBuiltinBinding,
+                            kind: BuiltinDispatchKind::Constructor,
+                            metaobject_op: None,
+                            iterator_op: None,
+                            host_handle_op: None,
+                            namespace_call: None,
+                            registry_dispatch: None,
+                            native_id: None,
+                            receiver_type_id: None,
+                            callee_type_id: self.expr_type(&new_expr.callee),
+                            result_type_id: self.expr_type(expr),
+                            property_name: None,
+                            member_name: None,
+                            export_name: callee_name,
+                        },
+                    ),
+                    _ => None,
+                };
+                if let Some(dispatch) = dispatch {
+                    self.builtin_dispatches.push(dispatch);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn record_call_target_for_expr(&mut self, call: &ast::CallExpression) {
@@ -3155,7 +3738,11 @@ impl<'a> SemanticHirBuilder<'a> {
                         }
                     }
                 }
-                self.record_pattern(&var_decl.pattern, kind);
+                self.record_pattern_with_runtime_env(
+                    &var_decl.pattern,
+                    kind,
+                    self.with_depth > 0,
+                );
                 self.binding_ops.push(SemanticBindingOp {
                     span_start: var_decl.span.start,
                     kind: BindingOpKind::Initialize,
@@ -3701,6 +4288,7 @@ impl<'a> SemanticHirBuilder<'a> {
             | Expression::DynamicImport(_) => {}
         }
         self.record_value_origin_for_expr(expr);
+        self.record_builtin_dispatch_for_expr(expr);
     }
 
     fn visit_jsx_child(&mut self, child: &ast::JsxChild) {

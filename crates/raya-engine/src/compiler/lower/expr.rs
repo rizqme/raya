@@ -8,7 +8,8 @@ use super::{
     REGEXP_TYPE_ID, STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::{
-    BasicBlock, BinaryOp, FunctionId, IrConstant, IrInstr, IrValue, NominalTypeId, Register,
+    BasicBlock, BinaryOp, BuiltinKernelOp, FunctionId, IrConstant, IrInstr, IrValue,
+    NominalTypeId, Register,
     Terminator, UnaryOp,
 };
 use crate::compiler::CompileError;
@@ -496,66 +497,6 @@ impl<'a> Lowerer<'a> {
         {
             return Some(self.lower_member(member));
         }
-        let static_native_id = match (class_name, method_name) {
-            ("Object", "defineProperty") => {
-                Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY)
-            }
-            ("Object", "getOwnPropertyDescriptor") => {
-                Some(crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR)
-            }
-            ("Object", "defineProperties") => {
-                Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES)
-            }
-            ("Object", "getPrototypeOf") => {
-                Some(crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF)
-            }
-            ("Object", "setPrototypeOf") => {
-                Some(crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF)
-            }
-            ("Object", "isExtensible") => {
-                Some(crate::compiler::native_id::OBJECT_IS_EXTENSIBLE)
-            }
-            ("Object", "preventExtensions") => {
-                Some(crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS)
-            }
-            ("Reflect", "get") => Some(crate::compiler::native_id::REFLECT_GET),
-            ("Reflect", "set") => Some(crate::compiler::native_id::REFLECT_SET),
-            ("Reflect", "has") => Some(crate::compiler::native_id::REFLECT_HAS),
-            ("Reflect", "construct") => Some(crate::compiler::native_id::REFLECT_CONSTRUCT),
-            ("Date", "now") => Some(crate::compiler::native_id::DATE_NOW),
-            ("Date", "parse") => Some(crate::compiler::native_id::DATE_PARSE),
-            ("String", "fromCharCode") => {
-                Some(crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE)
-            }
-            _ => None,
-        };
-        if let Some(native_id) = static_native_id {
-            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                eprintln!(
-                    "[lower] native static call '{}.{}' -> 0x{:04x}",
-                    class_name, method_name, native_id
-                );
-            }
-            self.emit(IrInstr::NativeCall {
-                dest: Some(dest.clone()),
-                native_id,
-                args: args.to_vec(),
-            });
-            if native_id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR {
-                self.register_object_fields.insert(
-                    dest.id,
-                    vec![
-                        ("value".to_string(), 0),
-                        ("writable".to_string(), 1),
-                        ("configurable".to_string(), 2),
-                        ("enumerable".to_string(), 3),
-                        ("get".to_string(), 4),
-                        ("set".to_string(), 5),
-                    ],
-                );
-            }
-            return Some(dest);
-        }
 
         if let Some(nominal_type_id) = self.static_member_owner_nominal_type(&member.object) {
             if let Some(&func_id) = self
@@ -633,8 +574,18 @@ impl<'a> Lowerer<'a> {
         Some(dest)
     }
 
+    fn emit_builtin_kernel_call(
+        &mut self,
+        dest: Option<Register>,
+        op: BuiltinKernelOp,
+        args: Vec<Register>,
+    ) {
+        self.emit(IrInstr::BuiltinKernelCall { dest, op, args });
+    }
+
     fn emit_builtin_namespace_member_call(
         &mut self,
+        dispatch: &crate::semantics::SemanticBuiltinDispatch,
         dest: Register,
         member: &ast::MemberExpression,
         method_name: &str,
@@ -644,48 +595,35 @@ impl<'a> Lowerer<'a> {
             return None;
         };
         let object_name = self.interner.resolve(ident.name);
-        let native_id = match (object_name, method_name) {
-            ("Object", "defineProperty") => Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY),
-            ("Object", "getOwnPropertyDescriptor") => {
-                Some(crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR)
-            }
-            ("Object", "defineProperties") => Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES),
-            ("Object", "is") => Some(crate::compiler::native_id::OBJECT_SAME_VALUE),
-            ("Object", "getPrototypeOf") => {
-                Some(crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF)
-            }
-            ("Object", "setPrototypeOf") => {
-                Some(crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF)
-            }
-            ("Object", "isExtensible") => Some(crate::compiler::native_id::OBJECT_IS_EXTENSIBLE),
-            ("Object", "preventExtensions") => {
-                Some(crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS)
-            }
-            ("Reflect", "get") => Some(crate::compiler::native_id::REFLECT_GET),
-            ("Reflect", "set") => Some(crate::compiler::native_id::REFLECT_SET),
-            ("Reflect", "has") => Some(crate::compiler::native_id::REFLECT_HAS),
-            ("Reflect", "construct") => Some(crate::compiler::native_id::REFLECT_CONSTRUCT),
-            ("JSON", "parse") => Some(crate::compiler::native_id::JSON_PARSE),
-            ("JSON", "stringify") => Some(crate::compiler::native_id::JSON_STRINGIFY),
-            ("String", "fromCharCode") => {
-                Some(crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE)
-            }
-            ("Number", "isNaN") => Some(crate::vm::builtin::number::IS_NAN),
-            ("Number", "isFinite") => Some(crate::vm::builtin::number::IS_FINITE),
-            _ => None,
-        }?;
-
-        let dispatch_dest = if native_id == crate::compiler::native_id::JSON_PARSE {
+        let dispatch_dest = if matches!(
+            dispatch.namespace_call,
+            Some(crate::semantics::BuiltinNamespaceCallKind::JsonParse)
+        ) {
             self.alloc_register(TypeId::new(JSON_TYPE_ID))
         } else {
             dest
         };
-        self.emit(IrInstr::NativeCall {
-            dest: Some(dispatch_dest.clone()),
-            native_id,
-            args: args.to_vec(),
-        });
-        if native_id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR {
+        if let Some(metaobject_op) = dispatch.metaobject_op {
+            self.emit_builtin_kernel_call(
+                Some(dispatch_dest.clone()),
+                BuiltinKernelOp::Metaobject(metaobject_op),
+                args.to_vec(),
+            );
+        } else if let Some(native_id) = dispatch.native_id {
+            self.emit_builtin_kernel_call(
+                Some(dispatch_dest.clone()),
+                BuiltinKernelOp::NativeCall(native_id),
+                args.to_vec(),
+            );
+        } else {
+            let _ = object_name;
+            let _ = method_name;
+            return None;
+        }
+        if matches!(
+            dispatch.metaobject_op,
+            Some(crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor)
+        ) {
             self.register_object_fields.insert(
                 dispatch_dest.id,
                 vec![
@@ -699,6 +637,124 @@ impl<'a> Lowerer<'a> {
             );
         }
         Some(dispatch_dest)
+    }
+
+    fn emit_builtin_call_from_plan(
+        &mut self,
+        call: &ast::CallExpression,
+        member: &ast::MemberExpression,
+        dest: Register,
+        call_ty: TypeId,
+        args: &[Register],
+        prelowered_object: Option<Register>,
+        builtin_dispatch: &crate::semantics::SemanticBuiltinDispatch,
+    ) -> Option<Register> {
+        let method_name = self.interner.resolve(member.property.name);
+        let completion = self
+            .semantic_call_dispatch(call.span.start, call.span.end)
+            .map(|dispatch| dispatch.completion_kind)
+            .unwrap_or(crate::semantics::CallCompletionKind::RuntimeClosure);
+        match builtin_dispatch.kind {
+            crate::semantics::BuiltinDispatchKind::NamespaceCall
+            | crate::semantics::BuiltinDispatchKind::MetaobjectOp => {
+                if let Some(result) = self.emit_builtin_namespace_member_call(
+                    builtin_dispatch,
+                    dest.clone(),
+                    member,
+                    method_name,
+                    args,
+                ) {
+                    return Some(result);
+                }
+                let object = prelowered_object
+                    .clone()
+                    .unwrap_or_else(|| self.lower_expr(&member.object));
+                let closure = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    object,
+                    closure,
+                    args.to_vec(),
+                    call_ty,
+                    completion,
+                );
+                Some(dest)
+            }
+            crate::semantics::BuiltinDispatchKind::InstanceMethod => {
+                let object = prelowered_object
+                    .clone()
+                    .unwrap_or_else(|| self.lower_expr(&member.object));
+                let dispatch_ty = builtin_dispatch
+                    .receiver_type_id
+                    .map(|ty| self.normalize_type_for_dispatch(ty.as_u32()))
+                    .filter(|ty| *ty != UNRESOLVED_TYPE_ID)
+                    .unwrap_or_else(|| self.normalize_type_for_dispatch(object.ty.as_u32()));
+                if let Some(action) = builtin_dispatch.registry_dispatch.clone() {
+                    if let Some(result) = self.try_lower_registry_member_dispatch(
+                        dest.clone(),
+                        call,
+                        object.clone(),
+                        dispatch_ty,
+                        action,
+                        method_name,
+                        args,
+                    ) {
+                        return Some(result);
+                    }
+                }
+                let closure = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    object,
+                    closure,
+                    args.to_vec(),
+                    call_ty,
+                    completion,
+                );
+                Some(dest)
+            }
+            crate::semantics::BuiltinDispatchKind::HostHandleOp => {
+                let object = prelowered_object
+                    .clone()
+                    .unwrap_or_else(|| self.lower_expr(&member.object));
+                match builtin_dispatch.host_handle_op {
+                    Some(crate::semantics::HostHandleOpKind::TaskCancel) => {
+                        self.emit_builtin_kernel_call(
+                            None,
+                            BuiltinKernelOp::HostHandle(
+                                crate::semantics::HostHandleOpKind::TaskCancel,
+                            ),
+                            vec![object],
+                        );
+                        Some(dest)
+                    }
+                    Some(crate::semantics::HostHandleOpKind::TaskIsDone) => {
+                        self.emit_builtin_kernel_call(
+                            Some(dest.clone()),
+                            BuiltinKernelOp::HostHandle(
+                                crate::semantics::HostHandleOpKind::TaskIsDone,
+                            ),
+                            vec![object],
+                        );
+                        Some(dest)
+                    }
+                    Some(crate::semantics::HostHandleOpKind::TaskIsCancelled) => {
+                        self.emit_builtin_kernel_call(
+                            Some(dest.clone()),
+                            BuiltinKernelOp::HostHandle(
+                                crate::semantics::HostHandleOpKind::TaskIsCancelled,
+                            ),
+                            vec![object],
+                        );
+                        Some(dest)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     fn emit_member_call_from_dispatch(
@@ -736,6 +792,23 @@ impl<'a> Lowerer<'a> {
         let method_name_symbol = member.property.name;
         let method_name = self.interner.resolve(method_name_symbol);
         let completion = dispatch.completion_kind;
+        let builtin_dispatch = self
+            .semantic_builtin_dispatch(call.span.start, call.span.end)
+            .cloned();
+
+        if let Some(builtin_dispatch) = builtin_dispatch.as_ref() {
+            if let Some(result) = self.emit_builtin_call_from_plan(
+                call,
+                member,
+                dest.clone(),
+                call_ty,
+                args,
+                prelowered_object.clone(),
+                builtin_dispatch,
+            ) {
+                return Some(result);
+            }
+        }
 
         match dispatch.kind {
             crate::semantics::CallDispatchKind::StaticMethod => self
@@ -856,20 +929,6 @@ impl<'a> Lowerer<'a> {
             }
             crate::semantics::CallDispatchKind::BuiltinNamespaceMethod
             | crate::semantics::CallDispatchKind::BuiltinInstanceMethod => {
-                if matches!(
-                    dispatch.kind,
-                    crate::semantics::CallDispatchKind::BuiltinNamespaceMethod
-                ) {
-                    if let Some(result) = self.emit_builtin_namespace_member_call(
-                        dest.clone(),
-                        member,
-                        method_name,
-                        args,
-                    ) {
-                        return Some(result);
-                    }
-                }
-
                 let object = prelowered_object
                     .clone()
                     .unwrap_or_else(|| self.lower_expr(&member.object));
@@ -889,49 +948,6 @@ impl<'a> Lowerer<'a> {
                         completion,
                     );
                     return Some(dest);
-                }
-
-                let dispatch_ty = dispatch
-                    .receiver_type_id
-                    .map(|ty| self.normalize_type_for_dispatch(ty.as_u32()))
-                    .filter(|ty| *ty != UNRESOLVED_TYPE_ID)
-                    .unwrap_or_else(|| self.normalize_type_for_dispatch(object.ty.as_u32()));
-
-                if dispatch_ty == TASK_TYPE_ID {
-                    match method_name {
-                        "cancel" => {
-                            self.emit(IrInstr::TaskCancel { task: object });
-                            return Some(dest);
-                        }
-                        "isDone" => {
-                            self.emit(IrInstr::NativeCall {
-                                dest: Some(dest.clone()),
-                                native_id: 0x0500,
-                                args: vec![object],
-                            });
-                            return Some(dest);
-                        }
-                        "isCancelled" => {
-                            self.emit(IrInstr::NativeCall {
-                                dest: Some(dest.clone()),
-                                native_id: 0x0501,
-                                args: vec![object],
-                            });
-                            return Some(dest);
-                        }
-                        _ => {}
-                    }
-                }
-
-                if let Some(result) = self.try_lower_registry_member_dispatch(
-                    dest.clone(),
-                    call,
-                    object.clone(),
-                    dispatch_ty,
-                    method_name,
-                    args,
-                ) {
-                    return Some(result);
                 }
 
                 let closure = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
@@ -987,41 +1003,33 @@ impl<'a> Lowerer<'a> {
 
     fn emit_builtin_instance_property_read(
         &mut self,
+        dispatch: &crate::semantics::SemanticBuiltinDispatch,
         member: &ast::MemberExpression,
         object: Register,
-        dispatch_ty: u32,
         property_name: &str,
     ) -> Option<Register> {
-        let action = self.type_registry.lookup_property(dispatch_ty, property_name)?;
+        let action = dispatch.registry_dispatch.clone()?;
         match action {
             crate::compiler::type_registry::DispatchAction::Opcode(kind) => {
                 let dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
-                match kind {
-                    crate::compiler::type_registry::OpcodeKind::StringLen => {
-                        self.emit(IrInstr::StringLen {
-                            dest: dest.clone(),
-                            string: object,
-                        });
-                    }
-                    crate::compiler::type_registry::OpcodeKind::ArrayLen => {
-                        self.emit(IrInstr::ArrayLen {
-                            dest: dest.clone(),
-                            array: object,
-                        });
-                    }
-                }
+                self.emit_builtin_kernel_call(
+                    Some(dest.clone()),
+                    BuiltinKernelOp::PropertyOpcode(kind),
+                    vec![object],
+                );
                 Some(dest)
             }
             crate::compiler::type_registry::DispatchAction::NativeCall(native_id) => {
-                let mut dest = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
-                if let Some(ret_type) = self.type_registry.lookup_return_type(native_id) {
-                    dest.ty = TypeId::new(ret_type);
-                }
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(dest.clone()),
-                    native_id,
-                    args: vec![object],
-                });
+                let mut dest = self.alloc_register(
+                    dispatch
+                        .result_type_id
+                        .unwrap_or(TypeId::new(UNRESOLVED_TYPE_ID)),
+                );
+                self.emit_builtin_kernel_call(
+                    Some(dest.clone()),
+                    BuiltinKernelOp::NativeCall(native_id),
+                    vec![object],
+                );
                 Some(dest)
             }
             crate::compiler::type_registry::DispatchAction::DeclaredField(field_type) => {
@@ -1037,6 +1045,31 @@ impl<'a> Lowerer<'a> {
                 Some(dest)
             }
             crate::compiler::type_registry::DispatchAction::ClassMethod(_, _) => None,
+        }
+    }
+
+    fn emit_builtin_property_from_plan(
+        &mut self,
+        member: &ast::MemberExpression,
+        prelowered_object: Option<Register>,
+        builtin_dispatch: &crate::semantics::SemanticBuiltinDispatch,
+    ) -> Option<Register> {
+        let property_name = self.interner.resolve(member.property.name);
+        let object = prelowered_object
+            .clone()
+            .unwrap_or_else(|| self.lower_expr(&member.object));
+        let member_expr = Expression::Member(member.clone());
+        let inferred_ty = self.get_expr_type(&member_expr);
+        let member_ty = self.dynamic_property_result_type(inferred_ty);
+        match builtin_dispatch.kind {
+            crate::semantics::BuiltinDispatchKind::NamespaceProperty => {
+                let dest = self.alloc_register(member_ty);
+                self.emit_dyn_get_named(dest.clone(), object, property_name);
+                Some(dest)
+            }
+            crate::semantics::BuiltinDispatchKind::InstanceProperty => self
+                .emit_builtin_instance_property_read(builtin_dispatch, member, object, property_name),
+            _ => None,
         }
     }
 
@@ -1092,6 +1125,17 @@ impl<'a> Lowerer<'a> {
         member: &ast::MemberExpression,
         prelowered_object: Option<Register>,
     ) -> Option<Register> {
+        if let Some(builtin_dispatch) = self
+            .semantic_builtin_dispatch(member.span.start, member.span.end)
+            .cloned()
+        {
+            if let Some(result) =
+                self.emit_builtin_property_from_plan(member, prelowered_object.clone(), &builtin_dispatch)
+            {
+                return Some(result);
+            }
+        }
+
         let dispatch = self
             .semantic_property_dispatch(member.span.start, member.span.end)?
             .clone();
@@ -1123,24 +1167,6 @@ impl<'a> Lowerer<'a> {
                 Some(dest)
             }
             crate::semantics::PropertyDispatchKind::DynamicProperty => {
-                if matches!(
-                    member_target_kind,
-                    Some(crate::semantics::MemberTargetKind::BuiltinProperty)
-                ) {
-                    let dispatch_ty = dispatch
-                        .receiver_type_id
-                        .map(|ty| self.normalize_type_for_dispatch(ty.as_u32()))
-                        .filter(|ty| *ty != UNRESOLVED_TYPE_ID)
-                        .unwrap_or_else(|| self.normalize_type_for_dispatch(object.ty.as_u32()));
-                    if let Some(result) = self.emit_builtin_instance_property_read(
-                        member,
-                        object.clone(),
-                        dispatch_ty,
-                        property_name,
-                    ) {
-                        return Some(result);
-                    }
-                }
                 let dest = self.alloc_register(member_ty);
                 self.emit_dyn_get_named(dest.clone(), object, property_name);
                 Some(dest)
@@ -1406,28 +1432,18 @@ impl<'a> Lowerer<'a> {
         call: &ast::CallExpression,
         object: Register,
         obj_type_id: u32,
+        action: crate::compiler::type_registry::DispatchAction,
         method_name: &str,
         args: &[Register],
     ) -> Option<Register> {
         if args.is_empty() && obj_type_id != UNRESOLVED_TYPE_ID {
-            if let Some(crate::compiler::type_registry::DispatchAction::Opcode(kind)) =
-                self.type_registry.lookup_property(obj_type_id, method_name)
-            {
+            if let crate::compiler::type_registry::DispatchAction::Opcode(kind) = action.clone() {
                 let len_dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
-                match kind {
-                    crate::compiler::type_registry::OpcodeKind::StringLen => {
-                        self.emit(IrInstr::StringLen {
-                            dest: len_dest.clone(),
-                            string: object,
-                        });
-                    }
-                    crate::compiler::type_registry::OpcodeKind::ArrayLen => {
-                        self.emit(IrInstr::ArrayLen {
-                            dest: len_dest.clone(),
-                            array: object,
-                        });
-                    }
-                }
+                self.emit_builtin_kernel_call(
+                    Some(len_dest.clone()),
+                    BuiltinKernelOp::PropertyOpcode(kind),
+                    vec![object],
+                );
                 return Some(len_dest);
             }
         }
@@ -1438,7 +1454,6 @@ impl<'a> Lowerer<'a> {
             return None;
         }
 
-        let action = self.type_registry.lookup_method(obj_type_id, method_name)?;
         match action {
             crate::compiler::type_registry::DispatchAction::NativeCall(mut id) => {
                 let first_arg_is_regexp = if !args.is_empty() {
@@ -1465,14 +1480,11 @@ impl<'a> Lowerer<'a> {
                 let mut native_args = Vec::with_capacity(args.len() + 1);
                 native_args.push(object);
                 native_args.extend(args.iter().cloned());
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(dest.clone()),
-                    native_id: id,
-                    args: native_args,
-                });
-                if let Some(ret_type) = self.type_registry.lookup_return_type(id) {
-                    dest.ty = TypeId::new(ret_type);
-                }
+                self.emit_builtin_kernel_call(
+                    Some(dest.clone()),
+                    BuiltinKernelOp::NativeCall(id),
+                    native_args,
+                );
                 Some(dest)
             }
             crate::compiler::type_registry::DispatchAction::ClassMethod(
@@ -2046,6 +2058,10 @@ impl<'a> Lowerer<'a> {
         )
     }
 
+    fn runtime_identifier_lookup_suppressed(&self, span_start: usize) -> bool {
+        self.suppressed_runtime_identifier_lookup_span == Some(span_start)
+    }
+
     fn semantic_identifier_is_in_tdz(&self, span_start: usize) -> bool {
         self.semantic_plan
             .resolved_identifier_at_span(span_start)
@@ -2099,6 +2115,14 @@ impl<'a> Lowerer<'a> {
         self.semantic_plan.property_dispatch_at_span(span_start, span_end)
     }
 
+    fn semantic_builtin_dispatch(
+        &self,
+        span_start: usize,
+        span_end: usize,
+    ) -> Option<&crate::semantics::SemanticBuiltinDispatch> {
+        self.semantic_plan.builtin_dispatch_at_span(span_start, span_end)
+    }
+
     fn semantic_call_dispatch(
         &self,
         span_start: usize,
@@ -2122,6 +2146,42 @@ impl<'a> Lowerer<'a> {
     ) -> Option<&crate::semantics::SemanticConstructorDispatch> {
         self.semantic_plan
             .constructor_dispatch_at_span(span_start, span_end)
+    }
+
+    fn emit_builtin_constructor_from_plan(
+        &mut self,
+        new_expr: &ast::NewExpression,
+        dest: Register,
+        builtin_dispatch: &crate::semantics::SemanticBuiltinDispatch,
+    ) -> Option<Register> {
+        match builtin_dispatch.host_handle_op {
+            Some(crate::semantics::HostHandleOpKind::ChannelConstructor) => {
+                let capacity = if let Some(first_arg) = new_expr.argument_expression(0) {
+                    self.lower_expr(first_arg)
+                } else {
+                    self.emit_i32_const(0)
+                };
+                self.emit_builtin_kernel_call(
+                    Some(dest.clone()),
+                    BuiltinKernelOp::HostHandle(
+                        crate::semantics::HostHandleOpKind::ChannelConstructor,
+                    ),
+                    vec![capacity],
+                );
+                Some(dest)
+            }
+            Some(crate::semantics::HostHandleOpKind::MutexConstructor) => {
+                self.emit_builtin_kernel_call(
+                    Some(dest.clone()),
+                    BuiltinKernelOp::HostHandle(
+                        crate::semantics::HostHandleOpKind::MutexConstructor,
+                    ),
+                    vec![],
+                );
+                Some(dest)
+            }
+            _ => None,
+        }
     }
 
     fn semantic_value_origin_kind_for_expr(
@@ -2252,10 +2312,12 @@ impl<'a> Lowerer<'a> {
         if self.js_this_binding_compat {
             match self.semantic_identifier_resolution_kind(span_start) {
                 Some(crate::semantics::ResolvedIdentifierKind::RuntimeEnvLookup) => {
-                    return Some(super::ResolvedBinding::RuntimeIdentifier {
-                        env: self.env_handle_for_binding(false, false, false),
-                        symbol,
-                    });
+                    if !self.runtime_identifier_lookup_suppressed(span_start) {
+                        return Some(super::ResolvedBinding::RuntimeIdentifier {
+                            env: self.env_handle_for_binding(false, false, false),
+                            symbol,
+                        });
+                    }
                 }
                 Some(crate::semantics::ResolvedIdentifierKind::BuiltinGlobal)
                 | Some(crate::semantics::ResolvedIdentifierKind::AmbientGlobal) => {
@@ -2268,7 +2330,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        if self.direct_eval_binding_enabled(name)
+        if self.direct_eval_binding_preempts_local_resolution(name)
             || (self.in_direct_eval_function
                 && self.semantic_identifier_requires_runtime_lookup(span_start))
         {
@@ -2822,48 +2884,48 @@ impl<'a> Lowerer<'a> {
 
     pub(super) fn emit_iterator_get_helper(&mut self, iterable: Register) -> Register {
         let iterator = self.alloc_register(UNRESOLVED);
-        self.emit(IrInstr::NativeCall {
-            dest: Some(iterator.clone()),
-            native_id: crate::compiler::native_id::OBJECT_ITERATOR_GET,
-            args: vec![iterable],
-        });
+        self.emit_builtin_kernel_call(
+            Some(iterator.clone()),
+            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::GetIterator),
+            vec![iterable],
+        );
         iterator
     }
 
     pub(super) fn emit_iterator_step_helper(&mut self, iterator: Register) -> Register {
         let step = self.alloc_register(UNRESOLVED);
-        self.emit(IrInstr::NativeCall {
-            dest: Some(step.clone()),
-            native_id: crate::compiler::native_id::OBJECT_ITERATOR_STEP,
-            args: vec![iterator],
-        });
+        self.emit_builtin_kernel_call(
+            Some(step.clone()),
+            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::Step),
+            vec![iterator],
+        );
         step
     }
 
     pub(super) fn emit_iterator_value_helper(&mut self, step_result: Register) -> Register {
         let value = self.alloc_register(UNRESOLVED);
-        self.emit(IrInstr::NativeCall {
-            dest: Some(value.clone()),
-            native_id: crate::compiler::native_id::OBJECT_ITERATOR_VALUE,
-            args: vec![step_result],
-        });
+        self.emit_builtin_kernel_call(
+            Some(value.clone()),
+            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::Value),
+            vec![step_result],
+        );
         value
     }
 
     pub(super) fn emit_iterator_close_helper(&mut self, iterator: Register) {
-        self.emit(IrInstr::NativeCall {
-            dest: None,
-            native_id: crate::compiler::native_id::OBJECT_ITERATOR_CLOSE,
-            args: vec![iterator],
-        });
+        self.emit_builtin_kernel_call(
+            None,
+            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::Close),
+            vec![iterator],
+        );
     }
 
     pub(super) fn emit_iterator_close_on_throw_helper(&mut self, iterator: Register) {
-        self.emit(IrInstr::NativeCall {
-            dest: None,
-            native_id: crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_ON_THROW,
-            args: vec![iterator],
-        });
+        self.emit_builtin_kernel_call(
+            None,
+            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::CloseOnThrow),
+            vec![iterator],
+        );
     }
 
     pub(super) fn emit_iterator_close_completion_helper(
@@ -2872,11 +2934,11 @@ impl<'a> Lowerer<'a> {
         completion: Register,
     ) -> Register {
         let dest = self.alloc_register(UNRESOLVED);
-        self.emit(IrInstr::NativeCall {
-            dest: Some(dest.clone()),
-            native_id: crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_COMPLETION,
-            args: vec![iterator, completion],
-        });
+        self.emit_builtin_kernel_call(
+            Some(dest.clone()),
+            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::CloseCompletion),
+            vec![iterator, completion],
+        );
         dest
     }
 
@@ -2885,11 +2947,11 @@ impl<'a> Lowerer<'a> {
         target_array: Register,
         iterable: Register,
     ) {
-        self.emit(IrInstr::NativeCall {
-            dest: None,
-            native_id: crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY,
-            args: vec![target_array, iterable],
-        });
+        self.emit_builtin_kernel_call(
+            None,
+            BuiltinKernelOp::Iterator(crate::semantics::IteratorOpKind::AppendToArray),
+            vec![target_array, iterable],
+        );
     }
 
     fn lower_call_argument_array(&mut self, args: &[ast::CallArgument]) -> Register {
@@ -3002,15 +3064,22 @@ impl<'a> Lowerer<'a> {
             && !self.identifier_is_ambient_runtime_global(name)
     }
 
+    fn direct_eval_binding_preempts_local_resolution(&self, name: &str) -> bool {
+        self.in_direct_eval_function && self.direct_eval_binding_enabled(name)
+    }
+
     fn identifier_is_ambient_runtime_global(&self, name: &str) -> bool {
         self.name_is_non_shadowable_intrinsic_global(name)
     }
 
     fn should_resolve_from_direct_eval_env(&self, ident: &ast::Identifier) -> bool {
         let name = self.interner.resolve(ident.name);
+        let runtime_lookup_suppressed =
+            self.runtime_identifier_lookup_suppressed(ident.span.start);
         self.in_direct_eval_function
             && (self.direct_eval_binding_enabled(name)
-                || self.semantic_identifier_requires_runtime_lookup(ident.span.start))
+                || (!runtime_lookup_suppressed
+                    && self.semantic_identifier_requires_runtime_lookup(ident.span.start)))
             && !self.identifier_is_ambient_runtime_global(name)
     }
 
@@ -4088,10 +4157,39 @@ impl<'a> Lowerer<'a> {
         if self.js_this_binding_compat && self.semantic_identifier_is_in_tdz(ident.span.start) {
             return self.emit_parameter_tdz_reference_error(name);
         }
-        if self.direct_eval_binding_enabled(name) {
-            return self.emit_direct_eval_binding_get(name, false);
+        if self.js_this_binding_compat
+            && self.active_with_env_depth > 0
+            && !self.identifier_is_ambient_runtime_global(name)
+        {
+            let saved_with_depth = self.active_with_env_depth;
+            let saved_suppressed_runtime_identifier_lookup_span =
+                self.suppressed_runtime_identifier_lookup_span;
+            return self.lower_eval_shadowable_identifier(name, |this| {
+                this.active_with_env_depth = 0;
+                this.suppressed_runtime_identifier_lookup_span = Some(ident.span.start);
+                let value = this.lower_identifier(ident);
+                this.active_with_env_depth = saved_with_depth;
+                this.suppressed_runtime_identifier_lookup_span =
+                    saved_suppressed_runtime_identifier_lookup_span;
+                value
+            });
         }
         if self.js_this_binding_compat
+            && !self.runtime_identifier_lookup_suppressed(ident.span.start)
+            && self.semantic_identifier_requires_runtime_lookup(ident.span.start)
+        {
+            let ty =
+                self.effective_identifier_value_type(ident, self.default_js_function_type());
+            if let Some(binding) = self.resolve_identifier_binding(ident.name, ident.span.start) {
+                return self.emit_load_identifier_binding(binding, ty);
+            }
+        }
+        if self.direct_eval_binding_preempts_local_resolution(name) {
+            return self.emit_direct_eval_binding_get(name, false);
+        }
+        if self.in_direct_eval_function
+            && self.js_this_binding_compat
+            && !self.runtime_identifier_lookup_suppressed(ident.span.start)
             && self.semantic_identifier_requires_runtime_lookup(ident.span.start)
         {
             return self.emit_direct_eval_binding_get(name, false);
@@ -4458,7 +4556,7 @@ impl<'a> Lowerer<'a> {
         // Ambient builtin globals (seeded by declaration surfaces) are resolved at runtime
         // through a dedicated native lookup and do not require source-level declarations.
         if self.semantic_identifier_is_builtin_global(ident.span.start) {
-            if self.direct_eval_binding_enabled(name) {
+            if self.direct_eval_binding_preempts_local_resolution(name) {
                 return self.emit_direct_eval_binding_get(name, false);
             }
             let expr_ty = self
@@ -4516,7 +4614,13 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Check if this is a named function used as a value (function reference)
+        if self.direct_eval_binding_enabled(name) {
+            return self.emit_direct_eval_binding_get(name, false);
+        }
+
+        // Check if this is a named function used as a value (function reference).
+        // Direct-eval-created function bindings must stay runtime env bindings,
+        // even in nested closures, so they intentionally bypass this fast path.
         if !self.parameter_scope_eval_mode {
             if let Some(&func_id) = self.function_map.get(&ident.name) {
                 let dest = self.alloc_register(
@@ -4529,10 +4633,6 @@ impl<'a> Lowerer<'a> {
                 });
                 return dest;
             }
-        }
-
-        if self.direct_eval_binding_enabled(name) {
-            return self.emit_direct_eval_binding_get(name, false);
         }
 
         // In JS-compat mode with runtime fallback, emit a dynamic global lookup
@@ -10905,6 +11005,7 @@ impl<'a> Lowerer<'a> {
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
         let saved_body_scope_eval_mode = self.body_scope_eval_mode;
+        let saved_in_direct_eval_function = self.in_direct_eval_function;
         // closure_locals maps local-slot indices to async func IDs; it is
         // per-scope, so it must be cleared on entry and restored on exit to
         // prevent stale entries from an outer (or sibling) function bleeding
@@ -11172,6 +11273,10 @@ impl<'a> Lowerer<'a> {
         self.current_function = Some(ir_func);
         let saved_js_strict_context = self.js_strict_context;
         self.js_strict_context = is_strict_js;
+        self.in_direct_eval_function = self
+            .direct_eval_entry_function
+            .as_deref()
+            .is_some_and(|target| target == arrow_name);
         self.body_scope_eval_arguments_mode = true;
         self.body_scope_eval_mode = saved_body_scope_eval_mode || use_js_parameter_env;
 
@@ -11188,6 +11293,10 @@ impl<'a> Lowerer<'a> {
                     arrow.span.start,
                 );
             let _ = self.emit_ensure_activation_direct_eval_env(env_object);
+        }
+
+        if self.in_direct_eval_function {
+            self.init_eval_completion_local();
         }
 
         if use_js_parameter_env {
@@ -11277,6 +11386,7 @@ impl<'a> Lowerer<'a> {
         self.pending_arrow_functions
             .push((func_id.as_u32(), arrow_func));
         self.js_strict_context = saved_js_strict_context;
+        self.in_direct_eval_function = saved_in_direct_eval_function;
 
         // Restore saved state
         self.next_register = saved_register;
@@ -11511,7 +11621,7 @@ impl<'a> Lowerer<'a> {
         if let Expression::Identifier(ident) = argument {
             let name = self.interner.resolve(ident.name);
             if self.should_resolve_from_direct_eval_env(ident)
-                || self.direct_eval_binding_enabled(name)
+                || self.direct_eval_binding_preempts_local_resolution(name)
             {
                 let operand = self.emit_direct_eval_binding_get(name, true);
                 let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
@@ -11640,6 +11750,9 @@ impl<'a> Lowerer<'a> {
     fn lower_new(&mut self, new_expr: &ast::NewExpression) -> Register {
         let semantic_constructor =
             self.semantic_constructor_target(new_expr.span.start, new_expr.span.end);
+        let builtin_dispatch = self
+            .semantic_builtin_dispatch(new_expr.span.start, new_expr.span.end)
+            .cloned();
         let dispatch = self
             .semantic_constructor_dispatch(new_expr.span.start, new_expr.span.end)
             .cloned();
@@ -11656,6 +11769,14 @@ impl<'a> Lowerer<'a> {
             .filter(|ty| ty.as_u32() != UNRESOLVED_TYPE_ID)
             .unwrap_or(UNRESOLVED);
         let dest = self.alloc_register(result_ty);
+
+        if let Some(builtin_dispatch) = builtin_dispatch.as_ref() {
+            if let Some(result) =
+                self.emit_builtin_constructor_from_plan(new_expr, dest.clone(), builtin_dispatch)
+            {
+                return result;
+            }
+        }
 
         if new_expr.has_spread_arguments() {
             let ctor_value = match dispatch_kind {
@@ -11750,35 +11871,6 @@ impl<'a> Lowerer<'a> {
                     args: native_args,
                 });
                 return dest;
-            }
-        }
-
-        if matches!(
-            dispatch_kind,
-            crate::semantics::ConstructorDispatchKind::BuiltinNativeConstructor
-        ) {
-            if let Expression::Identifier(ident) = &*new_expr.callee {
-                let name = self.interner.resolve(ident.name);
-                if name == TC::CHANNEL_TYPE_NAME {
-                    let channel_dest = self.alloc_register(TypeId::new(CHANNEL_TYPE_ID));
-                    let capacity = if let Some(first_arg) = new_expr.argument_expression(0) {
-                        self.lower_expr(first_arg)
-                    } else {
-                        self.emit_i32_const(0)
-                    };
-                    self.emit(IrInstr::NewChannel {
-                        dest: channel_dest.clone(),
-                        capacity,
-                    });
-                    return channel_dest;
-                }
-                if name == TC::MUTEX_TYPE_NAME {
-                    let mutex_dest = self.alloc_register(TypeId::new(MUTEX_TYPE_ID));
-                    self.emit(IrInstr::NewMutex {
-                        dest: mutex_dest.clone(),
-                    });
-                    return mutex_dest;
-                }
             }
         }
 

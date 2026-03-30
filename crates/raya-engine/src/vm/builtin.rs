@@ -453,6 +453,8 @@ pub mod reflect {
     pub const DEEP_CLONE: u16 = 0x0D44;
     /// `Reflect.getConstructorInfo(cls)` - Get constructor metadata
     pub const GET_CONSTRUCTOR_INFO: u16 = 0x0D45;
+    /// `Reflect.ownKeys(target)` - Get own property keys
+    pub const OWN_KEYS: u16 = 0x0D46;
 
     // ===== Phase 6: Type Utilities (0x0D50-0x0D5F) =====
 

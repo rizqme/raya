@@ -422,6 +422,7 @@ class Proxy<T extends Object> {
         this._target = target;
         this._handler = handler;
         this._proxy = __NATIVE_CALL<Object>(NC_REFLECT_CREATE_PROXY, target, handler);
+        return this._proxy;
     }
 
     isProxy(): boolean {
@@ -441,11 +442,11 @@ class Proxy<T extends Object> {
     }
 
     static revocable(target: any, handler: any): Object {
-        let proxy = new Proxy<any>(target, handler);
+        let proxy = __NATIVE_CALL<Object>(NC_REFLECT_CREATE_PROXY, target, handler);
         return {
             proxy: proxy,
             revoke: () => {
-                proxy.__revoke();
+                __NATIVE_CALL<void>(NC_REFLECT_REVOKE_PROXY, proxy);
             },
         };
     }

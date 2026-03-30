@@ -790,10 +790,6 @@ pub struct Lowerer<'a> {
     js_script_lexical_init_globals: FxHashMap<Symbol, u16>,
     /// Subset of top-level JS lexical bindings declared with `const`.
     js_script_const_globals: FxHashSet<Symbol>,
-    /// Import-local binding symbols, used for import-specific lowering diagnostics.
-    import_bindings: FxHashSet<Symbol>,
-    /// Ambient builtin globals available without explicit source declarations/imports.
-    ambient_builtin_globals: FxHashSet<String>,
     /// Cached runtime-dispatch binding hints used only for emission details.
     runtime_dispatch_object_bindings: FxHashSet<Symbol>,
     /// Constructor symbol cache for runtime-dispatch binding hints.
@@ -940,6 +936,12 @@ pub struct Lowerer<'a> {
     /// Pattern identifiers that should bind into the active runtime JS env
     /// instead of allocating a local slot.
     active_runtime_declaration_bindings: FxHashSet<String>,
+    /// Structural `with` nesting used only to keep lowering on the runtime
+    /// identifier/reference path when the semantic-plan span lookup misses.
+    active_with_env_depth: usize,
+    /// Suppress semantic runtime identifier lookup for a single identifier
+    /// span during controlled fallback recursion after a `with`-env miss.
+    suppressed_runtime_identifier_lookup_span: Option<usize>,
     /// Whether pattern binding should reuse preallocated parameter locals.
     parameter_binding_mode: bool,
     /// Whether the current function body is an arrow-compatible body where `arguments`
@@ -1589,8 +1591,6 @@ impl<'a> Lowerer<'a> {
             js_script_lexical_globals: FxHashMap::default(),
             js_script_lexical_init_globals: FxHashMap::default(),
             js_script_const_globals: FxHashSet::default(),
-            import_bindings: FxHashSet::default(),
-            ambient_builtin_globals: FxHashSet::default(),
             runtime_dispatch_object_bindings: FxHashSet::default(),
             runtime_dispatch_ctor_cache: FxHashMap::default(),
             runtime_dispatch_type_cache: FxHashMap::default(),
@@ -1650,6 +1650,8 @@ impl<'a> Lowerer<'a> {
             parameter_scope_eval_mode: false,
             parameter_tdz_symbols: FxHashSet::default(),
             active_runtime_declaration_bindings: FxHashSet::default(),
+            active_with_env_depth: 0,
+            suppressed_runtime_identifier_lookup_span: None,
             parameter_binding_mode: false,
             body_scope_eval_arguments_mode: false,
             body_scope_eval_mode: false,
@@ -1681,8 +1683,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Provide ambient builtin global names available via runtime native lookup.
-    pub fn with_ambient_builtin_globals(mut self, names: FxHashSet<String>) -> Self {
-        self.ambient_builtin_globals = names;
+    pub fn with_ambient_builtin_globals(self, _names: FxHashSet<String>) -> Self {
         self
     }
 
@@ -2231,8 +2232,6 @@ impl<'a> Lowerer<'a> {
                                 self.next_global_index += 1;
                                 global_index
                             });
-                        self.import_bindings.insert(local_name);
-
                         if let Some(imported_ty) = self
                             .type_ctx
                             .lookup_named_type(self.interner.resolve(local_name))

@@ -2838,6 +2838,37 @@ mod tests {
     }
 
     #[test]
+    fn test_semantic_plan_marks_with_destructuring_expression_identifiers_as_runtime_env_lookup() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            var sourceKey = "p";
+            var source = { p: 1 };
+            var env = {};
+            var defaultValue = 0;
+            var varTarget;
+
+            with (env) {
+              var {
+                [sourceKey]: varTarget = defaultValue
+              } = source;
+            }
+            "#,
+            SemanticProfile::js(),
+        )
+        .expect("semantic plan should build");
+
+        for expected in ["source", "sourceKey", "defaultValue"] {
+            assert!(
+                plan.hir.resolved_identifiers.iter().any(|resolved| {
+                    resolved.name == expected
+                        && resolved.kind == raya_engine::ResolvedIdentifierKind::RuntimeEnvLookup
+                }),
+                "expected {expected} to resolve through runtime env lookup inside with"
+            );
+        }
+    }
+
+    #[test]
     fn test_semantic_plan_classifies_tdz_class_name_as_binding() {
         let plan = inspect_semantic_plan_with_profile(
             r#"
@@ -3107,6 +3138,60 @@ mod tests {
         assert!(plan.hir.constructor_dispatches.iter().any(|dispatch| {
             dispatch.kind == raya_engine::ConstructorDispatchKind::BuiltinNativeConstructor
         }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_object_method_params_as_local_bindings() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            const obj = {
+                f(a, b) { return a + b; }
+            };
+            "#,
+            SemanticProfile::js(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.resolved_identifiers.iter().any(|resolved| {
+            resolved.name == "a"
+                && resolved.kind == raya_engine::ResolvedIdentifierKind::LocalBinding
+                && resolved.binding_kind == Some(raya_engine::BindingKind::Parameter)
+        }));
+        assert!(plan.hir.resolved_identifiers.iter().any(|resolved| {
+            resolved.name == "b"
+                && resolved.kind == raya_engine::ResolvedIdentifierKind::LocalBinding
+                && resolved.binding_kind == Some(raya_engine::BindingKind::Parameter)
+        }));
+    }
+
+    #[test]
+    fn test_compile_debug_prints_js_function_param_lowering_shape() {
+        let checked = GraphFrontend::new(
+            r#"
+            (() => {
+                const f = function(a, b) { return a + ":" + b; };
+                return f("x", "y");
+            })();
+            "#,
+            BuiltinMode::NodeCompat,
+            SemanticProfile::js(),
+            None,
+        )
+        .expect("frontend should build")
+        .compile_checked()
+        .expect("checked frontend should build");
+
+        let compiler = Compiler::new(checked.type_ctx, &checked.interner)
+            .with_semantic_profile(SemanticProfile::js())
+            .with_expr_types(checked.check_result.expr_types)
+            .with_type_annotation_types(checked.check_result.type_annotation_types)
+            .with_source_text(checked.full_source.clone());
+        let (_, debug) = compiler
+            .compile_with_debug(&checked.ast)
+            .expect("compile with debug should succeed");
+
+        println!("{debug}");
+        assert!(debug.contains("Function"));
     }
 
     #[test]

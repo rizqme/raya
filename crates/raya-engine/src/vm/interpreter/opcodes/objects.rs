@@ -466,6 +466,17 @@ impl<'a> Interpreter<'a> {
     }
 
     fn field_name_for_offset(&self, obj: &Object, field_offset: usize) -> Option<String> {
+        let obj_ptr = obj as *const Object;
+        if !obj_ptr.is_null() {
+            let value = unsafe {
+                Value::from_ptr(
+                    std::ptr::NonNull::new_unchecked(obj_ptr as *mut Object),
+                )
+            };
+            if self.is_registered_nominal_prototype_value(value) {
+                return self.structural_field_name_for_object_offset(obj, field_offset);
+            }
+        }
         let nominal_type_id = obj.nominal_type_id_usize();
         let class_metadata = self.class_metadata.read();
         let from_metadata = nominal_type_id.and_then(|nominal_type_id| {
@@ -484,6 +495,9 @@ impl<'a> Interpreter<'a> {
     fn field_index_for_value(&self, obj_val: Value, field_name: &str) -> Option<usize> {
         let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
+        if self.is_registered_nominal_prototype_value(obj_val) {
+            return self.structural_field_slot_index_for_object(obj, field_name);
+        }
         let nominal_type_id = obj.nominal_type_id_usize();
         let class_metadata = self.class_metadata.read();
         let from_metadata = nominal_type_id

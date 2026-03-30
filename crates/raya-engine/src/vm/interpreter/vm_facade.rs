@@ -1106,14 +1106,31 @@ impl Vm {
         object: &Object,
         field_name: &str,
     ) -> Option<Value> {
+        let object_value = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new_unchecked(
+                object as *const Object as *mut Object,
+            ))
+        };
+        let is_registered_prototype = {
+            let classes = shared.classes.read();
+            (1..classes.next_nominal_type_id()).any(|nominal_type_id| {
+                classes
+                    .get_class(nominal_type_id)
+                    .and_then(|class| class.prototype_value)
+                    .is_some_and(|prototype| prototype.raw() == object_value.raw())
+            })
+        };
         if let Some(nominal_type_id) = object.nominal_type_id_usize() {
-            let class_metadata = shared.class_metadata.read();
-            if let Some(index) = class_metadata
-                .get(nominal_type_id)
-                .and_then(|meta| meta.get_field_index(field_name))
-            {
-                if let Some(value) = object.get_field(index) {
-                    return Some(value);
+            if !is_registered_prototype {
+                let class_metadata = shared.class_metadata.read();
+                if let Some(index) = class_metadata
+                    .get(nominal_type_id)
+                    .and_then(|meta| meta.get_field_index(field_name))
+                    .filter(|index| *index < object.field_count())
+                {
+                    if let Some(value) = object.get_field(index) {
+                        return Some(value);
+                    }
                 }
             }
         }
@@ -1124,7 +1141,8 @@ impl Vm {
             }
         }
 
-        let legacy_index = match field_name {
+        let legacy_index = (!is_registered_prototype)
+            .then(|| match field_name {
             "message" => Some(0),
             "name" => Some(1),
             "stack" => Some(2),
@@ -1135,7 +1153,8 @@ impl Vm {
             "path" => Some(7),
             "errors" => Some(8),
             _ => None,
-        };
+        })
+            .flatten();
         if let Some(index) = legacy_index.filter(|index| *index < object.field_count()) {
             if let Some(value) = object.get_field(index) {
                 return Some(value);

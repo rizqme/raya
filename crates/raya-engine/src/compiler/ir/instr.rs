@@ -66,6 +66,16 @@ impl std::fmt::Display for TypeAliasId {
     }
 }
 
+/// Compact builtin/metaobject execution surface selected from semantic dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuiltinKernelOp {
+    NativeCall(u16),
+    PropertyOpcode(crate::compiler::type_registry::OpcodeKind),
+    Metaobject(crate::semantics::MetaobjectOpKind),
+    Iterator(crate::semantics::IteratorOpKind),
+    HostHandle(crate::semantics::HostHandleOpKind),
+}
+
 /// IR instruction (Three-Address Code)
 #[derive(Debug, Clone)]
 pub enum IrInstr {
@@ -134,6 +144,13 @@ pub enum IrInstr {
     NativeCall {
         dest: Option<Register>,
         native_id: u16,
+        args: Vec<Register>,
+    },
+
+    /// Builtin/metaobject/iterator/host-handle dispatch selected by the semantic planner.
+    BuiltinKernelCall {
+        dest: Option<Register>,
+        op: BuiltinKernelOp,
         args: Vec<Register>,
     },
 
@@ -539,6 +556,7 @@ impl IrInstr {
             | IrInstr::CallMethodExact { dest, .. }
             | IrInstr::CallMethodShape { dest, .. }
             | IrInstr::NativeCall { dest, .. }
+            | IrInstr::BuiltinKernelCall { dest, .. }
             | IrInstr::ModuleNativeCall { dest, .. }
             | IrInstr::CallClosure { dest, .. } => dest.as_ref(),
             IrInstr::StoreLocal { .. }
@@ -575,6 +593,7 @@ impl IrInstr {
                 | IrInstr::CallMethodExact { .. }
                 | IrInstr::CallMethodShape { .. }
                 | IrInstr::NativeCall { .. }
+                | IrInstr::BuiltinKernelCall { .. }
                 | IrInstr::ModuleNativeCall { .. }
                 | IrInstr::CallClosure { .. }
                 | IrInstr::DynGetProp { .. }

@@ -4,7 +4,7 @@ use crate::compiler::Opcode;
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Object, RayaString};
+use crate::vm::object::{DynProp, Object, RayaString};
 use crate::vm::scheduler::{ExceptionHandler, Task};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -57,19 +57,28 @@ impl<'a> Interpreter<'a> {
         object: &Object,
         field_name: &str,
     ) -> Option<usize> {
+        let object_value = unsafe {
+            Value::from_ptr(NonNull::new_unchecked(object as *const Object as *mut Object))
+        };
+        let is_registered_prototype = self.is_registered_nominal_prototype_value(object_value);
         if let Some(nominal_type_id) = object.nominal_type_id_usize() {
-            let class_metadata = self.class_metadata.read();
-            if let Some(index) = class_metadata
-                .get(nominal_type_id)
-                .and_then(|meta| meta.get_field_index(field_name))
-            {
-                return Some(index);
+            if !is_registered_prototype {
+                let class_metadata = self.class_metadata.read();
+                if let Some(index) = class_metadata
+                    .get(nominal_type_id)
+                    .and_then(|meta| meta.get_field_index(field_name))
+                    .filter(|index| *index < object.field_count())
+                {
+                    return Some(index);
+                }
             }
         }
         if let Some(index) = self.structural_field_slot_index_for_object(object, field_name) {
             return Some(index);
         }
-        Self::legacy_error_field_index(field_name, object.field_count())
+        (!is_registered_prototype)
+            .then(|| Self::legacy_error_field_index(field_name, object.field_count()))
+            .flatten()
     }
 
     pub(in crate::vm::interpreter) fn get_object_named_field_value(
@@ -116,17 +125,19 @@ impl<'a> Interpreter<'a> {
         if let Some(index) = self.get_object_named_field_index(object, field_name) {
             return object.set_field(index, value).is_ok();
         }
-        let Some(dp) = object.dyn_props_mut() else {
-            return false;
-        };
         let key = self.intern_prop_key(field_name);
-        if dp.contains_key(key) {
-            if let Some(prop) = dp.get_mut(key) {
-                prop.value = value;
+        if let Some(dp) = object.dyn_props_mut() {
+            if dp.contains_key(key) {
+                if let Some(prop) = dp.get_mut(key) {
+                    prop.value = value;
+                }
+                return true;
             }
+            dp.insert(key, DynProp::data(value));
             true
         } else {
-            false
+            object.ensure_dyn_props().insert(key, DynProp::data(value));
+            true
         }
     }
 

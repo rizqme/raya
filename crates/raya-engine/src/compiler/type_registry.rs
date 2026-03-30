@@ -22,7 +22,7 @@ pub const UNRESOLVED_TYPE_ID: u32 = u32::MAX;
 // ============================================================================
 
 /// How to dispatch a type-specific method or property access.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DispatchAction {
     /// Emit a specialized opcode directly (e.g., StringLen, ArrayLen)
     Opcode(OpcodeKind),
@@ -37,7 +37,7 @@ pub enum DispatchAction {
 }
 
 /// Specialized opcodes for property/method access.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpcodeKind {
     StringLen,
     ArrayLen,
