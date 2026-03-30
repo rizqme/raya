@@ -30,8 +30,8 @@ use crate::vm::object::{
     layout_id_from_ordered_names, ArgumentsDataProperty, ArgumentsIndexedProperty,
     ArgumentsObjectData, Array, BindingState, BindingStorageKind, Buffer, CallableKind,
     ChannelObject, Class, DateObject, DynProp, EnvBinding, EnvRecordKind, ExoticKind,
-    GeneratorSnapshotData, GeneratorStateData, LayoutId, MapObject, Object, RayaBigInt,
-    RayaString, RefCell, RegExpObject, SetObject, SlotMeta, TypeHandle,
+    GeneratorSnapshotData, GeneratorStateData, LayoutId, MapObject, Object, RayaBigInt, RayaString,
+    RefCell, RegExpObject, SetObject, SlotMeta, TypeHandle,
 };
 use crate::vm::scheduler::{PromiseReaction, PromiseReactionKind, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -2155,32 +2155,32 @@ impl<'a> Interpreter<'a> {
         class_name: &str,
         message: &str,
     ) -> Value {
-        let object_value = if let Some(nominal_type_id) = self.builtin_class_nominal_type_id(class_name)
-        {
-            self.alloc_nominal_instance_value(nominal_type_id)
-                .unwrap_or_else(|_| {
-                    let empty_names: Vec<String> = Vec::new();
-                    let layout_id = layout_id_from_ordered_names(&empty_names);
-                    self.register_structural_layout_shape(layout_id, &empty_names);
-                    let object_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
-                    unsafe {
-                        Value::from_ptr(
-                            std::ptr::NonNull::new(object_ptr.as_ptr())
-                                .expect("fallback error object ptr"),
-                        )
-                    }
-                })
-        } else {
-            let empty_names: Vec<String> = Vec::new();
-            let layout_id = layout_id_from_ordered_names(&empty_names);
-            self.register_structural_layout_shape(layout_id, &empty_names);
-            let object_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
-            unsafe {
-                Value::from_ptr(
-                    std::ptr::NonNull::new(object_ptr.as_ptr()).expect("error object ptr"),
-                )
-            }
-        };
+        let object_value =
+            if let Some(nominal_type_id) = self.builtin_class_nominal_type_id(class_name) {
+                self.alloc_nominal_instance_value(nominal_type_id)
+                    .unwrap_or_else(|_| {
+                        let empty_names: Vec<String> = Vec::new();
+                        let layout_id = layout_id_from_ordered_names(&empty_names);
+                        self.register_structural_layout_shape(layout_id, &empty_names);
+                        let object_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
+                        unsafe {
+                            Value::from_ptr(
+                                std::ptr::NonNull::new(object_ptr.as_ptr())
+                                    .expect("fallback error object ptr"),
+                            )
+                        }
+                    })
+            } else {
+                let empty_names: Vec<String> = Vec::new();
+                let layout_id = layout_id_from_ordered_names(&empty_names);
+                self.register_structural_layout_shape(layout_id, &empty_names);
+                let object_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
+                unsafe {
+                    Value::from_ptr(
+                        std::ptr::NonNull::new(object_ptr.as_ptr()).expect("error object ptr"),
+                    )
+                }
+            };
 
         let message_value = self.alloc_string_value(message);
         let name_value = self.alloc_string_value(class_name);
@@ -3040,8 +3040,7 @@ impl<'a> Interpreter<'a> {
                 let mut fixed_entries_added = false;
 
                 if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
-                    let is_registered_prototype =
-                        self.is_registered_nominal_prototype_value(value);
+                    let is_registered_prototype = self.is_registered_nominal_prototype_value(value);
                     if !is_registered_prototype {
                         let class_metadata = self.class_metadata.read();
                         if let Some(meta) = class_metadata.get(nominal_type_id) {
@@ -3050,7 +3049,8 @@ impl<'a> Interpreter<'a> {
                                     continue;
                                 }
                                 if let Some(value) = obj.get_field(index) {
-                                    entries.push((name.clone(), self.normalize_dynamic_value(value)));
+                                    entries
+                                        .push((name.clone(), self.normalize_dynamic_value(value)));
                                 }
                             }
                             fixed_entries_added = true;
@@ -4054,7 +4054,10 @@ impl<'a> Interpreter<'a> {
                 .get_own_js_property_value_by_name(env, &direct_eval_local_refcell_key(&key))
                 .is_some_and(|value| value.is_truthy());
             let outer_snapshot = self
-                .get_own_js_property_value_by_name(env, &direct_eval_outer_snapshot_marker_key(&key))
+                .get_own_js_property_value_by_name(
+                    env,
+                    &direct_eval_outer_snapshot_marker_key(&key),
+                )
                 .is_some_and(|value| value.is_truthy());
             let storage = match (local_slot, local_refcell) {
                 (Some(_), true) => BindingStorageKind::LocalRefCellSlot,
@@ -4107,11 +4110,7 @@ impl<'a> Interpreter<'a> {
             .and_then(|record| record.bindings.get(key).copied())
     }
 
-    fn env_binding_mut(
-        &mut self,
-        env: Value,
-        key: &str,
-    ) -> Option<&mut EnvBinding> {
+    fn env_binding_mut(&mut self, env: Value, key: &str) -> Option<&mut EnvBinding> {
         self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
         self.object_env_record_mut(env)
             .and_then(|record| record.bindings.get_mut(key))
@@ -4180,11 +4179,7 @@ impl<'a> Interpreter<'a> {
         let debug_eval_lookup = std::env::var("RAYA_DEBUG_EVAL_LOOKUP").is_ok();
         match reference {
             JsReference::IdentifierRef {
-                env_record:
-                    JsEnvRecord::ObjectWith {
-                        target,
-                        ..
-                    },
+                env_record: JsEnvRecord::ObjectWith { target, .. },
             } => {
                 let value = self.get_property_value_on_receiver_via_js_semantics_with_context(
                     target, key, target, task, module,
@@ -4200,10 +4195,7 @@ impl<'a> Interpreter<'a> {
                 Ok(value)
             }
             JsReference::IdentifierRef {
-                env_record:
-                    JsEnvRecord::Declarative {
-                        handle,
-                    },
+                env_record: JsEnvRecord::Declarative { handle },
             } => {
                 if let Some(binding) = self.env_binding(handle, key) {
                     if matches!(binding.state, BindingState::Uninitialized) {
@@ -4242,8 +4234,9 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                 }
-                let value =
-                    self.get_own_property_value_via_js_semantics_with_context(handle, key, task, module)?;
+                let value = self.get_own_property_value_via_js_semantics_with_context(
+                    handle, key, task, module,
+                )?;
                 if debug_eval_lookup {
                     eprintln!(
                         "[eval-read] key={} declarative={:#x} value={:?}",
@@ -4268,17 +4261,10 @@ impl<'a> Interpreter<'a> {
     ) -> Result<bool, VmError> {
         match reference {
             JsReference::IdentifierRef {
-                env_record:
-                    JsEnvRecord::ObjectWith {
-                        target,
-                        ..
-                    },
+                env_record: JsEnvRecord::ObjectWith { target, .. },
             } => self.set_property_value_via_js_semantics(target, key, value, target, task, module),
             JsReference::IdentifierRef {
-                env_record:
-                    JsEnvRecord::Declarative {
-                        handle,
-                    },
+                env_record: JsEnvRecord::Declarative { handle },
             } => {
                 if self.write_direct_eval_local_binding(handle, key, value, task, module, stack)? {
                     return Ok(true);
@@ -4290,7 +4276,9 @@ impl<'a> Interpreter<'a> {
                             handle, key, value, handle, task, module,
                         )?;
                         if written {
-                            self.clear_direct_eval_binding_outer_snapshot(handle, key, task, module)?;
+                            self.clear_direct_eval_binding_outer_snapshot(
+                                handle, key, task, module,
+                            )?;
                             if self.direct_eval_binding_is_uninitialized(handle, key) {
                                 self.clear_direct_eval_binding_uninitialized(handle, key)?;
                             }
@@ -4316,7 +4304,9 @@ impl<'a> Interpreter<'a> {
                             )?;
                             let written = wrote_global || wrote_snapshot;
                             if written {
-                                self.clear_direct_eval_binding_outer_snapshot(handle, key, task, module)?;
+                                self.clear_direct_eval_binding_outer_snapshot(
+                                    handle, key, task, module,
+                                )?;
                                 if self.direct_eval_binding_is_uninitialized(handle, key) {
                                     self.clear_direct_eval_binding_uninitialized(handle, key)?;
                                 }
@@ -4399,8 +4389,9 @@ impl<'a> Interpreter<'a> {
             if env.raw() != written_handle.raw() {
                 if let Some(binding_snapshot) = self.env_binding(env, key) {
                     if matches!(binding_snapshot.storage, BindingStorageKind::Value) {
-                        let wrote_snapshot = self
-                            .set_property_value_via_js_semantics(env, key, value, env, task, module)?;
+                        let wrote_snapshot = self.set_property_value_via_js_semantics(
+                            env, key, value, env, task, module,
+                        )?;
                         if wrote_snapshot {
                             if let Some(binding) = self.env_binding_mut(env, key) {
                                 if matches!(binding.storage, BindingStorageKind::Value) {
@@ -4433,22 +4424,12 @@ impl<'a> Interpreter<'a> {
     ) -> Result<bool, VmError> {
         match reference {
             JsReference::IdentifierRef {
-                env_record:
-                    JsEnvRecord::ObjectWith {
-                        target,
-                        ..
-                    },
-            } => self.delete_property_from_target(
-                target,
-                self.alloc_string_value(key),
-                task,
-                module,
-            ),
+                env_record: JsEnvRecord::ObjectWith { target, .. },
+            } => {
+                self.delete_property_from_target(target, self.alloc_string_value(key), task, module)
+            }
             JsReference::IdentifierRef {
-                env_record:
-                    JsEnvRecord::Declarative {
-                        handle,
-                    },
+                env_record: JsEnvRecord::Declarative { handle },
             } => {
                 if let Some(binding) = self.env_binding(handle, key) {
                     match binding.storage {
@@ -4472,12 +4453,7 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                 }
-                self.delete_property_from_target(
-                    handle,
-                    self.alloc_string_value(key),
-                    task,
-                    module,
-                )
+                self.delete_property_from_target(handle, self.alloc_string_value(key), task, module)
             }
         }
     }
@@ -4528,7 +4504,8 @@ impl<'a> Interpreter<'a> {
             module,
             key,
             JsEnvLookupMode::RespectWith,
-        )? else {
+        )?
+        else {
             return Ok(None);
         };
         self.read_identifier_reference(task, module, key, reference, stack)
@@ -4546,7 +4523,8 @@ impl<'a> Interpreter<'a> {
             module,
             key,
             JsEnvLookupMode::SkipWith,
-        )? else {
+        )?
+        else {
             return Ok(None);
         };
         self.read_identifier_reference(task, module, key, reference, stack)
@@ -4737,8 +4715,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Some(snapshot_value));
         }
         let locals_base = self.direct_eval_locals_base(env, task);
-        let local_value =
-            self.peek_task_stack_value(task, stack, locals_base + local_idx as usize);
+        let local_value = self.peek_task_stack_value(task, stack, locals_base + local_idx as usize);
         if std::env::var("RAYA_DEBUG_DIRECT_EVAL_LOCALS").is_ok() {
             eprintln!(
                 "[direct-eval-local-read] key={} env={:#x} locals_base={} local_idx={} slot={} value={:#x} string={:?}",
@@ -4913,7 +4890,8 @@ impl<'a> Interpreter<'a> {
             module,
             key,
             JsEnvLookupMode::RespectWith,
-        )? else {
+        )?
+        else {
             if debug_direct_eval_set {
                 eprintln!("[direct-eval-set] key={} reference=<none>", key);
             }
@@ -4949,7 +4927,8 @@ impl<'a> Interpreter<'a> {
                     env_record: JsEnvRecord::ObjectWith { .. },
                 } => false,
             };
-        let written = self.write_identifier_reference(task, module, key, value, reference, stack)?;
+        let written =
+            self.write_identifier_reference(task, module, key, value, reference, stack)?;
         if written && publish_to_script_global {
             let _ = self.set_shared_js_global_binding_value(key, value, task, module)?;
             self.sync_existing_script_global_property(key, value, task, module)?;
@@ -4970,7 +4949,8 @@ impl<'a> Interpreter<'a> {
             module,
             key,
             JsEnvLookupMode::SkipWith,
-        )? else {
+        )?
+        else {
             return Ok(false);
         };
         self.write_identifier_reference(task, module, key, value, reference, stack)
@@ -5020,15 +5000,18 @@ impl<'a> Interpreter<'a> {
     ) -> Result<(), VmError> {
         self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
         if let Some(record) = self.object_env_record_mut(env) {
-            record.bindings.entry(key.to_string()).or_insert(EnvBinding {
-                storage: BindingStorageKind::Value,
-                state: BindingState::Uninitialized,
-                value: Value::undefined(),
-                lexical: true,
-                outer_snapshot: false,
-                deletable: false,
-                strict: true,
-            });
+            record
+                .bindings
+                .entry(key.to_string())
+                .or_insert(EnvBinding {
+                    storage: BindingStorageKind::Value,
+                    state: BindingState::Uninitialized,
+                    value: Value::undefined(),
+                    lexical: true,
+                    outer_snapshot: false,
+                    deletable: false,
+                    strict: true,
+                });
             if let Some(binding) = record.bindings.get_mut(key) {
                 binding.lexical = true;
                 binding.deletable = false;
@@ -5146,7 +5129,14 @@ impl<'a> Interpreter<'a> {
             record.outer = Some(outer_env);
             return Ok(());
         }
-        self.define_data_property_on_target(env, DIRECT_EVAL_OUTER_ENV_KEY, outer_env, true, false, true)
+        self.define_data_property_on_target(
+            env,
+            DIRECT_EVAL_OUTER_ENV_KEY,
+            outer_env,
+            true,
+            false,
+            true,
+        )
     }
 
     fn set_direct_eval_completion(&mut self, env: Value, value: Value) -> Result<(), VmError> {
@@ -5155,7 +5145,14 @@ impl<'a> Interpreter<'a> {
             record.completion = value;
             return Ok(());
         }
-        self.define_data_property_on_target(env, DIRECT_EVAL_COMPLETION_KEY, value, true, true, true)
+        self.define_data_property_on_target(
+            env,
+            DIRECT_EVAL_COMPLETION_KEY,
+            value,
+            true,
+            true,
+            true,
+        )
     }
 
     fn direct_eval_completion(&self, env: Value) -> Option<Value> {
@@ -5212,7 +5209,11 @@ impl<'a> Interpreter<'a> {
         Ok(popped)
     }
 
-    fn set_direct_eval_locals_base(&mut self, env: Value, locals_base: usize) -> Result<(), VmError> {
+    fn set_direct_eval_locals_base(
+        &mut self,
+        env: Value,
+        locals_base: usize,
+    ) -> Result<(), VmError> {
         self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
         if let Some(record) = self.object_env_record_mut(env) {
             record.locals_base = Some(locals_base);
@@ -5333,7 +5334,9 @@ impl<'a> Interpreter<'a> {
                             module,
                             binding_name,
                             JsReference::IdentifierRef {
-                                env_record: JsEnvRecord::Declarative { handle: current_env },
+                                env_record: JsEnvRecord::Declarative {
+                                    handle: current_env,
+                                },
                             },
                             stack,
                         )?
@@ -5347,9 +5350,7 @@ impl<'a> Interpreter<'a> {
                     "Cloned declarative env missing env record".to_string(),
                 ));
             };
-            record
-                .bindings
-                .insert(binding_name.clone(), cloned_binding);
+            record.bindings.insert(binding_name.clone(), cloned_binding);
         }
         Ok(env)
     }
@@ -5492,8 +5493,12 @@ impl<'a> Interpreter<'a> {
         } else if !local_has_binding
             && !(self.active_direct_eval_persist_caller_declarations(task) && outer_has_binding)
         {
-            let _ =
-                self.activation_eval_env_create_mutable_binding(task, module, key, Value::undefined())?;
+            let _ = self.activation_eval_env_create_mutable_binding(
+                task,
+                module,
+                key,
+                Value::undefined(),
+            )?;
         }
         if self.active_direct_eval_uses_script_global_bindings(task) {
             self.bind_direct_eval_global_var(key, task, module)?;
@@ -8905,8 +8910,7 @@ impl<'a> Interpreter<'a> {
             key,
             caller_task,
             caller_module,
-        )?
-        {
+        )? {
             return Ok(Some(result));
         }
 
@@ -8979,7 +8983,10 @@ impl<'a> Interpreter<'a> {
             if should_repair {
                 if let Some(parent_ctor) = self.builtin_global_value(parent_name) {
                     if let Some(parent_proto) = self.constructor_prototype_value(parent_ctor) {
-                        self.set_constructed_object_prototype_from_value(prototype_val, parent_proto);
+                        self.set_constructed_object_prototype_from_value(
+                            prototype_val,
+                            parent_proto,
+                        );
                     }
                 }
             }
@@ -10457,9 +10464,7 @@ impl<'a> Interpreter<'a> {
                 )
             }
             DynamicFunctionFamily::Generator => {
-                format!(
-                    "return function* __dynamic_fn__({params_source}) {{\n{body_source}\n}};\n"
-                )
+                format!("return function* __dynamic_fn__({params_source}) {{\n{body_source}\n}};\n")
             }
             DynamicFunctionFamily::AsyncGenerator => format!(
                 "return async function* __dynamic_fn__({params_source}) {{\n{body_source}\n}};\n"
@@ -10740,7 +10745,10 @@ impl<'a> Interpreter<'a> {
 
     fn fast_path_strip_trivial_eval_source<'s>(&self, source: &'s str) -> Option<&'s str> {
         let source = source.trim_start_matches(|ch: char| {
-            matches!(ch, '\u{0009}' | '\u{000B}' | '\u{000C}' | '\u{0020}' | '\n' | '\r')
+            matches!(
+                ch,
+                '\u{0009}' | '\u{000B}' | '\u{000C}' | '\u{0020}' | '\n' | '\r'
+            )
         });
 
         if let Some(rest) = source.strip_prefix("//") {
@@ -10778,7 +10786,9 @@ impl<'a> Interpreter<'a> {
         module: &Module,
     ) -> Result<Value, VmError> {
         let source = self.strip_leading_hashbang_comment(source);
-        let source = self.fast_path_strip_trivial_eval_source(source).unwrap_or(source);
+        let source = self
+            .fast_path_strip_trivial_eval_source(source)
+            .unwrap_or(source);
         if self.js_source_is_only_comments_and_whitespace(source) {
             return Ok(Value::undefined());
         }
@@ -11578,7 +11588,8 @@ impl<'a> Interpreter<'a> {
     fn typed_array_nominal_class_name(&self, target: Value) -> Option<String> {
         let debug_typed_array = std::env::var("RAYA_DEBUG_TYPED_ARRAY_PROP").is_ok();
         if let Some(obj_ptr) = checked_object_ptr(target) {
-            if let Some(mut nominal_type_id) = (unsafe { &*obj_ptr.as_ptr() }).nominal_type_id_usize()
+            if let Some(mut nominal_type_id) =
+                (unsafe { &*obj_ptr.as_ptr() }).nominal_type_id_usize()
             {
                 let classes = self.classes.read();
                 loop {
@@ -11623,11 +11634,15 @@ impl<'a> Interpreter<'a> {
                     {
                         return index < obj.field_count() && obj.get_field(index).is_some();
                     }
-                    nominal_type_id = classes.get_class(current_id).and_then(|class| class.parent_id);
+                    nominal_type_id = classes
+                        .get_class(current_id)
+                        .and_then(|class| class.parent_id);
                 }
 
                 self.structural_field_slot_index_for_object(obj, field_name)
-                    .is_some_and(|index| index < obj.field_count() && obj.get_field(index).is_some())
+                    .is_some_and(|index| {
+                        index < obj.field_count() && obj.get_field(index).is_some()
+                    })
             })
     }
 
@@ -14864,7 +14879,9 @@ impl<'a> Interpreter<'a> {
             classes
                 .get_class(nominal_type_id)
                 .map(|class| class.name.clone())
-                .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", nominal_type_id)))?
+                .ok_or_else(|| {
+                    VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
+                })?
         };
         let use_dynamic_error_instance = Self::builtin_error_layout_fields(&class_name).is_some();
         let (layout_id, field_count) = if use_dynamic_error_instance {
@@ -15696,11 +15713,11 @@ impl<'a> Interpreter<'a> {
             format!("Symbol.{name}")
         };
         let symbol_ctor = self.builtin_global_value("Symbol").unwrap_or(Value::null());
-        if let Some(cached) = self
-            .metadata
-            .lock()
-            .get_metadata_property(WELL_KNOWN_SYMBOL_METADATA_KEY, symbol_ctor, &canonical_name)
-        {
+        if let Some(cached) = self.metadata.lock().get_metadata_property(
+            WELL_KNOWN_SYMBOL_METADATA_KEY,
+            symbol_ctor,
+            &canonical_name,
+        ) {
             return Ok(cached);
         }
         let value = self.alloc_symbol_object(&canonical_name)?;
@@ -16031,9 +16048,9 @@ impl<'a> Interpreter<'a> {
                         "Object.defineProperty key must be a string or symbol".to_string(),
                     )));
                 };
-                if let Err(error) = self.apply_descriptor_to_target_with_context(
-                    target, &key, descriptor, task, module,
-                ) {
+                if let Err(error) = self
+                    .apply_descriptor_to_target_with_context(target, &key, descriptor, task, module)
+                {
                     return Some(OpcodeResult::Error(error));
                 }
                 Some(
@@ -16370,8 +16387,7 @@ impl<'a> Interpreter<'a> {
                             .to_string(),
                     )));
                 }
-                if let Err(error) = self.append_iterable_to_array(args[0], args[1], task, module)
-                {
+                if let Err(error) = self.append_iterable_to_array(args[0], args[1], task, module) {
                     return Some(OpcodeResult::Error(error));
                 }
                 Some(
@@ -16594,12 +16610,12 @@ impl<'a> Interpreter<'a> {
                                 }
                                 OpcodeResult::Suspend(SuspendReason::IoWait)
                             }
-                            NativeCallResult::Unhandled => OpcodeResult::Error(
-                                VmError::RuntimeError(format!(
+                            NativeCallResult::Unhandled => {
+                                OpcodeResult::Error(VmError::RuntimeError(format!(
                                     "Registered kernel native index {} unhandled",
                                     local_idx
-                                )),
-                            ),
+                                )))
+                            }
                             NativeCallResult::Error(msg) => {
                                 OpcodeResult::Error(VmError::RuntimeError(msg))
                             }
@@ -16713,31 +16729,30 @@ impl<'a> Interpreter<'a> {
                             };
                             let mutex_id =
                                 MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
-                            let result = if let Some(mutex) =
-                                self.mutex_registry.get_mutex(mutex_id)
-                            {
-                                match mutex.try_lock() {
-                                    Some(_guard) => {
-                                        self.mutex_registry.set_guard(mutex_id, _guard);
-                                        OpcodeResult::Continue
+                            if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                                match mutex.try_lock(task.id()) {
+                                    Ok(()) => {
+                                        task.add_held_mutex(mutex_id);
+                                        stack
+                                            .push(Value::null())
+                                            .map_or_else(OpcodeResult::Error, |_| {
+                                                OpcodeResult::Continue
+                                            })
                                     }
-                                    None => OpcodeResult::Suspend(
-                                        crate::vm::scheduler::SuspendReason::MutexLock { mutex_id },
-                                    ),
+                                    Err(_) => {
+                                        task.set_resume_value(Value::null());
+                                        OpcodeResult::Suspend(
+                                            crate::vm::scheduler::SuspendReason::MutexLockCall {
+                                                mutex_id,
+                                            },
+                                        )
+                                    }
                                 }
                             } else {
                                 OpcodeResult::Error(VmError::RuntimeError(format!(
                                     "Mutex {:?} not found",
                                     mutex_id
                                 )))
-                            };
-                            match result {
-                                OpcodeResult::Continue => {
-                                    stack
-                                        .push(Value::undefined())
-                                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
-                                }
-                                other => other,
                             }
                         }
                         crate::semantics::HostHandleOpKind::MutexUnlock => {
@@ -16747,38 +16762,45 @@ impl<'a> Interpreter<'a> {
                             };
                             let mutex_id =
                                 MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
-                            let result = if let Some(_mutex) =
-                                self.mutex_registry.get_mutex(mutex_id)
-                            {
-                                self.mutex_registry.clear_guard(mutex_id);
-                                let waiters = self.mutex_registry.wake_waiters(mutex_id);
-                                for waiter_task in waiters {
-                                    if let Some(reason) = waiter_task.suspend_reason() {
-                                        if matches!(
-                                            reason,
-                                            Some(crate::vm::scheduler::SuspendReason::MutexLockCall { .. })
-                                        ) {
-                                            waiter_task.set_resume_value(Value::undefined());
+                            if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                                match mutex.unlock(task.id()) {
+                                    Ok(next_waiter) => {
+                                        task.remove_held_mutex(mutex_id);
+
+                                        if let Some(waiter_id) = next_waiter {
+                                            let tasks = self.tasks.read();
+                                            if let Some(waiter_task) = tasks.get(&waiter_id) {
+                                                if waiter_task.try_resume() {
+                                                    waiter_task.add_held_mutex(mutex_id);
+                                                    if matches!(
+                                                        waiter_task.suspend_reason(),
+                                                        Some(
+                                                            crate::vm::scheduler::SuspendReason::MutexLockCall { .. }
+                                                        )
+                                                    ) {
+                                                        waiter_task.set_resume_value(Value::null());
+                                                    }
+                                                    waiter_task.clear_suspend_reason();
+                                                    self.injector.push(waiter_task.clone());
+                                                }
+                                            }
                                         }
+
+                                        stack
+                                            .push(Value::null())
+                                            .map_or_else(OpcodeResult::Error, |_| {
+                                                OpcodeResult::Continue
+                                            })
                                     }
-                                    waiter_task.set_state(TaskState::Resumed);
-                                    waiter_task.clear_suspend_reason();
-                                    self.injector.push(waiter_task.clone());
+                                    Err(e) => {
+                                        OpcodeResult::Error(VmError::RuntimeError(format!("{}", e)))
+                                    }
                                 }
-                                OpcodeResult::Continue
                             } else {
                                 OpcodeResult::Error(VmError::RuntimeError(format!(
                                     "Mutex {:?} not found",
                                     mutex_id
                                 )))
-                            };
-                            match result {
-                                OpcodeResult::Continue => {
-                                    stack
-                                        .push(Value::undefined())
-                                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
-                                }
-                                other => other,
                             }
                         }
                         crate::semantics::HostHandleOpKind::TaskCancel => {
@@ -16806,10 +16828,9 @@ impl<'a> Interpreter<'a> {
                         crate::semantics::HostHandleOpKind::TaskIsDone => {
                             dispatch_native(self, crate::compiler::native_id::TASK_IS_DONE)
                         }
-                        crate::semantics::HostHandleOpKind::TaskIsCancelled => dispatch_native(
-                            self,
-                            crate::compiler::native_id::TASK_IS_CANCELLED,
-                        ),
+                        crate::semantics::HostHandleOpKind::TaskIsCancelled => {
+                            dispatch_native(self, crate::compiler::native_id::TASK_IS_CANCELLED)
+                        }
                     },
                 }
             }
@@ -17022,33 +17043,34 @@ impl<'a> Interpreter<'a> {
                             Ok(Some(v)) => Some(v),
                             Ok(None) => match self.shared_js_global_binding_value(&name.data) {
                                 Ok(Some(v)) => Some(v),
-                                Ok(None) => match self.ensure_builtin_global_value("globalThis", task)
-                                {
-                                    Ok(Some(gt)) => {
-                                        let has_prop =
-                                            self.has_property_via_js_semantics(gt, &name.data);
-                                        let value = if has_prop {
-                                            self.get_property_value_via_js_semantics_with_context(
+                                Ok(None) => {
+                                    match self.ensure_builtin_global_value("globalThis", task) {
+                                        Ok(Some(gt)) => {
+                                            let has_prop =
+                                                self.has_property_via_js_semantics(gt, &name.data);
+                                            let value = if has_prop {
+                                                self.get_property_value_via_js_semantics_with_context(
                                                 gt, &name.data, task, module,
                                             )
                                             .ok()
                                             .flatten()
-                                        } else {
-                                            None
-                                        };
-                                        if debug_ambient_global {
-                                            eprintln!(
+                                            } else {
+                                                None
+                                            };
+                                            if debug_ambient_global {
+                                                eprintln!(
                                                 "[ambient-global:get] name={} source=globalThis has={} value={:?}",
                                                 name.data,
                                                 has_prop,
                                                 value.map(|v| format!("{:#x}", v.raw()))
                                             );
+                                            }
+                                            value
                                         }
-                                        value
+                                        Ok(None) => None,
+                                        Err(error) => return OpcodeResult::Error(error),
                                     }
-                                    Ok(None) => None,
-                                    Err(error) => return OpcodeResult::Error(error),
-                                },
+                                }
                                 Err(error) => return OpcodeResult::Error(error),
                             },
                             Err(error) => return OpcodeResult::Error(error),
@@ -17140,8 +17162,7 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let message = unsafe { &*message_ptr.as_ptr() };
-                        let exception =
-                            self.alloc_builtin_error_value("TypeError", &message.data);
+                        let exception = self.alloc_builtin_error_value("TypeError", &message.data);
                         if let Err(error) = stack.push(exception) {
                             return OpcodeResult::Error(error);
                         }
@@ -17444,11 +17465,7 @@ impl<'a> Interpreter<'a> {
                         if self.active_direct_eval_uses_script_global_bindings(task) {
                             if self.resolve_own_property_shape(env, &name.data).is_none() {
                                 if let Err(error) = self.create_direct_eval_mutable_binding_on_env(
-                                    env,
-                                    task,
-                                    module,
-                                    &name.data,
-                                    args[1],
+                                    env, task, module, &name.data, args[1],
                                 ) {
                                     return OpcodeResult::Error(error);
                                 }
@@ -17485,10 +17502,7 @@ impl<'a> Interpreter<'a> {
                                 && outer_has_binding;
                             if !use_outer_binding {
                                 if let Err(error) = self.activation_eval_env_create_mutable_binding(
-                                    task,
-                                    module,
-                                    &name.data,
-                                    args[1],
+                                    task, module, &name.data, args[1],
                                 ) {
                                     return OpcodeResult::Error(error);
                                 }
@@ -17833,9 +17847,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id
-                        == crate::compiler::native_id::OBJECT_ENSURE_ACTIVATION_EVAL_ENV =>
-                    {
+                    id if id == crate::compiler::native_id::OBJECT_ENSURE_ACTIVATION_EVAL_ENV => {
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "ensureActivationEvalEnv expects exactly one env object"
@@ -17862,7 +17874,6 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-
 
                     id if id == crate::compiler::native_id::OBJECT_SET_PROPERTY
                         || id == crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT =>
@@ -17898,8 +17909,7 @@ impl<'a> Interpreter<'a> {
                             Ok(written) => written,
                             Err(error) => return OpcodeResult::Error(error),
                         };
-                        if !written
-                            && id == crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT
+                        if !written && id == crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT
                         {
                             return OpcodeResult::Error(VmError::TypeError(format!(
                                 "Cannot assign to non-writable property '{}'",
@@ -18003,9 +18013,9 @@ impl<'a> Interpreter<'a> {
                                 "Cannot convert property key to string".to_string(),
                             ));
                         };
-                        let result = match self.has_property_via_js_semantics_with_context(
-                            obj, &key_str, task, module,
-                        ) {
+                        let result = match self
+                            .has_property_via_js_semantics_with_context(obj, &key_str, task, module)
+                        {
                             Ok(result) => result,
                             Err(error) => return OpcodeResult::Error(error),
                         };
@@ -18207,11 +18217,9 @@ impl<'a> Interpreter<'a> {
                             args.get(2).copied().is_some_and(|value| value.is_truthy());
                         let in_parameter_initializer =
                             args.get(3).copied().is_some_and(|value| value.is_truthy());
-                        let uses_script_global_bindings = args
-                            .get(4)
-                            .copied()
-                            .is_some_and(|value| value.is_truthy())
-                            || self.active_direct_eval_uses_script_global_bindings(task);
+                        let uses_script_global_bindings =
+                            args.get(4).copied().is_some_and(|value| value.is_truthy())
+                                || self.active_direct_eval_uses_script_global_bindings(task);
                         let value = match self.eval_dynamic_js_source(
                             &source,
                             DynamicJsCompileOptions {
@@ -18373,9 +18381,7 @@ impl<'a> Interpreter<'a> {
                                     .unwrap_or("<unknown>");
                                 eprintln!(
                                     "[CALL_HELPER] current={}::{}#{}",
-                                    module.metadata.name,
-                                    current_func_name,
-                                    current_func_id
+                                    module.metadata.name, current_func_name, current_func_id
                                 );
                                 for (index, frame) in
                                     task.get_execution_frames().iter().rev().take(6).enumerate()
@@ -18388,9 +18394,7 @@ impl<'a> Interpreter<'a> {
                                         .unwrap_or("<unknown>");
                                     eprintln!(
                                         "[CALL_HELPER] frame[{index}]={}::{}#{}",
-                                        frame.module.metadata.name,
-                                        frame_func_name,
-                                        frame.func_id
+                                        frame.module.metadata.name, frame_func_name, frame.func_id
                                     );
                                 }
                             }
@@ -18425,11 +18429,7 @@ impl<'a> Interpreter<'a> {
                                             receiver,
                                         } => {
                                             return self.exec_bound_native_method_call(
-                                                stack,
-                                                *receiver,
-                                                *native_id,
-                                                rest_args,
-                                                module,
+                                                stack, *receiver, *native_id, rest_args, module,
                                                 task,
                                             );
                                         }
@@ -18488,11 +18488,7 @@ impl<'a> Interpreter<'a> {
                                             receiver,
                                         } => {
                                             return self.exec_bound_native_method_call(
-                                                stack,
-                                                *receiver,
-                                                *native_id,
-                                                apply_args,
-                                                module,
+                                                stack, *receiver, *native_id, apply_args, module,
                                                 task,
                                             );
                                         }
@@ -20886,7 +20882,10 @@ impl<'a> Interpreter<'a> {
                                     generator.completion_emitted = true;
                                     generator_task.fail();
                                     if is_async {
-                                        self.ensure_task_exception_for_error(&generator_task, &error);
+                                        self.ensure_task_exception_for_error(
+                                            &generator_task,
+                                            &error,
+                                        );
                                         let exception = generator_task
                                             .current_exception()
                                             .unwrap_or(Value::undefined());
@@ -21028,7 +21027,10 @@ impl<'a> Interpreter<'a> {
                                     generator.completion_emitted = true;
                                     generator_task.fail();
                                     if is_async {
-                                        self.ensure_task_exception_for_error(&generator_task, &error);
+                                        self.ensure_task_exception_for_error(
+                                            &generator_task,
+                                            &error,
+                                        );
                                         let exception = generator_task
                                             .current_exception()
                                             .unwrap_or(Value::undefined());
@@ -21154,7 +21156,9 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == crate::compiler::native_id::OBJECT_ASSIGN_BINDING_NAME_IF_MISSING => {
+                    id if id
+                        == crate::compiler::native_id::OBJECT_ASSIGN_BINDING_NAME_IF_MISSING =>
+                    {
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Object.assignBindingNameIfMissing requires target and binding name"
@@ -21777,17 +21781,21 @@ impl<'a> Interpreter<'a> {
                             let mut numeric_parts = [0.0_f64; 7];
                             numeric_parts[2] = 1.0;
                             for (index, value) in parts.iter().take(7).copied().enumerate() {
-                                let number = match self.js_to_number_with_context(value, task, module) {
-                                    Ok(number) => number,
-                                    Err(error) => return OpcodeResult::Error(error),
-                                };
+                                let number =
+                                    match self.js_to_number_with_context(value, task, module) {
+                                        Ok(number) => number,
+                                        Err(error) => return OpcodeResult::Error(error),
+                                    };
                                 if !number.is_finite() {
                                     numeric_parts[index] = number;
                                     continue;
                                 }
                                 numeric_parts[index] = number.trunc();
                             }
-                            if numeric_parts.iter().any(|value| value.is_nan() || value.is_infinite()) {
+                            if numeric_parts
+                                .iter()
+                                .any(|value| value.is_nan() || value.is_infinite())
+                            {
                                 f64::NAN
                             } else {
                                 let mut year = numeric_parts[0] as i32;

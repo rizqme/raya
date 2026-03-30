@@ -13,12 +13,12 @@ const CHANNEL_LENGTH: number = 0x0407;
 const CHANNEL_CAPACITY: number = 0x0408;
 
 class Channel<T> {
-    private channelId: number;
+    private channelId: any;
 
     // Create a new channel with optional buffer capacity
     // capacity = 0 means unbuffered (synchronous send/receive)
     constructor(capacity: number) {
-        this.channelId = __NATIVE_CALL<number>(CHANNEL_NEW, capacity);
+        this.channelId = __NATIVE_CALL<any>(CHANNEL_NEW, capacity);
     }
 
     // Send a value to the channel (blocks if buffer full)

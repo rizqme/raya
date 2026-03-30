@@ -497,12 +497,6 @@ impl TypeSubstitution {
                 value: self.apply_register(value),
             },
             IrInstr::Debugger => IrInstr::Debugger,
-            IrInstr::MutexLock { mutex } => IrInstr::MutexLock {
-                mutex: self.apply_register(mutex),
-            },
-            IrInstr::MutexUnlock { mutex } => IrInstr::MutexUnlock {
-                mutex: self.apply_register(mutex),
-            },
             IrInstr::ArrayPush { array, element } => IrInstr::ArrayPush {
                 array: self.apply_register(array),
                 element: self.apply_register(element),

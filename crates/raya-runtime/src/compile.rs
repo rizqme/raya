@@ -136,8 +136,10 @@ impl GraphFrontend {
         ts_options: Option<&TsCompilerOptions>,
     ) -> Result<Self, RuntimeError> {
         validate_profile_constraints(builtin_mode, profile, ts_options)?;
-        if matches!(profile.typing, raya_engine::semantics::TypingDiscipline::StrictTs)
-            && ts_options.is_some_and(|options| options.strict == Some(false))
+        if matches!(
+            profile.typing,
+            raya_engine::semantics::TypingDiscipline::StrictTs
+        ) && ts_options.is_some_and(|options| options.strict == Some(false))
         {
             return Err(RuntimeError::TypeCheck(
                 "TypeScript semantic profile requires strict TS compiler options.".to_string(),
@@ -2803,14 +2805,18 @@ mod tests {
             reference.kind == raya_engine::ReferenceExprKind::PropertyNamed
                 && reference.name.as_deref() == Some("count")
         }));
-        assert!(hir.call_ops.iter().any(|call| {
-            call.kind == raya_engine::CallOpKind::DirectEval
-        }));
-        assert!(hir.update_ops.iter().any(|op| {
-            op.kind == raya_engine::UpdateOpKind::PostfixIncrement
-        }));
+        assert!(hir
+            .call_ops
+            .iter()
+            .any(|call| { call.kind == raya_engine::CallOpKind::DirectEval }));
+        assert!(hir
+            .update_ops
+            .iter()
+            .any(|op| { op.kind == raya_engine::UpdateOpKind::PostfixIncrement }));
         assert!(hir.destructuring_plans.iter().any(|plan| {
-            plan.has_computed_keys && plan.has_defaults && plan.binding_names.iter().any(|name| name == "value")
+            plan.has_computed_keys
+                && plan.has_defaults
+                && plan.binding_names.iter().any(|name| name == "value")
         }));
         assert!(hir.loop_scopes.iter().any(|plan| {
             plan.creates_per_iteration_env && plan.binding_names.iter().any(|name| name == "i")
@@ -2956,9 +2962,11 @@ mod tests {
         )
         .expect("semantic plan should build");
 
-        assert!(plan.hir.constructor_targets.iter().any(|target| {
-            target.kind == raya_engine::ConstructorTargetKind::NominalClass
-        }));
+        assert!(plan
+            .hir
+            .constructor_targets
+            .iter()
+            .any(|target| { target.kind == raya_engine::ConstructorTargetKind::NominalClass }));
     }
 
     #[test]
@@ -2980,9 +2988,11 @@ mod tests {
             target.name.as_deref() == Some("method")
                 && target.kind == raya_engine::MemberTargetKind::NominalMethod
         }));
-        assert!(plan.hir.call_targets.iter().any(|target| {
-            target.kind == raya_engine::CallTargetKind::NominalMethod
-        }));
+        assert!(plan
+            .hir
+            .call_targets
+            .iter()
+            .any(|target| { target.kind == raya_engine::CallTargetKind::NominalMethod }));
     }
 
     #[test]
@@ -3001,9 +3011,11 @@ mod tests {
             target.name.as_deref() == Some("method")
                 && target.kind == raya_engine::MemberTargetKind::StructuralSlot
         }));
-        assert!(plan.hir.call_targets.iter().any(|target| {
-            target.kind == raya_engine::CallTargetKind::StructuralCall
-        }));
+        assert!(plan
+            .hir
+            .call_targets
+            .iter()
+            .any(|target| { target.kind == raya_engine::CallTargetKind::StructuralCall }));
     }
 
     #[test]
@@ -3020,9 +3032,11 @@ mod tests {
         )
         .expect("semantic plan should build");
 
-        assert!(plan.hir.object_shapes.iter().any(|shape| {
-            shape.kind == raya_engine::ObjectShapeKind::Dynamic
-        }));
+        assert!(plan
+            .hir
+            .object_shapes
+            .iter()
+            .any(|shape| { shape.kind == raya_engine::ObjectShapeKind::Dynamic }));
         assert!(plan.hir.property_dispatches.iter().any(|dispatch| {
             dispatch.property_name.as_deref() == Some("value")
                 && dispatch.kind == raya_engine::PropertyDispatchKind::DynamicProperty
@@ -3136,7 +3150,7 @@ mod tests {
         .expect("semantic plan should build");
 
         assert!(plan.hir.constructor_dispatches.iter().any(|dispatch| {
-            dispatch.kind == raya_engine::ConstructorDispatchKind::BuiltinNativeConstructor
+            dispatch.kind == raya_engine::ConstructorDispatchKind::NominalClass
         }));
     }
 

@@ -8,9 +8,8 @@ use super::{
     REGEXP_TYPE_ID, STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::{
-    BasicBlock, BinaryOp, KernelOp, FunctionId, IrConstant, IrInstr, IrValue,
-    NominalTypeId, Register,
-    Terminator, UnaryOp,
+    BasicBlock, BinaryOp, FunctionId, IrConstant, IrInstr, IrValue, KernelOp, NominalTypeId,
+    Register, Terminator, UnaryOp,
 };
 use crate::compiler::CompileError;
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
@@ -99,7 +98,10 @@ enum ResolvedIdentifierClosure {
 
 #[derive(Clone)]
 enum PreparedDestructuringTarget {
-    Identifier { symbol: Symbol, span_start: usize },
+    Identifier {
+        symbol: Symbol,
+        span_start: usize,
+    },
     StaticFieldGlobal {
         global_index: u16,
     },
@@ -427,9 +429,12 @@ impl<'a> Lowerer<'a> {
         let method_name_symbol = member.property.name;
 
         if let Some(nominal_type_id) = self.static_member_owner_nominal_type(&member.object) {
-            if let Some(&func_id) = self.static_method_map.get(&(nominal_type_id, method_name_symbol))
+            if let Some(&func_id) = self
+                .static_method_map
+                .get(&(nominal_type_id, method_name_symbol))
             {
-                if !self.js_this_binding_compat && self.object_expr_is_class_constructor_ref(&member.object)
+                if !self.js_this_binding_compat
+                    && self.object_expr_is_class_constructor_ref(&member.object)
                 {
                     self.emit(IrInstr::Spawn {
                         dest,
@@ -723,9 +728,7 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::MutexLock) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::HostHandle(
-                                crate::semantics::HostHandleOpKind::MutexLock,
-                            ),
+                            KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexLock),
                             vec![object],
                         );
                         Some(dest)
@@ -733,9 +736,7 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::MutexUnlock) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::HostHandle(
-                                crate::semantics::HostHandleOpKind::MutexUnlock,
-                            ),
+                            KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexUnlock),
                             vec![object],
                         );
                         Some(dest)
@@ -743,9 +744,7 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::TaskCancel) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::HostHandle(
-                                crate::semantics::HostHandleOpKind::TaskCancel,
-                            ),
+                            KernelOp::HostHandle(crate::semantics::HostHandleOpKind::TaskCancel),
                             vec![object],
                         );
                         Some(dest)
@@ -753,9 +752,7 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::TaskIsDone) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::HostHandle(
-                                crate::semantics::HostHandleOpKind::TaskIsDone,
-                            ),
+                            KernelOp::HostHandle(crate::semantics::HostHandleOpKind::TaskIsDone),
                             vec![object],
                         );
                         Some(dest)
@@ -848,17 +845,14 @@ impl<'a> Lowerer<'a> {
                     .and_then(|ty| self.nominal_type_id_from_type_id(ty))
                     .or_else(|| self.infer_nominal_type_id(&member.object));
                 if let Some(nominal_type_id) = nominal_type_id {
-                    if self
-                        .nominal_member_call_requires_property_get(
-                            nominal_type_id,
-                            method_name_symbol,
-                        )
-                    {
+                    if self.nominal_member_call_requires_property_get(
+                        nominal_type_id,
+                        method_name_symbol,
+                    ) {
                         let receiver = prelowered_object
                             .clone()
                             .unwrap_or_else(|| self.lower_expr(&member.object));
-                        let closure =
-                            self.lower_member_from_base(member, Some(receiver.clone()));
+                        let closure = self.lower_member_from_base(member, Some(receiver.clone()));
                         self.emit_member_closure_invoke(
                             dest.clone(),
                             receiver,
@@ -1088,7 +1082,12 @@ impl<'a> Lowerer<'a> {
                 Some(dest)
             }
             crate::semantics::BuiltinDispatchKind::InstanceProperty => self
-                .emit_builtin_instance_property_read(builtin_dispatch, member, object, property_name),
+                .emit_builtin_instance_property_read(
+                    builtin_dispatch,
+                    member,
+                    object,
+                    property_name,
+                ),
             _ => None,
         }
     }
@@ -1117,12 +1116,12 @@ impl<'a> Lowerer<'a> {
             return Some(dest);
         }
 
-        let expr_ty = if object.ty.as_u32() != UNKNOWN_TYPE_ID && object.ty.as_u32() != UNRESOLVED_TYPE_ID
-        {
-            object.ty
-        } else {
-            self.get_expr_type(&member.object)
-        };
+        let expr_ty =
+            if object.ty.as_u32() != UNKNOWN_TYPE_ID && object.ty.as_u32() != UNRESOLVED_TYPE_ID {
+                object.ty
+            } else {
+                self.get_expr_type(&member.object)
+            };
         let shape_id = self.structural_shape_id_from_type(expr_ty)?;
         let field_index = self.structural_slot_index_from_type(expr_ty, property_name)?;
         let field_ty = self
@@ -1149,9 +1148,11 @@ impl<'a> Lowerer<'a> {
             .semantic_builtin_dispatch(member.span.start, member.span.end)
             .cloned()
         {
-            if let Some(result) =
-                self.emit_builtin_property_from_plan(member, prelowered_object.clone(), &builtin_dispatch)
-            {
+            if let Some(result) = self.emit_builtin_property_from_plan(
+                member,
+                prelowered_object.clone(),
+                &builtin_dispatch,
+            ) {
                 return Some(result);
             }
         }
@@ -1760,8 +1761,7 @@ impl<'a> Lowerer<'a> {
     ) -> Option<Vec<(String, u16)>> {
         match object_expr {
             Expression::Identifier(ident) => {
-                let shape_kind =
-                    self.semantic_object_shape_kind(ident.span.start, ident.span.end);
+                let shape_kind = self.semantic_object_shape_kind(ident.span.start, ident.span.end);
                 if matches!(
                     shape_kind,
                     Some(
@@ -1777,18 +1777,21 @@ impl<'a> Lowerer<'a> {
                     .get(&ident.name)
                     .and_then(|alias| self.projected_structural_layout_from_alias_name(alias))
                     .or_else(|| {
-                        self.runtime_constructor_type_cache.get(&ident.name).and_then(|ty| {
-                            self.structural_static_slot_layout_from_type(*ty).map(|layout| {
-                                layout
-                                    .into_iter()
-                                    .filter_map(|(field_name, field_idx)| {
-                                        u16::try_from(field_idx)
-                                            .ok()
-                                            .map(|slot| (field_name, slot))
+                        self.runtime_constructor_type_cache
+                            .get(&ident.name)
+                            .and_then(|ty| {
+                                self.structural_static_slot_layout_from_type(*ty)
+                                    .map(|layout| {
+                                        layout
+                                            .into_iter()
+                                            .filter_map(|(field_name, field_idx)| {
+                                                u16::try_from(field_idx)
+                                                    .ok()
+                                                    .map(|slot| (field_name, slot))
+                                            })
+                                            .collect()
                                     })
-                                    .collect()
                             })
-                        })
                     })
                     .or_else(|| {
                         self.projection_layout_u16_from_type_id(self.get_expr_type(object_expr))
@@ -1817,14 +1820,19 @@ impl<'a> Lowerer<'a> {
         var_name: crate::parser::Symbol,
         dest: &Register,
     ) {
-        if let Some(fields) = self.variable_object_type_aliases.get(&var_name).and_then(|alias| {
-            self.projected_structural_layout_from_alias_name(alias).map(|layout| {
-                layout
-                    .into_iter()
-                    .map(|(field_name, field_idx)| (field_name, usize::from(field_idx)))
-                    .collect::<Vec<_>>()
+        if let Some(fields) = self
+            .variable_object_type_aliases
+            .get(&var_name)
+            .and_then(|alias| {
+                self.projected_structural_layout_from_alias_name(alias)
+                    .map(|layout| {
+                        layout
+                            .into_iter()
+                            .map(|(field_name, field_idx)| (field_name, usize::from(field_idx)))
+                            .collect::<Vec<_>>()
+                    })
             })
-        }) {
+        {
             self.register_structural_projection_fields
                 .insert(dest.id, fields);
             return;
@@ -2100,7 +2108,8 @@ impl<'a> Lowerer<'a> {
         span_start: usize,
         span_end: usize,
     ) -> Option<&crate::semantics::SemanticObjectShape> {
-        self.semantic_plan.object_shape_at_span(span_start, span_end)
+        self.semantic_plan
+            .object_shape_at_span(span_start, span_end)
     }
 
     fn semantic_value_origin(
@@ -2108,7 +2117,8 @@ impl<'a> Lowerer<'a> {
         span_start: usize,
         span_end: usize,
     ) -> Option<&crate::semantics::SemanticValueOrigin> {
-        self.semantic_plan.value_origin_at_span(span_start, span_end)
+        self.semantic_plan
+            .value_origin_at_span(span_start, span_end)
     }
 
     fn semantic_member_target(
@@ -2116,7 +2126,8 @@ impl<'a> Lowerer<'a> {
         span_start: usize,
         span_end: usize,
     ) -> Option<&crate::semantics::SemanticMemberTarget> {
-        self.semantic_plan.member_target_at_span(span_start, span_end)
+        self.semantic_plan
+            .member_target_at_span(span_start, span_end)
     }
 
     fn semantic_call_target(
@@ -2132,7 +2143,8 @@ impl<'a> Lowerer<'a> {
         span_start: usize,
         span_end: usize,
     ) -> Option<&crate::semantics::SemanticPropertyDispatch> {
-        self.semantic_plan.property_dispatch_at_span(span_start, span_end)
+        self.semantic_plan
+            .property_dispatch_at_span(span_start, span_end)
     }
 
     fn semantic_builtin_dispatch(
@@ -2140,7 +2152,8 @@ impl<'a> Lowerer<'a> {
         span_start: usize,
         span_end: usize,
     ) -> Option<&crate::semantics::SemanticBuiltinDispatch> {
-        self.semantic_plan.builtin_dispatch_at_span(span_start, span_end)
+        self.semantic_plan
+            .builtin_dispatch_at_span(span_start, span_end)
     }
 
     fn semantic_call_dispatch(
@@ -2148,7 +2161,8 @@ impl<'a> Lowerer<'a> {
         span_start: usize,
         span_end: usize,
     ) -> Option<&crate::semantics::SemanticCallDispatch> {
-        self.semantic_plan.call_dispatch_at_span(span_start, span_end)
+        self.semantic_plan
+            .call_dispatch_at_span(span_start, span_end)
     }
 
     fn semantic_constructor_target(
@@ -2156,7 +2170,8 @@ impl<'a> Lowerer<'a> {
         span_start: usize,
         span_end: usize,
     ) -> Option<&crate::semantics::SemanticConstructorTarget> {
-        self.semantic_plan.constructor_target_at_span(span_start, span_end)
+        self.semantic_plan
+            .constructor_target_at_span(span_start, span_end)
     }
 
     fn semantic_constructor_dispatch(
@@ -2183,9 +2198,7 @@ impl<'a> Lowerer<'a> {
                 };
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    KernelOp::HostHandle(
-                        crate::semantics::HostHandleOpKind::ChannelConstructor,
-                    ),
+                    KernelOp::HostHandle(crate::semantics::HostHandleOpKind::ChannelConstructor),
                     vec![capacity],
                 );
                 Some(dest)
@@ -2193,9 +2206,7 @@ impl<'a> Lowerer<'a> {
             Some(crate::semantics::HostHandleOpKind::MutexConstructor) => {
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    KernelOp::HostHandle(
-                        crate::semantics::HostHandleOpKind::MutexConstructor,
-                    ),
+                    KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexConstructor),
                     vec![],
                 );
                 Some(dest)
@@ -2220,14 +2231,19 @@ impl<'a> Lowerer<'a> {
         &self,
         ident: &ast::Identifier,
     ) -> Option<(Symbol, Option<TypeId>)> {
-        let origin = self.semantic_value_origin_kind_for_expr(&Expression::Identifier(ident.clone()))?;
+        let origin =
+            self.semantic_value_origin_kind_for_expr(&Expression::Identifier(ident.clone()))?;
         let constructor_type = self
             .get_expr_type(&Expression::Identifier(ident.clone()))
             .as_u32()
             .ne(&UNRESOLVED_TYPE_ID)
             .then(|| self.get_expr_type(&Expression::Identifier(ident.clone())))
-            .or_else(|| self.type_ctx.lookup_named_type(self.interner.resolve(ident.name)));
-        let is_constructable = constructor_type.is_some_and(|ty| self.type_has_construct_signature(ty))
+            .or_else(|| {
+                self.type_ctx
+                    .lookup_named_type(self.interner.resolve(ident.name))
+            });
+        let is_constructable = constructor_type
+            .is_some_and(|ty| self.type_has_construct_signature(ty))
             || self
                 .semantic_object_shape(ident.span.start, ident.span.end)
                 .is_some_and(|shape| shape.kind == crate::semantics::ObjectShapeKind::ClassValue);
@@ -2262,7 +2278,10 @@ impl<'a> Lowerer<'a> {
             .as_u32()
             .ne(&UNRESOLVED_TYPE_ID)
             .then(|| self.get_expr_type(&new_expr.callee))
-            .or_else(|| self.type_ctx.lookup_named_type(self.interner.resolve(ident.name)));
+            .or_else(|| {
+                self.type_ctx
+                    .lookup_named_type(self.interner.resolve(ident.name))
+            });
         match dispatch.kind {
             crate::semantics::ConstructorDispatchKind::ImportedConstructorValue
             | crate::semantics::ConstructorDispatchKind::RuntimeConstructorValue => {
@@ -2298,11 +2317,7 @@ impl<'a> Lowerer<'a> {
             .unwrap_or(crate::semantics::CallCompletionKind::Sync)
     }
 
-    fn semantic_identifier_is_delete_localish(
-        &self,
-        ident: &ast::Identifier,
-        name: &str,
-    ) -> bool {
+    fn semantic_identifier_is_delete_localish(&self, ident: &ast::Identifier, name: &str) -> bool {
         match self.semantic_identifier_resolution_kind(ident.span.start) {
             Some(crate::semantics::ResolvedIdentifierKind::LocalBinding)
             | Some(crate::semantics::ResolvedIdentifierKind::CaptureBinding)
@@ -2370,7 +2385,11 @@ impl<'a> Lowerer<'a> {
             });
         }
 
-        if let Some(idx) = self.captures.iter().position(|capture| capture.symbol == symbol) {
+        if let Some(idx) = self
+            .captures
+            .iter()
+            .position(|capture| capture.symbol == symbol)
+        {
             let capture = &self.captures[idx];
             return Some(super::ResolvedBinding::Capture {
                 env: self.env_handle_for_binding(false, false, false),
@@ -2533,9 +2552,7 @@ impl<'a> Lowerer<'a> {
                 self.emit_load_js_script_lexical_global(&ident, global_idx)
             }
             super::ResolvedBinding::SharedGlobal {
-                symbol,
-                global_idx,
-                ..
+                symbol, global_idx, ..
             } => {
                 let dest = self.alloc_register(ty);
                 self.emit(IrInstr::LoadGlobal {
@@ -2642,8 +2659,9 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     if let Some((closure_reg, ref captures)) = self.last_closure_info.take() {
-                        if let Some(&(_, capture_idx)) =
-                            captures.iter().find(|(captured_symbol, _)| *captured_symbol == symbol)
+                        if let Some(&(_, capture_idx)) = captures
+                            .iter()
+                            .find(|(captured_symbol, _)| *captured_symbol == symbol)
                         {
                             self.emit(IrInstr::SetClosureCapture {
                                 closure: closure_reg,
@@ -2728,17 +2746,13 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn resolve_update_reference(
-        &mut self,
-        expr: &Expression,
-    ) -> Option<super::Reference> {
+    fn resolve_update_reference(&mut self, expr: &Expression) -> Option<super::Reference> {
         let semantic_reference = self
             .semantic_plan
             .reference_at_span(expr.span().start, expr.span().end);
         match (semantic_reference.map(|reference| &reference.kind), expr) {
             (
-                Some(crate::semantics::ReferenceExprKind::Identifier)
-                | None,
+                Some(crate::semantics::ReferenceExprKind::Identifier) | None,
                 Expression::Identifier(ident),
             ) => self
                 .resolve_identifier_binding(ident.name, ident.span.start)
@@ -2777,18 +2791,18 @@ impl<'a> Lowerer<'a> {
                     strict: self.js_strict_context,
                 })
             }
-            (_, Expression::Parenthesized(paren)) => self.resolve_update_reference(&paren.expression),
+            (_, Expression::Parenthesized(paren)) => {
+                self.resolve_update_reference(&paren.expression)
+            }
             _ => None,
         }
     }
 
-    fn emit_reference_get(
-        &mut self,
-        reference: &super::Reference,
-        value_ty: TypeId,
-    ) -> Register {
+    fn emit_reference_get(&mut self, reference: &super::Reference, value_ty: TypeId) -> Register {
         match reference {
-            super::Reference::Identifier(binding) => self.emit_load_identifier_binding(*binding, value_ty),
+            super::Reference::Identifier(binding) => {
+                self.emit_load_identifier_binding(*binding, value_ty)
+            }
             super::Reference::Property { base, key, .. } => {
                 let dest = self.alloc_register(value_ty);
                 self.emit(IrInstr::DynGetKeyed {
@@ -2801,18 +2815,13 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn emit_reference_put(
-        &mut self,
-        reference: super::Reference,
-        value: Register,
-    ) -> Register {
+    fn emit_reference_put(&mut self, reference: super::Reference, value: Register) -> Register {
         match reference {
-            super::Reference::Identifier(binding) => self.emit_store_identifier_binding(binding, value),
+            super::Reference::Identifier(binding) => {
+                self.emit_store_identifier_binding(binding, value)
+            }
             super::Reference::Property {
-                base,
-                key,
-                strict,
-                ..
+                base, key, strict, ..
             } => {
                 self.emit(IrInstr::NativeCall {
                     dest: None,
@@ -3094,8 +3103,7 @@ impl<'a> Lowerer<'a> {
 
     fn should_resolve_from_direct_eval_env(&self, ident: &ast::Identifier) -> bool {
         let name = self.interner.resolve(ident.name);
-        let runtime_lookup_suppressed =
-            self.runtime_identifier_lookup_suppressed(ident.span.start);
+        let runtime_lookup_suppressed = self.runtime_identifier_lookup_suppressed(ident.span.start);
         self.in_direct_eval_function
             && (self.direct_eval_binding_enabled(name)
                 || (!runtime_lookup_suppressed
@@ -3244,7 +3252,8 @@ impl<'a> Lowerer<'a> {
         span_start: usize,
         span_end: usize,
     ) -> Option<&[crate::semantics::ScopeSnapshotBinding]> {
-        self.semantic_plan.scope_snapshot_at_span(span_start, span_end)
+        self.semantic_plan
+            .scope_snapshot_at_span(span_start, span_end)
     }
 
     fn semantic_scope_binding(
@@ -3582,8 +3591,9 @@ impl<'a> Lowerer<'a> {
                 .is_some_and(|binding| binding.kind == crate::BindingKind::Parameter);
             let is_uninitialized_parameter =
                 is_parameter_binding && self.parameter_tdz_symbols.contains(&symbol);
-            let is_uninitialized_local = semantic_binding
-                .is_some_and(|binding| binding.in_tdz && binding.kind != crate::BindingKind::Parameter);
+            let is_uninitialized_local = semantic_binding.is_some_and(|binding| {
+                binding.in_tdz && binding.kind != crate::BindingKind::Parameter
+            });
             let value = if name == "arguments" {
                 self.lower_js_arguments_object()
             } else if is_uninitialized_parameter || is_uninitialized_local {
@@ -4198,8 +4208,7 @@ impl<'a> Lowerer<'a> {
             && !self.runtime_identifier_lookup_suppressed(ident.span.start)
             && self.semantic_identifier_requires_runtime_lookup(ident.span.start)
         {
-            let ty =
-                self.effective_identifier_value_type(ident, self.default_js_function_type());
+            let ty = self.effective_identifier_value_type(ident, self.default_js_function_type());
             if let Some(binding) = self.resolve_identifier_binding(ident.name, ident.span.start) {
                 return self.emit_load_identifier_binding(binding, ty);
             }
@@ -4546,9 +4555,11 @@ impl<'a> Lowerer<'a> {
                 .semantic_object_shape_type_id(ident.span.start, ident.span.end)
                 .and_then(|ty| self.nominal_type_id_from_type_id(ty))
                 .or_else(|| {
-                    self.object_expr_is_class_constructor_ref(&Expression::Identifier(ident.clone()))
-                        .then(|| self.nominal_type_id_from_type_name(name))
-                        .flatten()
+                    self.object_expr_is_class_constructor_ref(&Expression::Identifier(
+                        ident.clone(),
+                    ))
+                    .then(|| self.nominal_type_id_from_type_name(name))
+                    .flatten()
                 });
             if let Some(nominal_type_id) = class_value_nominal_type_id {
                 if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
@@ -5391,10 +5402,7 @@ impl<'a> Lowerer<'a> {
                 Some(crate::semantics::CallOpKind::DirectEval)
             ) || name == "eval";
 
-            if self.js_this_binding_compat
-                && is_direct_eval_call
-                && !identifier_resolved_locally
-            {
+            if self.js_this_binding_compat && is_direct_eval_call && !identifier_resolved_locally {
                 let source = args.first().cloned().unwrap_or_else(|| {
                     let empty = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                     self.emit(IrInstr::Assign {
@@ -5474,7 +5482,9 @@ impl<'a> Lowerer<'a> {
 
             if self.js_this_binding_compat
                 && matches!(
-                    self.semantic_value_origin_kind_for_expr(&Expression::Identifier(ident.clone())),
+                    self.semantic_value_origin_kind_for_expr(&Expression::Identifier(
+                        ident.clone()
+                    )),
                     Some(
                         crate::semantics::ValueOriginKind::BuiltinGlobalValue
                             | crate::semantics::ValueOriginKind::BuiltinNamespace
@@ -5657,7 +5667,9 @@ impl<'a> Lowerer<'a> {
                 };
                 self.emit(IrInstr::KernelCall {
                     dest: Some(dest.clone()),
-                    op: KernelOp::HostHandle(crate::semantics::HostHandleOpKind::ChannelConstructor),
+                    op: KernelOp::HostHandle(
+                        crate::semantics::HostHandleOpKind::ChannelConstructor,
+                    ),
                     args: vec![capacity],
                 });
                 return dest;
@@ -5677,7 +5689,11 @@ impl<'a> Lowerer<'a> {
             if name == "__OPCODE_MUTEX_LOCK" {
                 if let Some(arg) = call.argument_expression(0) {
                     let mutex = self.lower_expr(arg);
-                    self.emit(IrInstr::MutexLock { mutex });
+                    self.emit_builtin_kernel_call(
+                        Some(dest.clone()),
+                        KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexLock),
+                        vec![mutex],
+                    );
                 }
                 return dest;
             }
@@ -5686,7 +5702,11 @@ impl<'a> Lowerer<'a> {
             if name == "__OPCODE_MUTEX_UNLOCK" {
                 if let Some(arg) = call.argument_expression(0) {
                     let mutex = self.lower_expr(arg);
-                    self.emit(IrInstr::MutexUnlock { mutex });
+                    self.emit_builtin_kernel_call(
+                        Some(dest.clone()),
+                        KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexUnlock),
+                        vec![mutex],
+                    );
                 }
                 return dest;
             }
@@ -6211,16 +6231,14 @@ impl<'a> Lowerer<'a> {
                 _ => Some(self.lower_expr(&member.object)),
             };
 
-            if let Some(result) =
-                self.emit_member_call_from_dispatch(
-                    call,
-                    member,
-                    dest.clone(),
-                    call_ty,
-                    &args,
-                    prelowered_member_object.clone(),
-                )
-            {
+            if let Some(result) = self.emit_member_call_from_dispatch(
+                call,
+                member,
+                dest.clone(),
+                call_ty,
+                &args,
+                prelowered_member_object.clone(),
+            ) {
                 return result;
             }
 
@@ -6245,7 +6263,8 @@ impl<'a> Lowerer<'a> {
                 crate::semantics::ValueOriginKind::BuiltinGlobalValue
                     | crate::semantics::ValueOriginKind::BuiltinNamespace
             )
-        ) && !self.object_expr_is_class_constructor_ref(&call.callee);
+        ) && !self
+            .object_expr_is_class_constructor_ref(&call.callee);
         if std::env::var("RAYA_DEBUG_CALL_FALLBACK").is_ok() {
             let callee_desc = match &*call.callee {
                 Expression::Identifier(id) => {
@@ -8900,13 +8919,10 @@ impl<'a> Lowerer<'a> {
                                     .infer_nominal_type_id(&member.object)
                                     .or_else(|| self.nominal_type_id_from_type_id(object.ty))
                                 {
-                                    if let Some(field) = self
-                                        .get_all_fields(nominal_type_id)
-                                        .iter()
-                                        .rev()
-                                        .find(|field| {
-                                            self.interner.resolve(field.name) == property
-                                        })
+                                    if let Some(field) =
+                                        self.get_all_fields(nominal_type_id).iter().rev().find(
+                                            |field| self.interner.resolve(field.name) == property,
+                                        )
                                     {
                                         return Some(PreparedDestructuringTarget::Field {
                                             object,
@@ -8915,10 +8931,7 @@ impl<'a> Lowerer<'a> {
                                     }
                                 }
                             }
-                            Some(PreparedDestructuringTarget::Member {
-                                object,
-                                property,
-                            })
+                            Some(PreparedDestructuringTarget::Member { object, property })
                         })
                 } else {
                     let object = self.lower_expr(&member.object);
@@ -8940,10 +8953,7 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                     }
-                    Some(PreparedDestructuringTarget::Member {
-                        object,
-                        property,
-                    })
+                    Some(PreparedDestructuringTarget::Member { object, property })
                 }
             }
             Expression::Index(index) => {
@@ -9807,12 +9817,13 @@ impl<'a> Lowerer<'a> {
                                 | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
                                 | crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
                         )
-                    ) || use_runtime_published_instance_member_semantics
-                            || self.js_mode_uses_runtime_member_semantics(
-                                &member.object,
-                                object.ty,
-                                nominal_type_id,
-                            );
+                    )
+                        || use_runtime_published_instance_member_semantics
+                        || self.js_mode_uses_runtime_member_semantics(
+                            &member.object,
+                            object.ty,
+                            nominal_type_id,
+                        );
                     let use_dynamic_property_path =
                         self.member_write_uses_dynamic_property_path(&member.object, object.ty);
                     let obj_ty_id = {
@@ -10152,13 +10163,13 @@ impl<'a> Lowerer<'a> {
                 let nominal_type_id = if dynamic_any_object
                     || matches!(
                         semantic_property_dispatch_kind,
-                            Some(
-                                crate::semantics::PropertyDispatchKind::StructuralSlot
-                                    | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
-                                    | crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
-                                    | crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty
-                                    | crate::semantics::PropertyDispatchKind::DynamicProperty
-                            )
+                        Some(
+                            crate::semantics::PropertyDispatchKind::StructuralSlot
+                                | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
+                                | crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
+                                | crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty
+                                | crate::semantics::PropertyDispatchKind::DynamicProperty
+                        )
                     )
                     || self.prefers_structural_member_projection(&member.object)
                 {
@@ -10185,12 +10196,13 @@ impl<'a> Lowerer<'a> {
                             | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
                             | crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
                     )
-                ) || use_runtime_published_instance_member_semantics
-                        || self.js_mode_uses_runtime_member_semantics(
-                            &member.object,
-                            object.ty,
-                            nominal_type_id,
-                        );
+                )
+                    || use_runtime_published_instance_member_semantics
+                    || self.js_mode_uses_runtime_member_semantics(
+                        &member.object,
+                        object.ty,
+                        nominal_type_id,
+                    );
                 let use_dynamic_property_path =
                     self.member_write_uses_dynamic_property_path(&member.object, object.ty);
                 let obj_ty_id = {
@@ -10422,13 +10434,12 @@ impl<'a> Lowerer<'a> {
             func_id
         };
 
-        let callable_kind =
-            self.callable_kind_for_span(
-                func.span.start,
-                func.is_async,
-                func.is_generator,
-                func.is_method,
-            );
+        let callable_kind = self.callable_kind_for_span(
+            func.span.start,
+            func.is_async,
+            func.is_generator,
+            func.is_method,
+        );
         if Self::callable_spawns_task(callable_kind) {
             self.async_closures.insert(func_id);
         }
@@ -10599,7 +10610,8 @@ impl<'a> Lowerer<'a> {
 
                 if let Some(type_ann) = &param.type_annotation {
                     if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
-                        self.nominal_binding_cache.insert(ident.name, nominal_type_id);
+                        self.nominal_binding_cache
+                            .insert(ident.name, nominal_type_id);
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
@@ -10661,13 +10673,12 @@ impl<'a> Lowerer<'a> {
         self.prepare_executable_body_declarations(&func.body.statements, None);
         self.scan_for_captured_vars(&func.body.statements, &func.params, &closure_locals);
 
-        let callable_kind =
-            self.callable_kind_for_span(
-                func.span.start,
-                func.is_async,
-                func.is_generator,
-                func.is_method,
-            );
+        let callable_kind = self.callable_kind_for_span(
+            func.span.start,
+            func.is_async,
+            func.is_generator,
+            func.is_method,
+        );
         let runtime_generator = self.callable_uses_runtime_generator_semantics(callable_kind);
         let mut ir_func = crate::ir::IrFunction::new(&function_name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
@@ -11202,25 +11213,22 @@ impl<'a> Lowerer<'a> {
                         if let Some(layout) =
                             self.structural_projection_layout_from_type_id(expected_ty)
                         {
-                            self.projection_layout_cache
-                                .insert(ident.name, layout);
+                            self.projection_layout_cache.insert(ident.name, layout);
                             self.nominal_binding_cache.remove(&ident.name);
                         } else {
-                            self.projection_layout_cache
-                                .remove(&ident.name);
+                            self.projection_layout_cache.remove(&ident.name);
                             self.nominal_binding_cache.remove(&ident.name);
                         }
                     } else {
-                        self.projection_layout_cache
-                            .remove(&ident.name);
+                        self.projection_layout_cache.remove(&ident.name);
                     }
                     if let Some(nominal_type_id) = nominal_type_id {
-                        self.nominal_binding_cache.insert(ident.name, nominal_type_id);
+                        self.nominal_binding_cache
+                            .insert(ident.name, nominal_type_id);
                         self.clear_runtime_dispatch_hint(ident.name);
                     } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
                         self.nominal_binding_cache.remove(&ident.name);
-                        self.projection_layout_cache
-                            .remove(&ident.name);
+                        self.projection_layout_cache.remove(&ident.name);
                         self.set_runtime_dispatch_hint(ident.name, ctor_symbol, ctor_type);
                     } else {
                         self.clear_runtime_dispatch_hint(ident.name);
@@ -11316,11 +11324,10 @@ impl<'a> Lowerer<'a> {
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
 
         if use_js_parameter_env {
-            let env_object =
-                self.lower_activation_direct_eval_environment_object(
-                    arrow.span.start,
-                    arrow.span.start,
-                );
+            let env_object = self.lower_activation_direct_eval_environment_object(
+                arrow.span.start,
+                arrow.span.start,
+            );
             let _ = self.emit_ensure_activation_direct_eval_env(env_object);
         }
 
@@ -11661,9 +11668,7 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
             if !self.js_this_binding_compat
-                && self.object_expr_is_class_constructor_ref(&Expression::Identifier(
-                    ident.clone(),
-                ))
+                && self.object_expr_is_class_constructor_ref(&Expression::Identifier(ident.clone()))
                 && self.shared_script_binding_slot(ident.name).is_none()
             {
                 let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
@@ -11740,7 +11745,7 @@ impl<'a> Lowerer<'a> {
                 if self.in_direct_eval_function {
                     let operand = self.emit_direct_eval_binding_get(name, true);
                     let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                        self.emit(IrInstr::Typeof {
+                    self.emit(IrInstr::Typeof {
                         dest: dest.clone(),
                         operand,
                     });
@@ -11888,19 +11893,17 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            if self.js_this_binding_compat {
-                let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
-                native_args.push(self.lower_expr(&new_expr.callee));
-                for arg in &new_expr.arguments {
-                    native_args.push(self.lower_expr(arg.expression()));
-                }
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(dest.clone()),
-                    native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
-                    args: native_args,
-                });
-                return dest;
+            let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
+            native_args.push(self.lower_expr(&new_expr.callee));
+            for arg in &new_expr.arguments {
+                native_args.push(self.lower_expr(arg.expression()));
             }
+            self.emit(IrInstr::NativeCall {
+                dest: Some(dest.clone()),
+                native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
+                args: native_args,
+            });
+            return dest;
         }
 
         if matches!(
@@ -11908,13 +11911,7 @@ impl<'a> Lowerer<'a> {
             crate::semantics::ConstructorDispatchKind::ImportedConstructorValue
                 | crate::semantics::ConstructorDispatchKind::RuntimeConstructorValue
                 | crate::semantics::ConstructorDispatchKind::DynamicConstructor
-        ) && (self.js_this_binding_compat
-            || matches!(
-                dispatch_kind,
-                crate::semantics::ConstructorDispatchKind::ImportedConstructorValue
-                    | crate::semantics::ConstructorDispatchKind::RuntimeConstructorValue
-            ))
-        {
+        ) {
             let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
             native_args.push(self.lower_expr(&new_expr.callee));
             for arg in &new_expr.arguments {
@@ -13390,7 +13387,8 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     if let Some(type_name) = shape.type_name.as_deref() {
-                        if let Some(nominal_type_id) = self.nominal_type_id_from_type_name(type_name)
+                        if let Some(nominal_type_id) =
+                            self.nominal_type_id_from_type_name(type_name)
                         {
                             return Some(nominal_type_id);
                         }

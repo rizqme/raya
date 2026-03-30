@@ -196,7 +196,9 @@ pub fn decode_kernel_op_id(id: KernelOpId) -> Option<KernelOp> {
         }));
     }
     if id >= KERNEL_REGISTERED_NATIVE_BASE {
-        return Some(KernelOp::RegisteredNative(id - KERNEL_REGISTERED_NATIVE_BASE));
+        return Some(KernelOp::RegisteredNative(
+            id - KERNEL_REGISTERED_NATIVE_BASE,
+        ));
     }
     Some(KernelOp::NativeCall(id))
 }
@@ -591,13 +593,6 @@ pub enum IrInstr {
     /// Debugger breakpoint — pause if debugger is attached, no-op otherwise
     Debugger,
 
-    /// Acquire mutex lock (blocking)
-    /// Suspends current task until lock is acquired
-    MutexLock { mutex: Register },
-
-    /// Release mutex lock
-    MutexUnlock { mutex: Register },
-
     /// Set up exception handler for try block
     /// catch_block: BasicBlockId to jump to on exception (receives exception value)
     /// finally_block: Optional BasicBlockId for finally clause
@@ -680,9 +675,7 @@ impl IrInstr {
             | IrInstr::Yield
             | IrInstr::GeneratorYield { .. }
             | IrInstr::GeneratorInitSuspend
-            | IrInstr::Debugger
-            | IrInstr::MutexLock { .. }
-            | IrInstr::MutexUnlock { .. } => None,
+            | IrInstr::Debugger => None,
         }
     }
 
@@ -730,8 +723,6 @@ impl IrInstr {
                 | IrInstr::GeneratorYield { .. }
                 | IrInstr::GeneratorInitSuspend
                 | IrInstr::Debugger
-                | IrInstr::MutexLock { .. }
-                | IrInstr::MutexUnlock { .. }
                 | IrInstr::ImplementsShape { .. }
                 | IrInstr::CastShape { .. }
                 | IrInstr::BindMethod { .. }

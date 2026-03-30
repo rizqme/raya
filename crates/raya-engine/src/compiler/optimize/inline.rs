@@ -149,8 +149,6 @@ impl Inliner {
             | IrInstr::CastArrayElemKind { .. }
             | IrInstr::CastKindMask { .. }
             | IrInstr::MakeClosure { .. }
-            | IrInstr::MutexLock { .. }
-            | IrInstr::MutexUnlock { .. }
             | IrInstr::Sleep { .. }
             | IrInstr::Yield
             | IrInstr::GeneratorInitSuspend
@@ -278,8 +276,6 @@ impl Inliner {
                 f(object.id.as_u32());
                 f(value.id.as_u32());
             }
-            IrInstr::MutexLock { mutex } => f(mutex.id.as_u32()),
-            IrInstr::MutexUnlock { mutex } => f(mutex.id.as_u32()),
             IrInstr::Sleep { duration_ms } => f(duration_ms.id.as_u32()),
             IrInstr::ArrayLen { dest, array } => {
                 f(dest.id.as_u32());
@@ -326,8 +322,7 @@ impl Inliner {
                 f(index.id.as_u32());
                 f(value.id.as_u32());
             }
-            IrInstr::NativeCall { dest, args, .. }
-            | IrInstr::KernelCall { dest, args, .. } => {
+            IrInstr::NativeCall { dest, args, .. } | IrInstr::KernelCall { dest, args, .. } => {
                 if let Some(d) = dest {
                     f(d.id.as_u32());
                 }
@@ -556,23 +551,19 @@ impl Inliner {
                     .map(|a| self.rename_register(a, reg_map))
                     .collect(),
             }),
-            IrInstr::KernelCall { dest, op, args: native_args } => {
-                Some(IrInstr::KernelCall {
-                    dest: dest
-                        .as_ref()
-                        .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
-                    op: *op,
-                    args: native_args
-                        .iter()
-                        .map(|a| self.rename_register(a, reg_map))
-                        .collect(),
-                })
-            }
-            IrInstr::MutexLock { mutex } => Some(IrInstr::MutexLock {
-                mutex: self.rename_register(mutex, reg_map),
-            }),
-            IrInstr::MutexUnlock { mutex } => Some(IrInstr::MutexUnlock {
-                mutex: self.rename_register(mutex, reg_map),
+            IrInstr::KernelCall {
+                dest,
+                op,
+                args: native_args,
+            } => Some(IrInstr::KernelCall {
+                dest: dest
+                    .as_ref()
+                    .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+                op: *op,
+                args: native_args
+                    .iter()
+                    .map(|a| self.rename_register(a, reg_map))
+                    .collect(),
             }),
             IrInstr::Sleep { duration_ms } => Some(IrInstr::Sleep {
                 duration_ms: self.rename_register(duration_ms, reg_map),
@@ -897,7 +888,13 @@ mod tests {
                 field: 0,
                 optional: false,
             },
-            IrInstr::MutexLock { mutex: make_reg(0) },
+            IrInstr::KernelCall {
+                dest: Some(make_reg(2)),
+                op: crate::compiler::ir::KernelOp::HostHandle(
+                    crate::semantics::HostHandleOpKind::MutexLock,
+                ),
+                args: vec![make_reg(0)],
+            },
         ];
         let func = make_simple_function("lock", instrs, None);
         let body = inliner.extract_inlinable_body(&func, FunctionId::new(0));

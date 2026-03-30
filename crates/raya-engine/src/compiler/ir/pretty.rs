@@ -253,7 +253,12 @@ fn format_instr(instr: &IrInstr) -> String {
                 }
             };
             if let Some(d) = dest {
-                format!("{} = builtin_kernel {}({})", d, op_name, args_str.join(", "))
+                format!(
+                    "{} = builtin_kernel {}({})",
+                    d,
+                    op_name,
+                    args_str.join(", ")
+                )
             } else {
                 format!("builtin_kernel {}({})", op_name, args_str.join(", "))
             }
@@ -589,12 +594,6 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::Yield => "yield".to_string(),
         IrInstr::GeneratorInitSuspend => "generator_init_suspend".to_string(),
         IrInstr::GeneratorYield { value } => format!("generator_yield {}", value),
-        IrInstr::MutexLock { mutex } => {
-            format!("mutex_lock {}", mutex)
-        }
-        IrInstr::MutexUnlock { mutex } => {
-            format!("mutex_unlock {}", mutex)
-        }
         IrInstr::SetupTry {
             catch_block,
             finally_block,

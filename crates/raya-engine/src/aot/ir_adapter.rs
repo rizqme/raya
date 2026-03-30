@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use crate::compiler::ir::block::Terminator;
 use crate::compiler::ir::function::IrFunction;
-use crate::compiler::ir::instr::{BinaryOp, KernelOp, IrInstr, UnaryOp};
+use crate::compiler::ir::instr::{BinaryOp, IrInstr, KernelOp, UnaryOp};
 use crate::compiler::ir::module::{IrClass, IrModule};
 use crate::compiler::ir::value::{IrConstant, IrValue};
 use crate::parser::TypeId;
@@ -420,8 +420,6 @@ impl<'a> IrFunctionAdapter<'a> {
             | IrInstr::StoreCaptured { .. }
             | IrInstr::SetClosureCapture { .. }
             | IrInstr::PopToLocal { .. }
-            | IrInstr::MutexUnlock { .. }
-            | IrInstr::MutexLock { .. }
             | IrInstr::Sleep { .. } => {}
             IrInstr::LoadCaptured { dest, .. } => {
                 set_reg_layout(reg_state, dest, None);
@@ -1396,20 +1394,6 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![Self::reg(value)],
                 });
             }
-            IrInstr::MutexLock { mutex } => {
-                out.push(SmInstr::CallHelper {
-                    dest: None,
-                    helper: HelperCall::MutexLock,
-                    args: vec![Self::reg(mutex)],
-                });
-            }
-            IrInstr::MutexUnlock { mutex } => {
-                out.push(SmInstr::CallHelper {
-                    dest: None,
-                    helper: HelperCall::MutexUnlock,
-                    args: vec![Self::reg(mutex)],
-                });
-            }
             // === SSA ===
             IrInstr::Phi { dest, sources } => {
                 let sm_sources: Vec<(SmBlockId, u32)> = sources
@@ -1568,7 +1552,6 @@ impl<'a> IrFunctionAdapter<'a> {
                 Some(SuspensionKind::NativeCall)
             }
             IrInstr::CallClosure { .. } => Some(SuspensionKind::AotCall),
-            IrInstr::MutexLock { .. } => Some(SuspensionKind::MutexLock),
             _ => None,
         }
     }

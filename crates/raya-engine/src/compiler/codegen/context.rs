@@ -1291,20 +1291,6 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::Debugger);
             }
 
-            IrInstr::MutexLock { mutex } => {
-                // Push mutex reference onto stack
-                self.emit_load_register(ctx, mutex);
-                // Emit MutexLock opcode - may block current task
-                ctx.emit(Opcode::MutexLock);
-            }
-
-            IrInstr::MutexUnlock { mutex } => {
-                // Push mutex reference onto stack
-                self.emit_load_register(ctx, mutex);
-                // Emit MutexUnlock opcode
-                ctx.emit(Opcode::MutexUnlock);
-            }
-
             IrInstr::SetupTry {
                 catch_block,
                 finally_block,

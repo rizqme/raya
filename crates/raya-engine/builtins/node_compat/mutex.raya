@@ -6,7 +6,7 @@ const MUTEX_TRY_LOCK: number = 0x0300;
 const MUTEX_IS_LOCKED: number = 0x0301;
 
 class Mutex {
-    private handle: number;
+    private handle: any;
 
     constructor() {
         this.handle = __OPCODE_MUTEX_NEW();
