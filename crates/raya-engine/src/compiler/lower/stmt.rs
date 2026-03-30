@@ -2344,7 +2344,7 @@ impl<'a> Lowerer<'a> {
         self.projection_layout_cache.remove(&name);
         self.task_result_type_aliases.remove(&name);
         self.callable_symbol_hints.remove(&name);
-        self.clear_late_bound_object_binding(name);
+        self.clear_runtime_dispatch_hint(name);
 
         if self.in_direct_eval_function && decl.kind == crate::parser::ast::VariableKind::Var {
             if let Some(init) = &decl.initializer {
@@ -2561,7 +2561,7 @@ impl<'a> Lowerer<'a> {
                     if let Some(type_ann) = &decl.type_annotation {
                         if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
                             self.nominal_binding_cache.insert(name, nominal_type_id);
-                            self.clear_late_bound_object_binding(name);
+                            self.clear_runtime_dispatch_hint(name);
                         }
                         self.track_variable_object_alias_from_annotation(name, type_ann);
                         self.track_variable_structural_projection_from_annotation(name, type_ann);
@@ -2613,31 +2613,19 @@ impl<'a> Lowerer<'a> {
                             );
                             if let Some(nominal_type_id) = nominal_type_id {
                                 self.nominal_binding_cache.insert(name, nominal_type_id);
-                                self.clear_late_bound_object_binding(name);
-                            } else if self.import_bindings.contains(&ident.name)
-                                || self
-                                    .ambient_builtin_globals
-                                    .contains(self.interner.resolve(ident.name))
+                                self.clear_runtime_dispatch_hint(name);
+                            } else if let Some((ctor_symbol, ctor_ty)) =
+                                self.new_expr_runtime_dispatch_binding_hint(new_expr)
                             {
-                                self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
+                                self.set_runtime_dispatch_hint(name, ctor_symbol, ctor_ty);
                             }
                         }
                     }
                     if let ast::Expression::Identifier(ident) = init {
-                        let ident_name = self.interner.resolve(ident.name);
-                        let constructor_type = self
-                            .get_expr_type(init)
-                            .as_u32()
-                            .ne(&UNRESOLVED_TYPE_ID)
-                            .then(|| self.get_expr_type(init))
-                            .or_else(|| self.type_ctx.lookup_named_type(ident_name));
-                        if self.class_map.contains_key(&ident.name)
-                            || self.import_bindings.contains(&ident.name)
-                            || self.ambient_builtin_globals.contains(ident_name)
-                            || constructor_type
-                                .is_some_and(|ty| self.type_has_construct_signature(ty))
+                        if let Some((ctor_symbol, constructor_type)) =
+                            self.identifier_constructor_binding_hint(ident)
                         {
-                            self.mark_constructor_value_binding(name, ident.name, constructor_type);
+                            self.mark_constructor_value_binding(name, ctor_symbol, constructor_type);
                         } else {
                             self.clear_constructor_value_binding(name);
                         }
@@ -2653,11 +2641,11 @@ impl<'a> Lowerer<'a> {
                         .or_else(|| self.nominal_type_id_for_class_expression(init))
                     {
                         self.nominal_binding_cache.insert(name, nominal_type_id);
-                        self.clear_late_bound_object_binding(name);
+                        self.clear_runtime_dispatch_hint(name);
                     }
                     if explicit_dynamic_any_annotation {
                         self.nominal_binding_cache.remove(&name);
-                        self.clear_late_bound_object_binding(name);
+                        self.clear_runtime_dispatch_hint(name);
                     }
                     self.track_task_result_alias_from_initializer(name, init);
                     self.track_variable_object_alias_from_initializer(name, init);
@@ -2708,24 +2696,17 @@ impl<'a> Lowerer<'a> {
                     // the checker/lowered register type is already precise.
                     if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
                         self.nominal_binding_cache.insert(name, nominal_type_id);
-                        self.clear_late_bound_object_binding(name);
+                        self.clear_runtime_dispatch_hint(name);
                     }
-                    if self.type_uses_runtime_handle_dispatch(value.ty) {
-                        self.clear_late_bound_object_binding(name);
+                    if self.type_is_handle_dispatch_builtin(value.ty) {
+                        self.clear_runtime_dispatch_hint(name);
                     }
-                    let keep_late_bound_builtin_dispatch = self
-                        .late_bound_object_ctor_map
-                        .get(&name)
-                        .copied()
-                        .or_else(|| self.constructor_value_ctor_map.get(&name).copied())
-                        .is_some_and(|ctor_symbol| {
-                            self.type_registry
-                                .has_builtin_dispatch_type(self.interner.resolve(ctor_symbol))
-                        });
+                    let keep_late_bound_builtin_dispatch =
+                        self.binding_uses_builtin_dispatch_hint(name);
                     if self.type_has_checker_validated_class_members(value.ty)
                         && !keep_late_bound_builtin_dispatch
                     {
-                        self.clear_late_bound_object_binding(name);
+                        self.clear_runtime_dispatch_hint(name);
                     }
                     if !keep_late_bound_builtin_dispatch {
                         if let Some(layout) =
@@ -2738,7 +2719,7 @@ impl<'a> Lowerer<'a> {
                     }
                     if explicit_dynamic_any_annotation {
                         self.nominal_binding_cache.remove(&name);
-                        self.clear_late_bound_object_binding(name);
+                        self.clear_runtime_dispatch_hint(name);
                     }
 
                     // Track the global's type so LoadGlobal preserves it
@@ -2793,7 +2774,7 @@ impl<'a> Lowerer<'a> {
                     ) {
                         self.dynamic_any_vars.insert(name);
                         self.nominal_binding_cache.remove(&name);
-                        self.clear_late_bound_object_binding(name);
+                        self.clear_runtime_dispatch_hint(name);
                     } else {
                         self.dynamic_any_vars.remove(&name);
                     }
@@ -2875,7 +2856,7 @@ impl<'a> Lowerer<'a> {
             if let Some(type_ann) = &decl.type_annotation {
                 if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
                     self.nominal_binding_cache.insert(name, nominal_type_id);
-                    self.clear_late_bound_object_binding(name);
+                    self.clear_runtime_dispatch_hint(name);
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
                 self.track_variable_structural_projection_from_annotation(name, type_ann);
@@ -2927,30 +2908,19 @@ impl<'a> Lowerer<'a> {
                     );
                     if let Some(nominal_type_id) = nominal_type_id {
                         self.nominal_binding_cache.insert(name, nominal_type_id);
-                        self.clear_late_bound_object_binding(name);
-                    } else if self.import_bindings.contains(&ident.name)
-                        || self
-                            .ambient_builtin_globals
-                            .contains(self.interner.resolve(ident.name))
+                        self.clear_runtime_dispatch_hint(name);
+                    } else if let Some((ctor_symbol, ctor_ty)) =
+                        self.new_expr_runtime_dispatch_binding_hint(new_expr)
                     {
-                        self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
+                        self.set_runtime_dispatch_hint(name, ctor_symbol, ctor_ty);
                     }
                 }
             }
             if let ast::Expression::Identifier(ident) = init {
-                let ident_name = self.interner.resolve(ident.name);
-                let constructor_type = self
-                    .get_expr_type(init)
-                    .as_u32()
-                    .ne(&UNRESOLVED_TYPE_ID)
-                    .then(|| self.get_expr_type(init))
-                    .or_else(|| self.type_ctx.lookup_named_type(ident_name));
-                if self.class_map.contains_key(&ident.name)
-                    || self.import_bindings.contains(&ident.name)
-                    || self.ambient_builtin_globals.contains(ident_name)
-                    || constructor_type.is_some_and(|ty| self.type_has_construct_signature(ty))
+                if let Some((ctor_symbol, constructor_type)) =
+                    self.identifier_constructor_binding_hint(ident)
                 {
-                    self.mark_constructor_value_binding(name, ident.name, constructor_type);
+                    self.mark_constructor_value_binding(name, ctor_symbol, constructor_type);
                 } else {
                     self.clear_constructor_value_binding(name);
                 }
@@ -2967,11 +2937,11 @@ impl<'a> Lowerer<'a> {
                 .or_else(|| self.nominal_type_id_for_class_expression(init))
             {
                 self.nominal_binding_cache.insert(name, nominal_type_id);
-                self.clear_late_bound_object_binding(name);
+                self.clear_runtime_dispatch_hint(name);
             }
             if explicit_dynamic_any_annotation {
                 self.nominal_binding_cache.remove(&name);
-                self.clear_late_bound_object_binding(name);
+                self.clear_runtime_dispatch_hint(name);
             }
             self.track_task_result_alias_from_initializer(name, init);
             self.track_variable_object_alias_from_initializer(name, init);
@@ -3012,24 +2982,17 @@ impl<'a> Lowerer<'a> {
             // from imports/factories when AST-only inference was inconclusive.
             if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
                 self.nominal_binding_cache.insert(name, nominal_type_id);
-                self.clear_late_bound_object_binding(name);
+                self.clear_runtime_dispatch_hint(name);
             }
-            if self.type_uses_runtime_handle_dispatch(value.ty) {
-                self.clear_late_bound_object_binding(name);
+            if self.type_is_handle_dispatch_builtin(value.ty) {
+                self.clear_runtime_dispatch_hint(name);
             }
-            let keep_late_bound_builtin_dispatch = self
-                .late_bound_object_ctor_map
-                .get(&name)
-                .copied()
-                .or_else(|| self.constructor_value_ctor_map.get(&name).copied())
-                .is_some_and(|ctor_symbol| {
-                    self.type_registry
-                        .has_builtin_dispatch_type(self.interner.resolve(ctor_symbol))
-                });
+            let keep_late_bound_builtin_dispatch =
+                self.binding_uses_builtin_dispatch_hint(name);
             if self.type_has_checker_validated_class_members(value.ty)
                 && !keep_late_bound_builtin_dispatch
             {
-                self.clear_late_bound_object_binding(name);
+                self.clear_runtime_dispatch_hint(name);
             }
             if !keep_late_bound_builtin_dispatch {
                 if let Some(layout) = self.structural_projection_layout_from_type_id(value.ty) {
@@ -3040,7 +3003,7 @@ impl<'a> Lowerer<'a> {
             }
             if explicit_dynamic_any_annotation {
                 self.nominal_binding_cache.remove(&name);
-                self.clear_late_bound_object_binding(name);
+                self.clear_runtime_dispatch_hint(name);
             }
 
             // Transfer object field layout from register to variable
@@ -3207,7 +3170,7 @@ impl<'a> Lowerer<'a> {
                     self.resolve_structural_slot_type_from_annotation(type_ann),
                 ) {
                     self.nominal_binding_cache.remove(&name);
-                    self.clear_late_bound_object_binding(name);
+                    self.clear_runtime_dispatch_hint(name);
                 }
             } else {
                 self.dynamic_any_vars.remove(&name);

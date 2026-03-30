@@ -48,11 +48,6 @@ enum SpreadSourceFields {
     },
 }
 
-enum CheckerValidatedMemberCallKind {
-    Method,
-    CallableProperty,
-}
-
 #[derive(Clone, Copy)]
 enum ClosureInvokeMode {
     Sync { result_ty: TypeId },
@@ -430,7 +425,7 @@ impl<'a> Lowerer<'a> {
     ) {
         let method_name_symbol = member.property.name;
 
-        if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
+        if let Some(nominal_type_id) = self.static_member_owner_nominal_type(&member.object) {
             if let Some(&func_id) = self.static_method_map.get(&(nominal_type_id, method_name_symbol))
             {
                 if !self.js_this_binding_compat && self.object_expr_is_class_constructor_ref(&member.object)
@@ -459,7 +454,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        let closure = self.lower_member(member);
+        let closure = self.lower_member_from_base(member, None);
         self.emit_closure_invoke(dest, closure, args, ClosureInvokeMode::Spawn);
     }
 
@@ -470,11 +465,9 @@ impl<'a> Lowerer<'a> {
         closure: Register,
         args: Vec<Register>,
         call_ty: TypeId,
-        object_expr: &Expression,
-        callee_expr: &Expression,
-        method_name: &str,
+        completion: crate::semantics::CallCompletionKind,
     ) {
-        if self.late_bound_member_call_is_async(object_expr, callee_expr, method_name) {
+        if matches!(completion, crate::semantics::CallCompletionKind::Task) {
             self.emit_closure_invoke(dest, closure, args, ClosureInvokeMode::Spawn);
         } else {
             self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
@@ -486,27 +479,17 @@ impl<'a> Lowerer<'a> {
         &mut self,
         dest: Register,
         member: &ast::MemberExpression,
-        callee_expr: &Expression,
         method_name_symbol: Symbol,
         method_name: &str,
         call_ty: TypeId,
         args: &[Register],
+        completion: crate::semantics::CallCompletionKind,
     ) -> Option<Register> {
         let Expression::Identifier(ident) = &*member.object else {
             return None;
         };
 
         let class_name = self.interner.resolve(ident.name);
-        let is_constructor_value_ident = self.object_expr_is_class_constructor_ref(&member.object)
-            || self.import_bindings.contains(&ident.name)
-            || self.ambient_builtin_globals.contains(class_name)
-            || self.constructor_value_type_map.contains_key(&ident.name);
-        if is_constructor_value_ident {
-            self.seed_constructor_projection_binding_from_type(
-                ident.name,
-                Some(self.get_expr_type(&member.object)),
-            );
-        }
         if args.is_empty()
             && class_name == "Symbol"
             && Self::well_known_symbol_key(method_name).is_some()
@@ -523,9 +506,27 @@ impl<'a> Lowerer<'a> {
             ("Object", "defineProperties") => {
                 Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES)
             }
+            ("Object", "getPrototypeOf") => {
+                Some(crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF)
+            }
+            ("Object", "setPrototypeOf") => {
+                Some(crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF)
+            }
+            ("Object", "isExtensible") => {
+                Some(crate::compiler::native_id::OBJECT_IS_EXTENSIBLE)
+            }
+            ("Object", "preventExtensions") => {
+                Some(crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS)
+            }
             ("Reflect", "get") => Some(crate::compiler::native_id::REFLECT_GET),
             ("Reflect", "set") => Some(crate::compiler::native_id::REFLECT_SET),
             ("Reflect", "has") => Some(crate::compiler::native_id::REFLECT_HAS),
+            ("Reflect", "construct") => Some(crate::compiler::native_id::REFLECT_CONSTRUCT),
+            ("Date", "now") => Some(crate::compiler::native_id::DATE_NOW),
+            ("Date", "parse") => Some(crate::compiler::native_id::DATE_PARSE),
+            ("String", "fromCharCode") => {
+                Some(crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE)
+            }
             _ => None,
         };
         if let Some(native_id) = static_native_id {
@@ -556,7 +557,7 @@ impl<'a> Lowerer<'a> {
             return Some(dest);
         }
 
-        if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
+        if let Some(nominal_type_id) = self.static_member_owner_nominal_type(&member.object) {
             if let Some(&func_id) = self
                 .static_method_map
                 .get(&(nominal_type_id, method_name_symbol))
@@ -588,54 +589,652 @@ impl<'a> Lowerer<'a> {
 
             if self.js_this_binding_compat {
                 let receiver = self.load_class_value_for_nominal_type(nominal_type_id);
-                let closure = self.lower_member(member);
+                let closure = self.lower_member_from_base(member, Some(receiver.clone()));
                 self.emit_member_closure_invoke(
                     dest.clone(),
                     receiver,
                     closure,
                     args.to_vec(),
                     call_ty,
-                    &member.object,
-                    callee_expr,
-                    method_name,
+                    completion,
                 );
                 return Some(dest);
             }
+
+            let receiver = if self.object_expr_is_class_constructor_ref(&member.object) {
+                self.load_class_value_for_nominal_type(nominal_type_id)
+            } else {
+                self.lower_expr(&member.object)
+            };
+            let closure = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+            self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
+            self.emit_member_closure_invoke(
+                dest.clone(),
+                receiver,
+                closure,
+                args.to_vec(),
+                call_ty,
+                completion,
+            );
+            return Some(dest);
         }
 
-        let prefers_dynamic_constructor_member_call = !self.object_expr_is_class_constructor_ref(&member.object)
-            && (self.ambient_builtin_globals.contains(class_name)
-                || self.constructor_value_type_map.contains_key(&ident.name));
-        if prefers_dynamic_constructor_member_call {
-            let prefers_direct_closure_call = class_name == "Promise";
-            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                eprintln!(
-                    "[lower] dynamic constructor member call '{}.{}(...)' via dyn_get",
-                    class_name, method_name
-                );
+        let receiver = self.lower_expr(&member.object);
+        let closure = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+        self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
+        self.emit_member_closure_invoke(
+            dest.clone(),
+            receiver,
+            closure,
+            args.to_vec(),
+            call_ty,
+            completion,
+        );
+        Some(dest)
+    }
+
+    fn emit_builtin_namespace_member_call(
+        &mut self,
+        dest: Register,
+        member: &ast::MemberExpression,
+        method_name: &str,
+        args: &[Register],
+    ) -> Option<Register> {
+        let Expression::Identifier(ident) = &*member.object else {
+            return None;
+        };
+        let object_name = self.interner.resolve(ident.name);
+        let native_id = match (object_name, method_name) {
+            ("Object", "defineProperty") => Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY),
+            ("Object", "getOwnPropertyDescriptor") => {
+                Some(crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR)
             }
-            let receiver = self.lower_expr(&member.object);
-            let closure = self.alloc_register(UNRESOLVED);
-            self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
-            if prefers_direct_closure_call {
-                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
-                self.propagate_type_projection_to_register(call_ty, &dest);
+            ("Object", "defineProperties") => Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES),
+            ("Object", "is") => Some(crate::compiler::native_id::OBJECT_SAME_VALUE),
+            ("Object", "getPrototypeOf") => {
+                Some(crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF)
+            }
+            ("Object", "setPrototypeOf") => {
+                Some(crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF)
+            }
+            ("Object", "isExtensible") => Some(crate::compiler::native_id::OBJECT_IS_EXTENSIBLE),
+            ("Object", "preventExtensions") => {
+                Some(crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS)
+            }
+            ("Reflect", "get") => Some(crate::compiler::native_id::REFLECT_GET),
+            ("Reflect", "set") => Some(crate::compiler::native_id::REFLECT_SET),
+            ("Reflect", "has") => Some(crate::compiler::native_id::REFLECT_HAS),
+            ("Reflect", "construct") => Some(crate::compiler::native_id::REFLECT_CONSTRUCT),
+            ("JSON", "parse") => Some(crate::compiler::native_id::JSON_PARSE),
+            ("JSON", "stringify") => Some(crate::compiler::native_id::JSON_STRINGIFY),
+            ("String", "fromCharCode") => {
+                Some(crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE)
+            }
+            ("Number", "isNaN") => Some(crate::vm::builtin::number::IS_NAN),
+            ("Number", "isFinite") => Some(crate::vm::builtin::number::IS_FINITE),
+            _ => None,
+        }?;
+
+        let dispatch_dest = if native_id == crate::compiler::native_id::JSON_PARSE {
+            self.alloc_register(TypeId::new(JSON_TYPE_ID))
+        } else {
+            dest
+        };
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dispatch_dest.clone()),
+            native_id,
+            args: args.to_vec(),
+        });
+        if native_id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR {
+            self.register_object_fields.insert(
+                dispatch_dest.id,
+                vec![
+                    ("value".to_string(), 0),
+                    ("writable".to_string(), 1),
+                    ("configurable".to_string(), 2),
+                    ("enumerable".to_string(), 3),
+                    ("get".to_string(), 4),
+                    ("set".to_string(), 5),
+                ],
+            );
+        }
+        Some(dispatch_dest)
+    }
+
+    fn emit_member_call_from_dispatch(
+        &mut self,
+        call: &ast::CallExpression,
+        member: &ast::MemberExpression,
+        dest: Register,
+        call_ty: TypeId,
+        args: &[Register],
+        prelowered_object: Option<Register>,
+    ) -> Option<Register> {
+        let Some(dispatch) = self
+            .semantic_call_dispatch(call.span.start, call.span.end)
+            .cloned()
+        else {
+            let receiver = prelowered_object
+                .clone()
+                .unwrap_or_else(|| self.lower_expr(&member.object));
+            let closure = self.lower_member_from_base(member, Some(receiver.clone()));
+            let completion = if call_ty.as_u32() == TASK_TYPE_ID {
+                crate::semantics::CallCompletionKind::Task
             } else {
+                crate::semantics::CallCompletionKind::RuntimeClosure
+            };
+            self.emit_member_closure_invoke(
+                dest.clone(),
+                receiver,
+                closure,
+                args.to_vec(),
+                call_ty,
+                completion,
+            );
+            return Some(dest);
+        };
+        let method_name_symbol = member.property.name;
+        let method_name = self.interner.resolve(method_name_symbol);
+        let completion = dispatch.completion_kind;
+
+        match dispatch.kind {
+            crate::semantics::CallDispatchKind::StaticMethod => self
+                .try_lower_static_identifier_member_call(
+                    dest,
+                    member,
+                    method_name_symbol,
+                    method_name,
+                    call_ty,
+                    args,
+                    completion,
+                ),
+            crate::semantics::CallDispatchKind::NominalMethod => {
+                let nominal_type_id = self
+                    .semantic_member_target(member.span.start, member.span.end)
+                    .and_then(|target| target.receiver_type_id)
+                    .and_then(|ty| self.nominal_type_id_from_type_id(ty))
+                    .or_else(|| self.infer_nominal_type_id(&member.object));
+                if let Some(nominal_type_id) = nominal_type_id {
+                    if self
+                        .nominal_member_call_requires_property_get(
+                            nominal_type_id,
+                            method_name_symbol,
+                        )
+                    {
+                        let receiver = prelowered_object
+                            .clone()
+                            .unwrap_or_else(|| self.lower_expr(&member.object));
+                        let closure =
+                            self.lower_member_from_base(member, Some(receiver.clone()));
+                        self.emit_member_closure_invoke(
+                            dest.clone(),
+                            receiver,
+                            closure,
+                            args.to_vec(),
+                            call_ty,
+                            completion,
+                        );
+                        return Some(dest);
+                    } else {
+                        if let Some(result) = self.try_lower_nominal_member_call(
+                            dest.clone(),
+                            member,
+                            nominal_type_id,
+                            method_name_symbol,
+                            method_name,
+                            call_ty,
+                            args,
+                            prelowered_object.clone(),
+                        ) {
+                            return Some(result);
+                        }
+                    }
+                }
+
+                let receiver = prelowered_object
+                    .clone()
+                    .unwrap_or_else(|| self.lower_expr(&member.object));
+                let closure = self.lower_member_from_base(member, Some(receiver.clone()));
                 self.emit_member_closure_invoke(
                     dest.clone(),
                     receiver,
                     closure,
                     args.to_vec(),
                     call_ty,
-                    &member.object,
-                    callee_expr,
-                    method_name,
+                    completion,
                 );
+                Some(dest)
             }
+            crate::semantics::CallDispatchKind::StructuralCall => {
+                if let Some((shape_id, slot)) =
+                    self.structural_shape_slot_from_expr(&member.object, method_name)
+                {
+                    let object = prelowered_object
+                        .clone()
+                        .unwrap_or_else(|| self.lower_expr(&member.object));
+                    self.emit_structural_shape_name_registration_for_expr(&member.object);
+                    self.emit(IrInstr::CallMethodShape {
+                        dest: Some(dest.clone()),
+                        object,
+                        shape_id,
+                        method: slot,
+                        args: args.to_vec(),
+                        optional: member.optional,
+                    });
+                    self.propagate_type_projection_to_register(call_ty, &dest);
+                    Some(dest)
+                } else {
+                    let receiver = prelowered_object
+                        .clone()
+                        .unwrap_or_else(|| self.lower_expr(&member.object));
+                    let closure = self.lower_member_from_base(member, Some(receiver.clone()));
+                    self.emit_member_closure_invoke(
+                        dest.clone(),
+                        receiver,
+                        closure,
+                        args.to_vec(),
+                        call_ty,
+                        completion,
+                    );
+                    Some(dest)
+                }
+            }
+            crate::semantics::CallDispatchKind::ImportedNamespaceCall => {
+                let receiver = prelowered_object
+                    .clone()
+                    .unwrap_or_else(|| self.lower_expr(&member.object));
+                let closure = self.lower_member_from_base(member, Some(receiver.clone()));
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    receiver,
+                    closure,
+                    args.to_vec(),
+                    call_ty,
+                    completion,
+                );
+                Some(dest)
+            }
+            crate::semantics::CallDispatchKind::BuiltinNamespaceMethod
+            | crate::semantics::CallDispatchKind::BuiltinInstanceMethod => {
+                if matches!(
+                    dispatch.kind,
+                    crate::semantics::CallDispatchKind::BuiltinNamespaceMethod
+                ) {
+                    if let Some(result) = self.emit_builtin_namespace_member_call(
+                        dest.clone(),
+                        member,
+                        method_name,
+                        args,
+                    ) {
+                        return Some(result);
+                    }
+                }
+
+                let object = prelowered_object
+                    .clone()
+                    .unwrap_or_else(|| self.lower_expr(&member.object));
+
+                if matches!(
+                    dispatch.kind,
+                    crate::semantics::CallDispatchKind::BuiltinNamespaceMethod
+                ) {
+                    let closure = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                    self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
+                    self.emit_member_closure_invoke(
+                        dest.clone(),
+                        object,
+                        closure,
+                        args.to_vec(),
+                        call_ty,
+                        completion,
+                    );
+                    return Some(dest);
+                }
+
+                let dispatch_ty = dispatch
+                    .receiver_type_id
+                    .map(|ty| self.normalize_type_for_dispatch(ty.as_u32()))
+                    .filter(|ty| *ty != UNRESOLVED_TYPE_ID)
+                    .unwrap_or_else(|| self.normalize_type_for_dispatch(object.ty.as_u32()));
+
+                if dispatch_ty == TASK_TYPE_ID {
+                    match method_name {
+                        "cancel" => {
+                            self.emit(IrInstr::TaskCancel { task: object });
+                            return Some(dest);
+                        }
+                        "isDone" => {
+                            self.emit(IrInstr::NativeCall {
+                                dest: Some(dest.clone()),
+                                native_id: 0x0500,
+                                args: vec![object],
+                            });
+                            return Some(dest);
+                        }
+                        "isCancelled" => {
+                            self.emit(IrInstr::NativeCall {
+                                dest: Some(dest.clone()),
+                                native_id: 0x0501,
+                                args: vec![object],
+                            });
+                            return Some(dest);
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Some(result) = self.try_lower_registry_member_dispatch(
+                    dest.clone(),
+                    call,
+                    object.clone(),
+                    dispatch_ty,
+                    method_name,
+                    args,
+                ) {
+                    return Some(result);
+                }
+
+                let closure = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    object,
+                    closure,
+                    args.to_vec(),
+                    call_ty,
+                    completion,
+                );
+                Some(dest)
+            }
+            crate::semantics::CallDispatchKind::RuntimeLateBoundMethod => {
+                let object = prelowered_object
+                    .clone()
+                    .unwrap_or_else(|| self.lower_expr(&member.object));
+                let closure = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::LateBoundMember {
+                    dest: closure.clone(),
+                    object: object.clone(),
+                    property: method_name.to_string(),
+                });
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    object,
+                    closure,
+                    args.to_vec(),
+                    call_ty,
+                    completion,
+                );
+                Some(dest)
+            }
+            crate::semantics::CallDispatchKind::DynamicCall => {
+                let receiver = prelowered_object
+                    .clone()
+                    .unwrap_or_else(|| self.lower_expr(&member.object));
+                let closure = self.lower_member_from_base(member, Some(receiver.clone()));
+                self.emit_member_closure_invoke(
+                    dest.clone(),
+                    receiver,
+                    closure,
+                    args.to_vec(),
+                    call_ty,
+                    completion,
+                );
+                Some(dest)
+            }
+            crate::semantics::CallDispatchKind::PlainFunction => None,
+        }
+    }
+
+    fn emit_builtin_instance_property_read(
+        &mut self,
+        member: &ast::MemberExpression,
+        object: Register,
+        dispatch_ty: u32,
+        property_name: &str,
+    ) -> Option<Register> {
+        let action = self.type_registry.lookup_property(dispatch_ty, property_name)?;
+        match action {
+            crate::compiler::type_registry::DispatchAction::Opcode(kind) => {
+                let dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
+                match kind {
+                    crate::compiler::type_registry::OpcodeKind::StringLen => {
+                        self.emit(IrInstr::StringLen {
+                            dest: dest.clone(),
+                            string: object,
+                        });
+                    }
+                    crate::compiler::type_registry::OpcodeKind::ArrayLen => {
+                        self.emit(IrInstr::ArrayLen {
+                            dest: dest.clone(),
+                            array: object,
+                        });
+                    }
+                }
+                Some(dest)
+            }
+            crate::compiler::type_registry::DispatchAction::NativeCall(native_id) => {
+                let mut dest = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                if let Some(ret_type) = self.type_registry.lookup_return_type(native_id) {
+                    dest.ty = TypeId::new(ret_type);
+                }
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id,
+                    args: vec![object],
+                });
+                Some(dest)
+            }
+            crate::compiler::type_registry::DispatchAction::DeclaredField(field_type) => {
+                let member_expr = Expression::Member(member.clone());
+                let inferred = self.get_expr_type(&member_expr);
+                let member_ty = if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                    field_type.map(TypeId::new).unwrap_or(UNRESOLVED)
+                } else {
+                    inferred
+                };
+                let dest = self.alloc_register(member_ty);
+                self.emit_dyn_get_named(dest.clone(), object, property_name);
+                Some(dest)
+            }
+            crate::compiler::type_registry::DispatchAction::ClassMethod(_, _) => None,
+        }
+    }
+
+    fn emit_structural_property_read(
+        &mut self,
+        member: &ast::MemberExpression,
+        object: Register,
+        property_name: &str,
+    ) -> Option<Register> {
+        if let Some((shape_id, field_index)) =
+            self.structural_shape_slot_from_expr(&member.object, property_name)
+        {
+            let field_ty = self
+                .structural_field_type_from_type(self.get_expr_type(&member.object), property_name)
+                .unwrap_or_else(|| self.get_expr_type(&Expression::Member(member.clone())));
+            let dest = self.alloc_register(field_ty);
+            self.emit_structural_shape_name_registration_for_expr(&member.object);
+            self.emit(IrInstr::LoadFieldShape {
+                dest: dest.clone(),
+                object,
+                shape_id,
+                field: field_index,
+                optional: member.optional,
+            });
             return Some(dest);
         }
 
-        None
+        let expr_ty = if object.ty.as_u32() != UNKNOWN_TYPE_ID && object.ty.as_u32() != UNRESOLVED_TYPE_ID
+        {
+            object.ty
+        } else {
+            self.get_expr_type(&member.object)
+        };
+        let shape_id = self.structural_shape_id_from_type(expr_ty)?;
+        let field_index = self.structural_slot_index_from_type(expr_ty, property_name)?;
+        let field_ty = self
+            .structural_field_type_from_type(expr_ty, property_name)
+            .unwrap_or_else(|| self.get_expr_type(&Expression::Member(member.clone())));
+        let dest = self.alloc_register(field_ty);
+        self.emit_structural_shape_name_registration_for_expr(&member.object);
+        self.emit(IrInstr::LoadFieldShape {
+            dest: dest.clone(),
+            object,
+            shape_id,
+            field: field_index,
+            optional: member.optional,
+        });
+        Some(dest)
+    }
+
+    fn emit_property_read_from_dispatch(
+        &mut self,
+        member: &ast::MemberExpression,
+        prelowered_object: Option<Register>,
+    ) -> Option<Register> {
+        let dispatch = self
+            .semantic_property_dispatch(member.span.start, member.span.end)?
+            .clone();
+        let member_target_kind = self
+            .semantic_member_target(member.span.start, member.span.end)
+            .map(|target| target.kind);
+        let property_name = self.interner.resolve(member.property.name);
+        let object = prelowered_object
+            .clone()
+            .unwrap_or_else(|| self.lower_expr(&member.object));
+        let member_expr = Expression::Member(member.clone());
+        let inferred_ty = self.get_expr_type(&member_expr);
+        let member_ty = self.dynamic_property_result_type(inferred_ty);
+
+        match dispatch.kind {
+            crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
+            | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty => {
+                let dest = self.alloc_register(member_ty);
+                self.emit_dyn_get_named(dest.clone(), object, property_name);
+                Some(dest)
+            }
+            crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty => {
+                let dest = self.alloc_register(member_ty);
+                self.emit(IrInstr::LateBoundMember {
+                    dest: dest.clone(),
+                    object,
+                    property: property_name.to_string(),
+                });
+                Some(dest)
+            }
+            crate::semantics::PropertyDispatchKind::DynamicProperty => {
+                if matches!(
+                    member_target_kind,
+                    Some(crate::semantics::MemberTargetKind::BuiltinProperty)
+                ) {
+                    let dispatch_ty = dispatch
+                        .receiver_type_id
+                        .map(|ty| self.normalize_type_for_dispatch(ty.as_u32()))
+                        .filter(|ty| *ty != UNRESOLVED_TYPE_ID)
+                        .unwrap_or_else(|| self.normalize_type_for_dispatch(object.ty.as_u32()));
+                    if let Some(result) = self.emit_builtin_instance_property_read(
+                        member,
+                        object.clone(),
+                        dispatch_ty,
+                        property_name,
+                    ) {
+                        return Some(result);
+                    }
+                }
+                let dest = self.alloc_register(member_ty);
+                self.emit_dyn_get_named(dest.clone(), object, property_name);
+                Some(dest)
+            }
+            crate::semantics::PropertyDispatchKind::StructuralSlot => {
+                self.emit_structural_property_read(member, object, property_name)
+            }
+            crate::semantics::PropertyDispatchKind::NominalField => None,
+        }
+    }
+
+    fn emit_property_write_from_dispatch(
+        &mut self,
+        member: &ast::MemberExpression,
+        object: Register,
+        value: Register,
+    ) -> bool {
+        let Some(dispatch) = self
+            .semantic_property_dispatch(member.span.start, member.span.end)
+            .cloned()
+        else {
+            return false;
+        };
+        let member_target_kind = self
+            .semantic_member_target(member.span.start, member.span.end)
+            .map(|target| target.kind);
+        let property_name = self.interner.resolve(member.property.name);
+
+        match dispatch.kind {
+            crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
+            | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
+            | crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty
+            | crate::semantics::PropertyDispatchKind::DynamicProperty => {
+                if matches!(
+                    member_target_kind,
+                    Some(crate::semantics::MemberTargetKind::StructuralSlot)
+                ) {
+                    if let Some((shape_id, slot)) =
+                        self.structural_shape_slot_from_expr(&member.object, property_name)
+                    {
+                        self.emit_structural_shape_name_registration_for_expr(&member.object);
+                        self.emit(IrInstr::StoreFieldShape {
+                            object,
+                            shape_id,
+                            field: slot,
+                            value,
+                        });
+                        return true;
+                    }
+                }
+                self.emit_js_named_property_assignment(object, property_name, value);
+                true
+            }
+            crate::semantics::PropertyDispatchKind::StructuralSlot => {
+                if let Some((shape_id, slot)) =
+                    self.structural_shape_slot_from_expr(&member.object, property_name)
+                {
+                    self.emit_structural_shape_name_registration_for_expr(&member.object);
+                    self.emit(IrInstr::StoreFieldShape {
+                        object,
+                        shape_id,
+                        field: slot,
+                        value,
+                    });
+                    true
+                } else if let Some(field_idx) = match &*member.object {
+                    Expression::Identifier(ident) => self
+                        .variable_object_fields
+                        .get(&ident.name)
+                        .and_then(|fields| {
+                            fields
+                                .iter()
+                                .find(|(name, _)| name == property_name)
+                                .map(|(_, idx)| *idx as u16)
+                        }),
+                    _ => self
+                        .register_object_fields
+                        .get(&object.id)
+                        .and_then(|fields| {
+                            fields
+                                .iter()
+                                .find(|(name, _)| name == property_name)
+                                .map(|(_, idx)| *idx as u16)
+                        }),
+                } {
+                    self.emit_member_store(&member.object, object, field_idx, property_name, value);
+                    true
+                } else {
+                    self.emit_js_named_property_assignment(object, property_name, value);
+                    true
+                }
+            }
+            crate::semantics::PropertyDispatchKind::NominalField => false,
+        }
     }
 
     fn try_lower_nominal_member_call(
@@ -647,6 +1246,7 @@ impl<'a> Lowerer<'a> {
         method_name: &str,
         call_ty: TypeId,
         args: &[Register],
+        prelowered_object: Option<Register>,
     ) -> Option<Register> {
         let all_fields = self.get_all_fields(nominal_type_id);
         let is_field = all_fields
@@ -657,7 +1257,9 @@ impl<'a> Lowerer<'a> {
             .is_some();
 
         if is_field && !is_method {
-            let object = self.lower_expr(&member.object);
+            let object = prelowered_object
+                .clone()
+                .unwrap_or_else(|| self.lower_expr(&member.object));
             let field_info = all_fields
                 .iter()
                 .rev()
@@ -696,7 +1298,9 @@ impl<'a> Lowerer<'a> {
                     );
                 }
             }
-            let object = self.lower_expr(&member.object);
+            let object = prelowered_object
+                .clone()
+                .unwrap_or_else(|| self.lower_expr(&member.object));
 
             if self.async_functions.contains(&func_id) {
                 let mut method_args = vec![object];
@@ -768,7 +1372,9 @@ impl<'a> Lowerer<'a> {
 
             return Some(dest);
         } else if let Some(slot) = self.find_method_slot(nominal_type_id, method_name_symbol) {
-            let object = self.lower_expr(&member.object);
+            let object = prelowered_object
+                .clone()
+                .unwrap_or_else(|| self.lower_expr(&member.object));
             self.emit(IrInstr::CallMethodExact {
                 dest: Some(dest.clone()),
                 object,
@@ -792,288 +1398,6 @@ impl<'a> Lowerer<'a> {
         }
 
         None
-    }
-
-    fn try_lower_checker_validated_member_call(
-        &mut self,
-        dest: Register,
-        member: &ast::MemberExpression,
-        checker_member_ty: TypeId,
-        method_name: &str,
-        call_ty: TypeId,
-        args: &[Register],
-    ) -> Option<Register> {
-        match self.checker_validated_member_call_kind(checker_member_ty, method_name) {
-            Some(CheckerValidatedMemberCallKind::Method) => {
-                if let Some((shape_id, slot)) = self
-                    .structural_shape_id_from_type(checker_member_ty)
-                    .zip(self.structural_slot_index_from_type(checker_member_ty, method_name))
-                {
-                    let object = self.lower_expr(&member.object);
-                    self.emit_structural_slot_registration_for_type(
-                        object.clone(),
-                        checker_member_ty,
-                    );
-                    self.emit(IrInstr::CallMethodShape {
-                        dest: Some(dest.clone()),
-                        object,
-                        shape_id,
-                        method: slot,
-                        args: args.to_vec(),
-                        optional: member.optional,
-                    });
-                    self.propagate_type_projection_to_register(call_ty, &dest);
-                    return Some(dest);
-                }
-            }
-            Some(CheckerValidatedMemberCallKind::CallableProperty) => {
-                let object = self.lower_expr(&member.object);
-                let closure = self.alloc_register(UNRESOLVED);
-                self.emit_dyn_get_named(closure.clone(), object, method_name);
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(dest.clone()),
-                    closure,
-                    args: args.to_vec(),
-                });
-                self.propagate_type_projection_to_register(call_ty, &dest);
-                return Some(dest);
-            }
-            None => {}
-        }
-
-        None
-    }
-
-    fn try_lower_late_bound_member_call(
-        &mut self,
-        dest: Register,
-        member: &ast::MemberExpression,
-        callee_expr: &Expression,
-        object: Register,
-        nominal_type_id: Option<NominalTypeId>,
-        receiver_requires_late_bound: bool,
-        has_registry_dispatch: bool,
-        method_name: &str,
-        call_ty: TypeId,
-        args: &[Register],
-    ) -> Option<Register> {
-        if nominal_type_id.is_some() || !receiver_requires_late_bound || has_registry_dispatch {
-            return None;
-        }
-
-        if let Expression::Identifier(obj_ident) = &*member.object {
-            if let Some(ctor_symbol) = self
-                .late_bound_object_ctor_map
-                .get(&obj_ident.name)
-                .copied()
-                .or_else(|| {
-                    self.constructor_value_ctor_map
-                        .get(&obj_ident.name)
-                        .copied()
-                })
-            {
-                let ctor_name = self.interner.resolve(ctor_symbol);
-                if super::class_methods::build_class_method_ir(ctor_name, method_name).is_some() {
-                    let func_id = self.get_or_build_class_method(ctor_name, method_name);
-                    let mut call_args = vec![object.clone()];
-                    call_args.extend(args.iter().cloned());
-                    self.emit(IrInstr::Call {
-                        dest: Some(dest.clone()),
-                        func: func_id,
-                        args: call_args,
-                    });
-                    self.propagate_type_projection_to_register(call_ty, &dest);
-                    return Some(dest);
-                }
-            }
-        }
-
-        let checker_validated = if let Expression::Identifier(obj_ident) = &*member.object {
-            self.constructor_value_ctor_map
-                .contains_key(&obj_ident.name)
-                || {
-                    let obj_ty = self.get_expr_type(&member.object);
-                    self.type_has_checker_validated_class_members(obj_ty)
-                }
-        } else {
-            let obj_ty = self.get_expr_type(&member.object);
-            self.type_has_checker_validated_class_members(obj_ty)
-        };
-        if !self.allow_unresolved_runtime_fallback && !checker_validated {
-            self.errors
-                .push(crate::compiler::CompileError::InternalError {
-                    message: format!(
-                    "strict mode forbids runtime late-bound fallback for member call '{}.{}(...)'",
-                    match &*member.object {
-                        Expression::Identifier(obj_ident) => {
-                            self.interner.resolve(obj_ident.name).to_string()
-                        }
-                        _ => "<expr>".to_string(),
-                    },
-                    method_name
-                ),
-                });
-            self.poison_register(&dest);
-            return Some(dest);
-        }
-        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-            if let Expression::Identifier(obj_ident) = &*member.object {
-                eprintln!(
-                    "[lower] late-bound member call '{}.{}(...)' via late_bound_object_vars",
-                    self.interner.resolve(obj_ident.name),
-                    method_name
-                );
-            }
-        }
-        let closure = self.alloc_register(UNRESOLVED);
-        self.emit(IrInstr::LateBoundMember {
-            dest: closure.clone(),
-            object: object.clone(),
-            property: method_name.to_string(),
-        });
-        self.emit_member_closure_invoke(
-            dest.clone(),
-            object,
-            closure,
-            args.to_vec(),
-            call_ty,
-            &member.object,
-            callee_expr,
-            method_name,
-        );
-        Some(dest)
-    }
-
-    fn try_lower_variable_object_field_member_call(
-        &mut self,
-        dest: Register,
-        member: &ast::MemberExpression,
-        callee_expr: &Expression,
-        method_name: &str,
-        call_ty: TypeId,
-        args: &[Register],
-        nominal_type_id: Option<NominalTypeId>,
-    ) -> Option<Register> {
-        if nominal_type_id.is_some() {
-            return None;
-        }
-        let Expression::Identifier(obj_ident) = &*member.object else {
-            return None;
-        };
-        let Some(fields) = self.variable_object_fields.get(&obj_ident.name) else {
-            return None;
-        };
-        if !fields.iter().any(|(n, _)| n == method_name) {
-            return None;
-        }
-
-        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-            eprintln!(
-                "[lower] concrete-layout member call '{}.{}(...)' via variable_object_fields (WILL USE LoadFieldExact+CallClosure)",
-                self.interner.resolve(obj_ident.name),
-                method_name
-            );
-        }
-        let closure = self.lower_member(member);
-        let receiver = self.lower_expr(&member.object);
-        self.emit_member_closure_invoke(
-            dest.clone(),
-            receiver,
-            closure,
-            args.to_vec(),
-            call_ty,
-            &member.object,
-            callee_expr,
-            method_name,
-        );
-        Some(dest)
-    }
-
-    fn resolve_registry_member_dispatch_type(
-        &mut self,
-        object_expr: &Expression,
-        object: &Register,
-        member_field_metadata: Option<(TypeId, Option<NominalTypeId>)>,
-        method_name: &str,
-        args: &[Register],
-    ) -> (u32, bool) {
-        let mut obj_type_id = {
-            let reg_ty = object.ty.as_u32();
-            let checker_ty = self.get_expr_type(object_expr).as_u32();
-            let field_ty = member_field_metadata
-                .map(|(field_ty, _)| field_ty.as_u32())
-                .unwrap_or(UNRESOLVED_TYPE_ID);
-            let reg_dispatch = self.normalize_type_for_dispatch(reg_ty);
-            let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
-            let field_dispatch = self.normalize_type_for_dispatch(field_ty);
-
-            let usable = |id: u32| id != UNRESOLVED_TYPE_ID && id != 6;
-            let has_dispatch = |id: u32| {
-                self.type_registry.lookup_method(id, method_name).is_some()
-                    || (args.is_empty()
-                        && self
-                            .type_registry
-                            .lookup_property(id, method_name)
-                            .is_some())
-            };
-
-            if usable(reg_dispatch) && has_dispatch(reg_dispatch) {
-                reg_dispatch
-            } else if usable(checker_dispatch) && has_dispatch(checker_dispatch) {
-                checker_dispatch
-            } else if usable(field_dispatch) && has_dispatch(field_dispatch) {
-                field_dispatch
-            } else if usable(reg_dispatch) {
-                reg_dispatch
-            } else if usable(checker_dispatch) {
-                checker_dispatch
-            } else if usable(field_dispatch) {
-                field_dispatch
-            } else {
-                UNRESOLVED_TYPE_ID
-            }
-        };
-        let late_bound_ctor_dispatch_id = if let Expression::Identifier(obj_ident) = object_expr {
-            self.late_bound_object_ctor_map
-                .get(&obj_ident.name)
-                .copied()
-                .or_else(|| {
-                    self.constructor_value_ctor_map
-                        .get(&obj_ident.name)
-                        .copied()
-                })
-                .and_then(|ctor_symbol| {
-                    let ctor_name = self.interner.resolve(ctor_symbol);
-                    self.type_registry
-                        .has_builtin_dispatch_type(ctor_name)
-                        .then_some(ctor_name)
-                })
-                .and_then(|ctor_name| self.type_ctx.lookup_named_type(ctor_name))
-                .map(|ctor_ty| self.normalize_type_for_dispatch(ctor_ty.as_u32()))
-        } else {
-            None
-        };
-        let late_bound_ctor_has_dispatch = late_bound_ctor_dispatch_id.is_some_and(|type_id| {
-            self.type_registry
-                .lookup_method(type_id, method_name)
-                .is_some()
-                || (args.is_empty()
-                    && self
-                        .type_registry
-                        .lookup_property(type_id, method_name)
-                        .is_some())
-        });
-        if late_bound_ctor_has_dispatch {
-            if let Some(type_id) = late_bound_ctor_dispatch_id {
-                obj_type_id = type_id;
-            }
-        } else if obj_type_id == UNRESOLVED_TYPE_ID {
-            if let Some(type_id) = late_bound_ctor_dispatch_id {
-                obj_type_id = type_id;
-            }
-        }
-
-        (obj_type_id, late_bound_ctor_has_dispatch)
     }
 
     fn try_lower_registry_member_dispatch(
@@ -1168,104 +1492,6 @@ impl<'a> Lowerer<'a> {
             crate::compiler::type_registry::DispatchAction::DeclaredField(_) => None,
             crate::compiler::type_registry::DispatchAction::Opcode(_) => None,
         }
-    }
-
-    fn try_lower_dynamic_member_fallbacks(
-        &mut self,
-        dest: Register,
-        member: &ast::MemberExpression,
-        callee_expr: &Expression,
-        object: Register,
-        nominal_type_id: Option<NominalTypeId>,
-        obj_type_id: u32,
-        method_name: &str,
-        args: &[Register],
-    ) -> Option<Register> {
-        if let Expression::Identifier(ident) = &*member.object {
-            let field_index = self
-                .variable_object_fields
-                .get(&ident.name)
-                .and_then(|fields| {
-                    fields
-                        .iter()
-                        .find(|(name, _)| name == method_name)
-                        .map(|(_, idx)| *idx as u16)
-                });
-            if let Some(field_index) = field_index {
-                let object = self.lower_expr(&member.object);
-                let closure = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::LoadFieldExact {
-                    dest: closure.clone(),
-                    object: object.clone(),
-                    field: field_index,
-                    optional: member.optional,
-                });
-                if self.late_bound_member_call_is_async(&member.object, callee_expr, method_name) {
-                    self.emit(IrInstr::SpawnClosure {
-                        dest: dest.clone(),
-                        closure,
-                        args: args.to_vec(),
-                    });
-                } else {
-                    let receiver = object;
-                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
-                }
-                return Some(dest);
-            }
-        }
-
-        if self.js_this_binding_compat
-            && self.member_read_uses_dynamic_property_path(&member.object, object.ty)
-        {
-            let closure = self.alloc_register(UNRESOLVED);
-            self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
-            if self.late_bound_member_call_is_async(&member.object, callee_expr, method_name) {
-                self.emit(IrInstr::SpawnClosure {
-                    dest: dest.clone(),
-                    closure,
-                    args: args.to_vec(),
-                });
-            } else {
-                let receiver = object.clone();
-                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
-            }
-            return Some(dest);
-        }
-
-        let receiver_runtime_dynamic = nominal_type_id.is_none()
-            && self.allow_unresolved_runtime_fallback
-            && (obj_type_id == UNRESOLVED_TYPE_ID
-                || self.type_is_runtime_dynamic_dispatch(object.ty)
-                || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)));
-        if receiver_runtime_dynamic {
-            let closure = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::LateBoundMember {
-                dest: closure.clone(),
-                object: object.clone(),
-                property: method_name.to_string(),
-            });
-            if self.late_bound_member_call_is_async(&member.object, callee_expr, method_name) {
-                self.emit(IrInstr::SpawnClosure {
-                    dest: dest.clone(),
-                    closure,
-                    args: args.to_vec(),
-                });
-            } else {
-                let receiver = object.clone();
-                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
-            }
-            return Some(dest);
-        }
-
-        if self.allow_unresolved_runtime_fallback {
-            let closure = self.alloc_register(UNRESOLVED);
-            self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
-            let receiver = object;
-            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args.to_vec());
-            return Some(dest);
-        }
-
-        None
     }
 
     fn resolve_identifier_closure_source(
@@ -1413,7 +1639,7 @@ impl<'a> Lowerer<'a> {
 
     fn object_expr_is_class_constructor_ref(&self, expr: &Expression) -> bool {
         matches!(
-            self.semantic_object_shape_kind(expr.span().start),
+            self.semantic_object_shape_kind(expr.span().start, expr.span().end),
             Some(crate::semantics::ObjectShapeKind::ClassValue)
         )
     }
@@ -1447,7 +1673,7 @@ impl<'a> Lowerer<'a> {
             .filter(|ty| ty.as_u32() != UNRESOLVED_TYPE_ID)
     }
 
-    pub(super) fn type_uses_runtime_handle_dispatch(&self, ty: TypeId) -> bool {
+    pub(super) fn type_is_handle_dispatch_builtin(&self, ty: TypeId) -> bool {
         matches!(ty.as_u32(), MUTEX_TYPE_ID | CHANNEL_TYPE_ID)
     }
 
@@ -1458,7 +1684,7 @@ impl<'a> Lowerer<'a> {
 
         if fallback.as_u32() != UNRESOLVED_TYPE_ID
             && fallback != narrowed
-            && self.type_uses_runtime_handle_dispatch(fallback)
+            && self.type_is_handle_dispatch_builtin(fallback)
             && self.type_has_construct_signature(narrowed)
         {
             return fallback;
@@ -1502,7 +1728,8 @@ impl<'a> Lowerer<'a> {
     ) -> Option<Vec<(String, u16)>> {
         match object_expr {
             Expression::Identifier(ident) => {
-                let shape_kind = self.semantic_object_shape_kind(ident.span.start);
+                let shape_kind =
+                    self.semantic_object_shape_kind(ident.span.start, ident.span.end);
                 if matches!(
                     shape_kind,
                     Some(
@@ -1510,8 +1737,7 @@ impl<'a> Lowerer<'a> {
                             | crate::semantics::ObjectShapeKind::NominalInstance
                             | crate::semantics::ObjectShapeKind::BuiltinValue
                     )
-                ) || self.late_bound_object_vars.contains(&ident.name)
-                    || self.constructor_value_ctor_map.contains_key(&ident.name)
+                ) || self.binding_uses_runtime_dispatch_hint(ident.name)
                 {
                     return None;
                 }
@@ -1519,7 +1745,7 @@ impl<'a> Lowerer<'a> {
                     .get(&ident.name)
                     .and_then(|alias| self.projected_structural_layout_from_alias_name(alias))
                     .or_else(|| {
-                        self.constructor_value_type_map.get(&ident.name).and_then(|ty| {
+                        self.runtime_constructor_type_cache.get(&ident.name).and_then(|ty| {
                             self.structural_static_slot_layout_from_type(*ty).map(|layout| {
                                 layout
                                     .into_iter()
@@ -1573,7 +1799,7 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Some(fields) = self
-            .constructor_value_type_map
+            .runtime_constructor_type_cache
             .get(&var_name)
             .and_then(|ty| self.structural_static_slot_layout_from_type(*ty))
             .map(|layout| {
@@ -1699,7 +1925,7 @@ impl<'a> Lowerer<'a> {
                 ));
             self.current_block = exit_block;
             self.propagate_variable_projection_to_register(ident.name, &dest);
-            if !self.identifier_requires_late_bound_dispatch(ident.name) {
+            if !self.binding_uses_runtime_dispatch_hint(ident.name) {
                 self.propagate_type_projection_to_register(
                     self.effective_identifier_value_type(ident, slot_ty),
                     &dest,
@@ -1713,7 +1939,7 @@ impl<'a> Lowerer<'a> {
             index: global_idx,
         });
         self.propagate_variable_projection_to_register(ident.name, &dest);
-        if !self.identifier_requires_late_bound_dispatch(ident.name) {
+        if !self.binding_uses_runtime_dispatch_hint(ident.name) {
             self.propagate_type_projection_to_register(
                 self.effective_identifier_value_type(ident, slot_ty),
                 &dest,
@@ -1826,44 +2052,170 @@ impl<'a> Lowerer<'a> {
             .is_some_and(|resolved| resolved.in_tdz)
     }
 
+    fn semantic_identifier_is_builtin_global(&self, span_start: usize) -> bool {
+        matches!(
+            self.semantic_identifier_resolution_kind(span_start),
+            Some(crate::semantics::ResolvedIdentifierKind::BuiltinGlobal)
+        )
+    }
+
     fn semantic_object_shape(
         &self,
         span_start: usize,
+        span_end: usize,
     ) -> Option<&crate::semantics::SemanticObjectShape> {
-        self.semantic_plan.object_shape_at_span(span_start)
+        self.semantic_plan.object_shape_at_span(span_start, span_end)
+    }
+
+    fn semantic_value_origin(
+        &self,
+        span_start: usize,
+        span_end: usize,
+    ) -> Option<&crate::semantics::SemanticValueOrigin> {
+        self.semantic_plan.value_origin_at_span(span_start, span_end)
     }
 
     fn semantic_member_target(
         &self,
         span_start: usize,
+        span_end: usize,
     ) -> Option<&crate::semantics::SemanticMemberTarget> {
-        self.semantic_plan.member_target_at_span(span_start)
+        self.semantic_plan.member_target_at_span(span_start, span_end)
     }
 
     fn semantic_call_target(
         &self,
         span_start: usize,
+        span_end: usize,
     ) -> Option<&crate::semantics::SemanticCallTarget> {
-        self.semantic_plan.call_target_at_span(span_start)
+        self.semantic_plan.call_target_at_span(span_start, span_end)
+    }
+
+    fn semantic_property_dispatch(
+        &self,
+        span_start: usize,
+        span_end: usize,
+    ) -> Option<&crate::semantics::SemanticPropertyDispatch> {
+        self.semantic_plan.property_dispatch_at_span(span_start, span_end)
+    }
+
+    fn semantic_call_dispatch(
+        &self,
+        span_start: usize,
+        span_end: usize,
+    ) -> Option<&crate::semantics::SemanticCallDispatch> {
+        self.semantic_plan.call_dispatch_at_span(span_start, span_end)
     }
 
     fn semantic_constructor_target(
         &self,
         span_start: usize,
+        span_end: usize,
     ) -> Option<&crate::semantics::SemanticConstructorTarget> {
-        self.semantic_plan.constructor_target_at_span(span_start)
+        self.semantic_plan.constructor_target_at_span(span_start, span_end)
+    }
+
+    fn semantic_constructor_dispatch(
+        &self,
+        span_start: usize,
+        span_end: usize,
+    ) -> Option<&crate::semantics::SemanticConstructorDispatch> {
+        self.semantic_plan
+            .constructor_dispatch_at_span(span_start, span_end)
+    }
+
+    fn semantic_value_origin_kind_for_expr(
+        &self,
+        expr: &Expression,
+    ) -> Option<crate::semantics::ValueOriginKind> {
+        self.semantic_value_origin(expr.span().start, expr.span().end)
+            .map(|origin| origin.kind)
+    }
+
+    fn name_is_non_shadowable_intrinsic_global(&self, name: &str) -> bool {
+        matches!(name, "Infinity" | "NaN" | "undefined" | "globalThis")
+    }
+
+    pub(super) fn identifier_constructor_binding_hint(
+        &self,
+        ident: &ast::Identifier,
+    ) -> Option<(Symbol, Option<TypeId>)> {
+        let origin = self.semantic_value_origin_kind_for_expr(&Expression::Identifier(ident.clone()))?;
+        let constructor_type = self
+            .get_expr_type(&Expression::Identifier(ident.clone()))
+            .as_u32()
+            .ne(&UNRESOLVED_TYPE_ID)
+            .then(|| self.get_expr_type(&Expression::Identifier(ident.clone())))
+            .or_else(|| self.type_ctx.lookup_named_type(self.interner.resolve(ident.name)));
+        let is_constructable = constructor_type.is_some_and(|ty| self.type_has_construct_signature(ty))
+            || self
+                .semantic_object_shape(ident.span.start, ident.span.end)
+                .is_some_and(|shape| shape.kind == crate::semantics::ObjectShapeKind::ClassValue);
+        if !is_constructable {
+            return None;
+        }
+        match origin {
+            crate::semantics::ValueOriginKind::BoundValue
+            | crate::semantics::ValueOriginKind::ImportedBinding
+            | crate::semantics::ValueOriginKind::BuiltinGlobalValue
+            | crate::semantics::ValueOriginKind::BuiltinNamespace
+            | crate::semantics::ValueOriginKind::RuntimeLateBoundValue => {
+                Some((ident.name, constructor_type))
+            }
+            crate::semantics::ValueOriginKind::ImportedNamespace
+            | crate::semantics::ValueOriginKind::RuntimeEnvValue
+            | crate::semantics::ValueOriginKind::DynamicValue => None,
+        }
+    }
+
+    pub(super) fn new_expr_runtime_dispatch_binding_hint(
+        &self,
+        new_expr: &ast::NewExpression,
+    ) -> Option<(Symbol, Option<TypeId>)> {
+        let dispatch =
+            self.semantic_constructor_dispatch(new_expr.span.start, new_expr.span.end)?;
+        let Expression::Identifier(ident) = &*new_expr.callee else {
+            return None;
+        };
+        let ctor_ty = self
+            .get_expr_type(&new_expr.callee)
+            .as_u32()
+            .ne(&UNRESOLVED_TYPE_ID)
+            .then(|| self.get_expr_type(&new_expr.callee))
+            .or_else(|| self.type_ctx.lookup_named_type(self.interner.resolve(ident.name)));
+        match dispatch.kind {
+            crate::semantics::ConstructorDispatchKind::ImportedConstructorValue
+            | crate::semantics::ConstructorDispatchKind::RuntimeConstructorValue => {
+                Some((ident.name, ctor_ty))
+            }
+            crate::semantics::ConstructorDispatchKind::NominalClass
+            | crate::semantics::ConstructorDispatchKind::BuiltinNativeConstructor
+            | crate::semantics::ConstructorDispatchKind::DynamicConstructor => None,
+        }
     }
 
     fn semantic_object_shape_kind(
         &self,
         span_start: usize,
+        span_end: usize,
     ) -> Option<crate::semantics::ObjectShapeKind> {
-        self.semantic_object_shape(span_start).map(|shape| shape.kind)
+        self.semantic_object_shape(span_start, span_end)
+            .map(|shape| shape.kind)
     }
 
-    fn semantic_object_shape_type_id(&self, span_start: usize) -> Option<TypeId> {
-        self.semantic_object_shape(span_start)
+    fn semantic_object_shape_type_id(&self, span_start: usize, span_end: usize) -> Option<TypeId> {
+        self.semantic_object_shape(span_start, span_end)
             .and_then(|shape| shape.type_id)
+    }
+
+    fn semantic_call_completion_kind(
+        &self,
+        span_start: usize,
+        span_end: usize,
+    ) -> crate::semantics::CallCompletionKind {
+        self.semantic_call_dispatch(span_start, span_end)
+            .map(|dispatch| dispatch.completion_kind)
+            .unwrap_or(crate::semantics::CallCompletionKind::Sync)
     }
 
     fn semantic_identifier_is_delete_localish(
@@ -1876,15 +2228,16 @@ impl<'a> Lowerer<'a> {
             | Some(crate::semantics::ResolvedIdentifierKind::CaptureBinding)
             | Some(crate::semantics::ResolvedIdentifierKind::ScriptGlobalBinding)
             | Some(crate::semantics::ResolvedIdentifierKind::BuiltinGlobal) => true,
-            Some(crate::semantics::ResolvedIdentifierKind::RuntimeEnvLookup) => false,
+            Some(crate::semantics::ResolvedIdentifierKind::RuntimeEnvLookup)
+            | Some(crate::semantics::ResolvedIdentifierKind::AmbientGlobal) => false,
             None => {
                 self.function_map.contains_key(&ident.name)
                     || self
                         .current_method_env_globals
                         .as_ref()
                         .is_some_and(|bindings| bindings.contains_key(&ident.name))
-                    || self.ambient_builtin_globals.contains(name)
-                    || matches!(name, "Infinity" | "NaN" | "undefined" | "arguments")
+                    || self.name_is_non_shadowable_intrinsic_global(name)
+                    || name == "arguments"
             }
         }
     }
@@ -1896,11 +2249,31 @@ impl<'a> Lowerer<'a> {
     ) -> Option<super::ResolvedBinding> {
         let name = self.interner.resolve(symbol);
 
-        if self.js_this_binding_compat
-            && self.semantic_identifier_requires_runtime_lookup(span_start)
+        if self.js_this_binding_compat {
+            match self.semantic_identifier_resolution_kind(span_start) {
+                Some(crate::semantics::ResolvedIdentifierKind::RuntimeEnvLookup) => {
+                    return Some(super::ResolvedBinding::RuntimeIdentifier {
+                        env: self.env_handle_for_binding(false, false, false),
+                        symbol,
+                    });
+                }
+                Some(crate::semantics::ResolvedIdentifierKind::BuiltinGlobal)
+                | Some(crate::semantics::ResolvedIdentifierKind::AmbientGlobal) => {
+                    return Some(super::ResolvedBinding::AmbientGlobal {
+                        env: self.env_handle_for_binding(false, true, false),
+                        symbol,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        if self.direct_eval_binding_enabled(name)
+            || (self.in_direct_eval_function
+                && self.semantic_identifier_requires_runtime_lookup(span_start))
         {
-            return Some(super::ResolvedBinding::RuntimeIdentifier {
-                env: self.env_handle_for_binding(false, false, false),
+            return Some(super::ResolvedBinding::DirectEval {
+                env: self.env_handle_for_binding(true, false, false),
                 symbol,
             });
         }
@@ -2017,7 +2390,7 @@ impl<'a> Lowerer<'a> {
                         refcell: refcell_reg,
                     });
                     self.propagate_variable_projection_to_register(symbol, &dest);
-                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                    if !self.binding_uses_runtime_dispatch_hint(symbol) {
                         self.propagate_type_projection_to_register(ty, &dest);
                     }
                     dest
@@ -2028,7 +2401,7 @@ impl<'a> Lowerer<'a> {
                         index: local_idx,
                     });
                     self.propagate_variable_projection_to_register(symbol, &dest);
-                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                    if !self.binding_uses_runtime_dispatch_hint(symbol) {
                         self.propagate_type_projection_to_register(ty, &dest);
                     }
                     dest
@@ -2052,7 +2425,7 @@ impl<'a> Lowerer<'a> {
                         refcell: refcell_reg,
                     });
                     self.propagate_variable_projection_to_register(symbol, &dest);
-                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                    if !self.binding_uses_runtime_dispatch_hint(symbol) {
                         self.propagate_type_projection_to_register(ty, &dest);
                     }
                     dest
@@ -2063,7 +2436,7 @@ impl<'a> Lowerer<'a> {
                         index: capture_idx,
                     });
                     self.propagate_variable_projection_to_register(symbol, &dest);
-                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                    if !self.binding_uses_runtime_dispatch_hint(symbol) {
                         self.propagate_type_projection_to_register(ty, &dest);
                     }
                     dest
@@ -2088,7 +2461,7 @@ impl<'a> Lowerer<'a> {
                     index: global_idx,
                 });
                 self.propagate_variable_projection_to_register(symbol, &dest);
-                if !self.identifier_requires_late_bound_dispatch(symbol) {
+                if !self.binding_uses_runtime_dispatch_hint(symbol) {
                     self.propagate_type_projection_to_register(ty, &dest);
                 }
                 dest
@@ -2108,7 +2481,7 @@ impl<'a> Lowerer<'a> {
                         refcell: refcell_reg,
                     });
                     self.propagate_variable_projection_to_register(symbol, &dest);
-                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                    if !self.binding_uses_runtime_dispatch_hint(symbol) {
                         self.propagate_type_projection_to_register(ty, &dest);
                     }
                     dest
@@ -2119,7 +2492,7 @@ impl<'a> Lowerer<'a> {
                         index: binding.global_idx,
                     });
                     self.propagate_variable_projection_to_register(symbol, &dest);
-                    if !self.identifier_requires_late_bound_dispatch(symbol) {
+                    if !self.binding_uses_runtime_dispatch_hint(symbol) {
                         self.propagate_type_projection_to_register(ty, &dest);
                     }
                     dest
@@ -2277,7 +2650,9 @@ impl<'a> Lowerer<'a> {
         &mut self,
         expr: &Expression,
     ) -> Option<super::Reference> {
-        let semantic_reference = self.semantic_plan.reference_at_span(expr.span().start);
+        let semantic_reference = self
+            .semantic_plan
+            .reference_at_span(expr.span().start, expr.span().end);
         match (semantic_reference.map(|reference| &reference.kind), expr) {
             (
                 Some(crate::semantics::ReferenceExprKind::Identifier)
@@ -2418,7 +2793,7 @@ impl<'a> Lowerer<'a> {
                 self.static_member_owner_nominal_type(&paren.expression)
             }
             Expression::Identifier(ident) => self
-                .semantic_object_shape_type_id(ident.span.start)
+                .semantic_object_shape_type_id(ident.span.start, ident.span.end)
                 .and_then(|ty| self.nominal_type_id_from_type_id(ty))
                 .or_else(|| {
                     self.object_expr_is_class_constructor_ref(object_expr)
@@ -2622,7 +2997,13 @@ impl<'a> Lowerer<'a> {
     }
 
     fn direct_eval_binding_enabled(&self, name: &str) -> bool {
-        self.js_this_binding_compat && self.direct_eval_binding_names.contains(name)
+        self.js_this_binding_compat
+            && self.direct_eval_binding_names.contains(name)
+            && !self.identifier_is_ambient_runtime_global(name)
+    }
+
+    fn identifier_is_ambient_runtime_global(&self, name: &str) -> bool {
+        self.name_is_non_shadowable_intrinsic_global(name)
     }
 
     fn should_resolve_from_direct_eval_env(&self, ident: &ast::Identifier) -> bool {
@@ -2630,21 +3011,7 @@ impl<'a> Lowerer<'a> {
         self.in_direct_eval_function
             && (self.direct_eval_binding_enabled(name)
                 || self.semantic_identifier_requires_runtime_lookup(ident.span.start))
-            && !self.local_map.contains_key(&ident.name)
-            && !self.constant_map.contains_key(&ident.name)
-            && !self
-                .captures
-                .iter()
-                .any(|capture| capture.symbol == ident.name)
-            && !self
-                .ancestor_variables
-                .as_ref()
-                .is_some_and(|ancestors| ancestors.contains_key(&ident.name))
-            && !self.module_var_globals.contains_key(&ident.name)
-            && !self
-                .current_method_env_globals
-                .as_ref()
-                .is_some_and(|bindings| bindings.contains_key(&ident.name))
+            && !self.identifier_is_ambient_runtime_global(name)
     }
 
     pub(super) fn emit_direct_eval_name_reg(&mut self, name: &str) -> Register {
@@ -2786,16 +3153,18 @@ impl<'a> Lowerer<'a> {
     fn semantic_scope_snapshot(
         &self,
         span_start: usize,
+        span_end: usize,
     ) -> Option<&[crate::semantics::ScopeSnapshotBinding]> {
-        self.semantic_plan.scope_snapshot_at_span(span_start)
+        self.semantic_plan.scope_snapshot_at_span(span_start, span_end)
     }
 
     fn semantic_scope_binding(
         &self,
         span_start: usize,
+        span_end: usize,
         symbol: Symbol,
     ) -> Option<crate::semantics::ScopeSnapshotBinding> {
-        self.semantic_scope_snapshot(span_start)?
+        self.semantic_scope_snapshot(span_start, span_end)?
             .iter()
             .copied()
             .find(|binding| binding.symbol == symbol)
@@ -2804,9 +3173,10 @@ impl<'a> Lowerer<'a> {
     fn direct_eval_scope_bindings(
         &self,
         span_start: usize,
+        span_end: usize,
     ) -> Vec<crate::semantics::ScopeSnapshotBinding> {
         let mut bindings = self
-            .semantic_scope_snapshot(span_start)
+            .semantic_scope_snapshot(span_start, span_end)
             .map(|snapshot| snapshot.to_vec())
             .unwrap_or_default();
         let mut seen: FxHashSet<Symbol> = bindings.iter().map(|binding| binding.symbol).collect();
@@ -2827,8 +3197,13 @@ impl<'a> Lowerer<'a> {
         bindings
     }
 
-    fn direct_eval_binding_is_lexical_at_span(&self, span_start: usize, symbol: Symbol) -> bool {
-        self.semantic_scope_binding(span_start, symbol)
+    fn direct_eval_binding_is_lexical_at_span(
+        &self,
+        span_start: usize,
+        span_end: usize,
+        symbol: Symbol,
+    ) -> bool {
+        self.semantic_scope_binding(span_start, span_end, symbol)
             .is_some_and(|binding| {
                 matches!(
                     binding.kind,
@@ -2996,7 +3371,11 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    pub(super) fn lower_direct_eval_environment_object(&mut self, span_start: usize) -> Register {
+    pub(super) fn lower_direct_eval_environment_object(
+        &mut self,
+        span_start: usize,
+        span_end: usize,
+    ) -> Register {
         let env_object = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::NativeCall {
             dest: Some(env_object.clone()),
@@ -3004,7 +3383,7 @@ impl<'a> Lowerer<'a> {
             args: vec![],
         });
 
-        for binding in self.direct_eval_scope_bindings(span_start) {
+        for binding in self.direct_eval_scope_bindings(span_start, span_end) {
             let symbol = binding.symbol;
             let name = self.interner.resolve(symbol).to_string();
             let local_idx = self.local_map.get(&symbol).copied();
@@ -3052,7 +3431,8 @@ impl<'a> Lowerer<'a> {
                     );
                 }
             }
-            if self.direct_eval_binding_is_lexical_at_span(span_start, symbol) || is_parameter_binding
+            if self.direct_eval_binding_is_lexical_at_span(span_start, span_end, symbol)
+                || is_parameter_binding
             {
                 self.emit_direct_eval_hidden_flag_set(
                     env_object.clone(),
@@ -3089,6 +3469,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn lower_activation_direct_eval_environment_object(
         &mut self,
         span_start: usize,
+        span_end: usize,
     ) -> Register {
         let env_object = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::NativeCall {
@@ -3107,7 +3488,7 @@ impl<'a> Lowerer<'a> {
                 .get(&symbol)
                 .copied()
                 .expect("activation eval env local must exist");
-            let semantic_binding = self.semantic_scope_binding(span_start, symbol);
+            let semantic_binding = self.semantic_scope_binding(span_start, span_end, symbol);
             let is_parameter_binding = semantic_binding
                 .is_some_and(|binding| binding.kind == crate::BindingKind::Parameter);
             let is_uninitialized_parameter =
@@ -3152,7 +3533,7 @@ impl<'a> Lowerer<'a> {
                     format!("{DIRECT_EVAL_LOCAL_REFCELL_PREFIX}{name}"),
                 );
             }
-            if self.direct_eval_binding_is_lexical_at_span(span_start, symbol) {
+            if self.direct_eval_binding_is_lexical_at_span(span_start, span_end, symbol) {
                 self.emit_direct_eval_hidden_flag_set(
                     env_object.clone(),
                     format!("{DIRECT_EVAL_LEXICAL_MARKER_PREFIX}{name}"),
@@ -3707,6 +4088,9 @@ impl<'a> Lowerer<'a> {
         if self.js_this_binding_compat && self.semantic_identifier_is_in_tdz(ident.span.start) {
             return self.emit_parameter_tdz_reference_error(name);
         }
+        if self.direct_eval_binding_enabled(name) {
+            return self.emit_direct_eval_binding_get(name, false);
+        }
         if self.js_this_binding_compat
             && self.semantic_identifier_requires_runtime_lookup(ident.span.start)
         {
@@ -3735,7 +4119,7 @@ impl<'a> Lowerer<'a> {
                     dest: dest.clone(),
                     refcell: refcell_reg,
                 });
-                if !self.identifier_requires_late_bound_dispatch(ident.name) {
+                if !self.binding_uses_runtime_dispatch_hint(ident.name) {
                     self.propagate_type_projection_to_register(value_ty, &dest);
                 }
                 return dest;
@@ -3765,7 +4149,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             self.propagate_variable_projection_to_register(ident.name, &dest);
-            if !self.identifier_requires_late_bound_dispatch(ident.name) {
+            if !self.binding_uses_runtime_dispatch_hint(ident.name) {
                 self.propagate_type_projection_to_register(ty, &dest);
             }
             return dest;
@@ -3818,7 +4202,7 @@ impl<'a> Lowerer<'a> {
                             dest: dest.clone(),
                             refcell: refcell_reg,
                         });
-                        if !this.identifier_requires_late_bound_dispatch(ident.name) {
+                        if !this.binding_uses_runtime_dispatch_hint(ident.name) {
                             this.propagate_type_projection_to_register(ty, &dest);
                         }
                         dest
@@ -3829,7 +4213,7 @@ impl<'a> Lowerer<'a> {
                             index: capture_idx,
                         });
                         this.propagate_variable_projection_to_register(ident.name, &dest);
-                        if !this.identifier_requires_late_bound_dispatch(ident.name) {
+                        if !this.binding_uses_runtime_dispatch_hint(ident.name) {
                             this.propagate_type_projection_to_register(ty, &dest);
                         }
                         dest
@@ -3851,7 +4235,7 @@ impl<'a> Lowerer<'a> {
                     dest: dest.clone(),
                     refcell: refcell_reg,
                 });
-                if !self.identifier_requires_late_bound_dispatch(ident.name) {
+                if !self.binding_uses_runtime_dispatch_hint(ident.name) {
                     self.propagate_type_projection_to_register(ty, &dest);
                 }
                 return dest;
@@ -3862,7 +4246,7 @@ impl<'a> Lowerer<'a> {
                     index: capture_idx,
                 });
                 self.propagate_variable_projection_to_register(ident.name, &dest);
-                if !self.identifier_requires_late_bound_dispatch(ident.name) {
+                if !self.binding_uses_runtime_dispatch_hint(ident.name) {
                     self.propagate_type_projection_to_register(ty, &dest);
                 }
                 return dest;
@@ -4033,15 +4417,15 @@ impl<'a> Lowerer<'a> {
                 }
             }
             self.propagate_variable_projection_to_register(ident.name, &dest);
-            if !self.identifier_requires_late_bound_dispatch(ident.name) {
+            if !self.binding_uses_runtime_dispatch_hint(ident.name) {
                 self.propagate_type_projection_to_register(ty, &dest);
             }
             return dest;
         }
 
-        if !self.js_this_binding_compat {
+        if !self.js_this_binding_compat || self.builtin_this_coercion_compat {
             let class_value_nominal_type_id = self
-                .semantic_object_shape_type_id(ident.span.start)
+                .semantic_object_shape_type_id(ident.span.start, ident.span.end)
                 .and_then(|ty| self.nominal_type_id_from_type_id(ty))
                 .or_else(|| {
                     self.object_expr_is_class_constructor_ref(&Expression::Identifier(ident.clone()))
@@ -4073,7 +4457,7 @@ impl<'a> Lowerer<'a> {
 
         // Ambient builtin globals (seeded by declaration surfaces) are resolved at runtime
         // through a dedicated native lookup and do not require source-level declarations.
-        if self.ambient_builtin_globals.contains(name) {
+        if self.semantic_identifier_is_builtin_global(ident.span.start) {
             if self.direct_eval_binding_enabled(name) {
                 return self.emit_direct_eval_binding_get(name, false);
             }
@@ -4646,9 +5030,11 @@ impl<'a> Lowerer<'a> {
 
         let semantic_call_kind = self
             .semantic_plan
-            .call_op_at_span(call.span.start)
+            .call_op_at_span(call.span.start, call.span.end)
             .map(|op| op.kind);
-        let semantic_call_target = self.semantic_call_target(call.span.start).cloned();
+        let semantic_call_target = self
+            .semantic_call_target(call.span.start, call.span.end)
+            .cloned();
         let semantic_call_target_kind = semantic_call_target.as_ref().map(|target| target.kind);
 
         // Prefer checker return type; if absent, derive from callee call signature.
@@ -4897,7 +5283,8 @@ impl<'a> Lowerer<'a> {
                     });
                     empty
                 });
-                let mut env_object = self.lower_direct_eval_environment_object(call.span.start);
+                let mut env_object =
+                    self.lower_direct_eval_environment_object(call.span.start, call.span.end);
                 if self.parameter_scope_eval_mode || self.body_scope_eval_mode {
                     env_object = self.emit_ensure_activation_direct_eval_env(env_object);
                 }
@@ -4965,7 +5352,15 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            if self.js_this_binding_compat && self.ambient_builtin_globals.contains(name) {
+            if self.js_this_binding_compat
+                && matches!(
+                    self.semantic_value_origin_kind_for_expr(&Expression::Identifier(ident.clone())),
+                    Some(
+                        crate::semantics::ValueOriginKind::BuiltinGlobalValue
+                            | crate::semantics::ValueOriginKind::BuiltinNamespace
+                    )
+                )
+            {
                 let closure = self.lower_identifier(ident);
                 let receiver = self.lower_undefined_literal();
                 self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
@@ -5681,578 +6076,30 @@ impl<'a> Lowerer<'a> {
 
         // For member calls, resolve method to builtin ID or user-defined method
         if let Expression::Member(member) = &*call.callee {
-            let semantic_member_target_kind = self
-                .semantic_member_target(member.span.start)
-                .map(|target| target.kind);
-            let semantic_call_target_kind =
-                self.semantic_call_target(call.span.start).map(|target| target.kind);
-            let method_name_symbol = member.property.name;
-            let method_name = self.interner.resolve(method_name_symbol);
-
-            // Check for JSON global object methods
-            if let Expression::Identifier(ident) = &*member.object {
-                let obj_name = self.interner.resolve(ident.name);
-                if obj_name == "JSON" {
-                    use crate::compiler::intrinsic::JsonIntrinsic;
-                    use crate::compiler::native_id::{JSON_PARSE, JSON_STRINGIFY};
-
-                    if let Some(intrinsic) = JsonIntrinsic::detect_intrinsic("JSON", method_name) {
-                        match intrinsic {
-                            "stringify" => {
-                                // JSON.stringify(value) -> native call
-                                self.emit(IrInstr::NativeCall {
-                                    dest: Some(dest.clone()),
-                                    native_id: JSON_STRINGIFY,
-                                    args,
-                                });
-                                return dest;
-                            }
-                            "parse" => {
-                                // JSON.parse(json) -> native call returning json type
-                                // JSON type is TypeId 15 (pre-interned in context.rs)
-
-                                let json_dest = self.alloc_register(TypeId::new(JSON_TYPE_ID));
-                                self.emit(IrInstr::NativeCall {
-                                    dest: Some(json_dest.clone()),
-                                    native_id: JSON_PARSE,
-                                    args,
-                                });
-                                return json_dest;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            // Promise<T> is represented by a raw task handle internally.
-            // Keep task-specific control helpers here, but let JS promise methods
-            // flow through normal dynamic member dispatch so runtime Promise
-            // semantics stay in one place.
-            let object_ty = self.get_expr_type(&member.object);
-            let inferred_is_promise_class =
-                self.infer_nominal_type_id(&member.object)
-                    .is_some_and(|cid| {
-                        self.class_map
-                            .iter()
-                            .any(|(&sym, &id)| id == cid && self.interner.resolve(sym) == "Promise")
-                    });
-            let is_promise_like = self.type_ctx.is_task_type(object_ty)
-                || matches!(
-                    self.type_ctx.get(object_ty),
-                    Some(crate::parser::types::Type::Class(class)) if class.name == "Promise"
-                )
-                || inferred_is_promise_class;
-            if is_promise_like {
-                match method_name {
-                    "cancel" => {
-                        let task_reg = self.lower_expr(&member.object);
-                        self.emit(IrInstr::TaskCancel { task: task_reg });
-                        return dest;
-                    }
-                    "isDone" | "isCancelled" => {
-                        let task_reg = self.lower_expr(&member.object);
-                        let native_id = match method_name {
-                            "isDone" => 0x0500,      // TASK_IS_DONE
-                            "isCancelled" => 0x0501, // TASK_IS_CANCELLED
-                            _ => unreachable!(),
-                        };
-                        self.emit(IrInstr::NativeCall {
-                            dest: Some(dest.clone()),
-                            native_id,
-                            args: vec![task_reg],
-                        });
-                        return dest;
-                    }
-                    _ => {}
-                }
-            }
-
-            // Method extraction bind fast-path:
-            // `obj.method.bind(receiver)` can be lowered directly to BindMethod
-            // when the source method slot is statically known.
-            if method_name == "bind" && !self.js_this_binding_compat {
-                if let (Expression::Member(inner_member), Some(bound_receiver)) =
-                    (&*member.object, args.first().cloned())
-                {
-                    if let Some(nominal_type_id) = self.infer_nominal_type_id(&inner_member.object)
-                    {
-                        if let Some(method_slot) =
-                            self.find_method_slot(nominal_type_id, inner_member.property.name)
-                        {
-                            self.emit(IrInstr::BindMethod {
-                                dest: dest.clone(),
-                                object: bound_receiver,
-                                method: method_slot,
-                            });
-                            return dest;
-                        }
-                    }
-                }
-            }
-
-            if let Some(result) = self.try_lower_static_identifier_member_call(
-                dest.clone(),
-                member,
-                &call.callee,
-                method_name_symbol,
-                method_name,
-                call_ty,
-                &args,
-            ) {
-                return result;
-            }
-
-            let member_object_is_late_bound_identifier =
-                if let Expression::Identifier(ident) = &*member.object {
-                    self.identifier_requires_late_bound_dispatch(ident.name)
-                } else {
-                    false
-                };
-
-            if semantic_call_target_kind
-                == Some(crate::semantics::CallTargetKind::StructuralCall)
-                || (!self.js_this_binding_compat
-                && !member_object_is_late_bound_identifier
-                && self.prefers_structural_member_projection(&member.object)
-                && self
-                    .structural_shape_slot_from_expr(&member.object, method_name)
-                    .is_some())
-            {
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    if let Expression::Identifier(obj_ident) = &*member.object {
-                        eprintln!(
-                            "[lower] structural member call '{}.{}(...)' via shape projection",
-                            self.interner.resolve(obj_ident.name),
-                            method_name
-                        );
-                    }
-                }
-                let async_call =
-                    self.late_bound_member_call_is_async(&member.object, &call.callee, method_name);
-                if !async_call {
-                    if let Some((shape_id, slot)) =
-                        self.structural_shape_slot_from_expr(&member.object, method_name)
-                    {
-                        let object = self.lower_expr(&member.object);
-                        self.emit_structural_shape_name_registration_for_expr(&member.object);
-                        self.emit(IrInstr::CallMethodShape {
-                            dest: Some(dest.clone()),
-                            object,
-                            shape_id,
-                            method: slot,
-                            args,
-                            optional: member.optional,
-                        });
-                        self.propagate_type_projection_to_register(call_ty, &dest);
-                        return dest;
-                    }
-                }
-                let receiver = self.lower_expr(&member.object);
-                let closure = self.lower_member(member);
-                self.emit_member_closure_invoke(
-                    dest.clone(),
-                    receiver,
-                    closure,
-                    args,
-                    call_ty,
-                    &member.object,
-                    &call.callee,
-                    method_name,
-                );
-                return dest;
-            }
-
-            let constrained_typevar_shape_call = self
-                .type_ctx
-                .get(self.get_expr_type(&member.object))
-                .is_some_and(|ty| {
-                    matches!(ty, crate::parser::types::ty::Type::TypeVar(tv) if tv.constraint.is_some())
-                });
-
-            if !self.js_this_binding_compat
-                && constrained_typevar_shape_call
-                && self
-                    .structural_shape_slot_from_expr(&member.object, method_name)
-                    .is_some()
-            {
-                if let Some((shape_id, slot)) =
-                    self.structural_shape_slot_from_expr(&member.object, method_name)
-                {
-                    let object = self.lower_expr(&member.object);
-                    self.emit_structural_shape_name_registration_for_expr(&member.object);
-                    self.emit(IrInstr::CallMethodShape {
-                        dest: Some(dest.clone()),
-                        object,
-                        shape_id,
-                        method: slot,
-                        args,
-                        optional: member.optional,
-                    });
-                    self.propagate_type_projection_to_register(call_ty, &dest);
-                    return dest;
-                }
-            }
-
-            // Try to determine the class type of the object for method resolution
-            let member_field_metadata = self.resolve_member_field_metadata(&member.object);
-            let mut nominal_type_id = if matches!(
-                semantic_member_target_kind,
-                Some(
-                    crate::semantics::MemberTargetKind::StructuralSlot
-                        | crate::semantics::MemberTargetKind::DynamicProperty
-                )
-            ) {
-                None
-            } else {
-                self.infer_nominal_type_id(&member.object)
-                    .or_else(|| member_field_metadata.and_then(|(_, nominal_type_id)| nominal_type_id))
+            let method_name = self.interner.resolve(member.property.name);
+            let prelowered_member_object = match member.object.as_ref() {
+                Expression::Identifier(_) | Expression::This(_) | Expression::Super(_) => None,
+                _ => Some(self.lower_expr(&member.object)),
             };
 
-            // If nominal_type_id is not found, check if this is a Channel type parameter
-            // Parameters with Channel<T> type annotation aren't in nominal_binding_cache
-            if nominal_type_id.is_none() {
-                if let Expression::Identifier(ident) = &*member.object {
-                    // Check if this identifier is a local variable with Channel type
-                    if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                        if let Some(reg) = self.local_registers.get(&local_idx) {
-                            if reg.ty.as_u32() == CHANNEL_TYPE_ID {
-                                // This is a Channel type - look up Channel class by finding it in class_map
-                                for (&sym, &cid) in &self.class_map {
-                                    if self.interner.resolve(sym) == TC::CHANNEL_TYPE_NAME {
-                                        nominal_type_id = Some(cid);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            let inferred_nominal_type_id = nominal_type_id;
-            let checker_member_ty = self.get_expr_type(&member.object);
-            let checker_member_dispatch_ty =
-                self.normalize_type_for_dispatch(checker_member_ty.as_u32());
-            let checker_member_runtime_ctor_has_registry_dispatch =
-                if let Expression::Identifier(ident) = &*member.object {
-                    self.late_bound_object_ctor_map
-                        .get(&ident.name)
-                        .copied()
-                        .or_else(|| self.constructor_value_ctor_map.get(&ident.name).copied())
-                        .is_some_and(|ctor_symbol| {
-                            self.type_registry
-                                .has_builtin_dispatch_type(self.interner.resolve(ctor_symbol))
-                        })
-                } else {
-                    false
-                };
-            let checker_member_receiver_is_late_bound_identifier =
-                if let Expression::Identifier(ident) = &*member.object {
-                    self.identifier_requires_late_bound_dispatch(ident.name)
-                } else {
-                    false
-                };
-            let checker_member_has_registry_dispatch = self
-                .type_registry
-                .lookup_method(checker_member_dispatch_ty, method_name)
-                .is_some()
-                || checker_member_runtime_ctor_has_registry_dispatch;
-            let checker_member_shape_call = !self.js_this_binding_compat
-                && nominal_type_id.is_none()
-                && !checker_member_receiver_is_late_bound_identifier
-                && !checker_member_has_registry_dispatch
-                && self.type_has_checker_validated_class_members(checker_member_ty)
-                && self
-                    .checker_validated_member_call_kind(checker_member_ty, method_name)
-                    .is_some();
-
-            if checker_member_shape_call {
-                if let Some(result) = self.try_lower_checker_validated_member_call(
-                    dest.clone(),
+            if let Some(result) =
+                self.emit_member_call_from_dispatch(
+                    call,
                     member,
-                    checker_member_ty,
-                    method_name,
-                    call_ty,
-                    &args,
-                ) {
-                    return result;
-                }
-            }
-            let use_js_runtime_member_semantics = semantic_call_target_kind
-                == Some(crate::semantics::CallTargetKind::DynamicCall)
-                || self.js_mode_uses_runtime_member_semantics(
-                    &member.object,
-                    self.get_expr_type(&member.object),
-                    nominal_type_id,
-                );
-
-            // Skip class dispatch for builtin primitive types — their methods
-            // are dispatched via the type registry (native calls / class methods)
-            if let Some(cid) = nominal_type_id {
-                let is_builtin = self.class_map.iter().any(|(&sym, &id)| {
-                    id == cid && matches!(self.interner.resolve(sym), "string" | "number" | "Array")
-                });
-                if is_builtin {
-                    nominal_type_id = None;
-                }
-            }
-
-            if use_js_runtime_member_semantics {
-                let closure = self.alloc_register(UNRESOLVED);
-                let receiver = self.lower_expr(&member.object);
-                self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
-                self.emit_member_closure_invoke(
                     dest.clone(),
-                    receiver,
-                    closure,
-                    args,
-                    call_ty,
-                    &member.object,
-                    &call.callee,
-                    method_name,
-                );
-                return dest;
-            }
-
-            if let Some(nominal_type_id) = nominal_type_id {
-                if let Some(result) = self.try_lower_nominal_member_call(
-                    dest.clone(),
-                    member,
-                    nominal_type_id,
-                    method_name_symbol,
-                    method_name,
                     call_ty,
                     &args,
-                ) {
-                    return result;
-                }
-            }
-
-            // Structural object-call path: `obj.f(...)` where `f` is function-typed.
-            // Keep slot-based lowering; runtime structural slot views map interface
-            // slots to concrete field/method bindings.
-            if nominal_type_id.is_none()
-                && self.is_structural_object_type(self.get_expr_type(&member.object))
-                && self.type_is_callable(self.get_expr_type(&call.callee))
+                    prelowered_member_object.clone(),
+                )
             {
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    let obj_type = self.get_expr_type(&member.object);
-                    let obj_type_str = format!("{:?}", obj_type);
-                    if let Expression::Identifier(obj_ident) = &*member.object {
-                        eprintln!(
-                            "[lower] structural member call '{}.{}(...)' — obj type_id={} (WILL USE LoadFieldExact+CallClosure)",
-                            self.interner.resolve(obj_ident.name),
-                            method_name,
-                            obj_type_str
-                        );
-                    } else {
-                        eprintln!(
-                            "[lower] structural member call '<expr>.{}(...)' — obj type_id={} (WILL USE LoadFieldExact+CallClosure)",
-                            method_name,
-                            obj_type_str
-                        );
-                    }
-                }
-                let async_call =
-                    self.late_bound_member_call_is_async(&member.object, &call.callee, method_name);
-                if !async_call {
-                    if let Some((shape_id, slot)) =
-                        self.structural_shape_slot_from_expr(&member.object, method_name)
-                    {
-                        let object = self.lower_expr(&member.object);
-                        self.emit_structural_shape_name_registration_for_expr(&member.object);
-                        self.emit(IrInstr::CallMethodShape {
-                            dest: Some(dest.clone()),
-                            object,
-                            shape_id,
-                            method: slot,
-                            args,
-                            optional: member.optional,
-                        });
-                        self.propagate_type_projection_to_register(call_ty, &dest);
-                        return dest;
-                    }
-                }
-                let closure = self.lower_member(member);
-                if async_call {
-                    self.emit(IrInstr::SpawnClosure {
-                        dest: dest.clone(),
-                        closure,
-                        args,
-                    });
-                } else {
-                    let receiver = self.lower_expr(&member.object);
-                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                    self.propagate_type_projection_to_register(call_ty, &dest);
-                }
-                return dest;
-            }
-
-            // Free-variable concrete-layout call path: `obj.method(...)` where `obj` is an
-            // identifier with a known field layout (variable_object_fields) but the checker
-            // type is unresolved (e.g. captured from an outer scope inside a nested function).
-            // This avoids falling into JsonGet when the object is a stdlib module default export.
-            if let Some(result) = self.try_lower_variable_object_field_member_call(
-                dest.clone(),
-                member,
-                &call.callee,
-                method_name,
-                call_ty,
-                &args,
-                nominal_type_id,
-            ) {
                 return result;
             }
-
-            // Fall back to registry-based dispatch
-            let object = self.lower_expr(&member.object);
-
-            let (obj_type_id, late_bound_ctor_has_dispatch) = self
-                .resolve_registry_member_dispatch_type(
-                    &member.object,
-                    &object,
-                    member_field_metadata,
-                    method_name,
-                    &args,
-                );
-            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                if !matches!(&*member.object, Expression::Identifier(_)) {
-                    eprintln!(
-                        "[lower] member-call receiver method='{}' reg_ty={} checker_ty={} field_ty={} nominal_type_id={:?} obj_type_id={}",
-                        method_name,
-                        object.ty.as_u32(),
-                        self.get_expr_type(&member.object).as_u32(),
-                        member_field_metadata
-                            .map(|(field_ty, _)| field_ty.as_u32())
-                            .unwrap_or(UNRESOLVED_TYPE_ID),
-                        nominal_type_id.map(|id| id.as_u32()),
-                        obj_type_id
-                    );
-                }
-            }
-            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                if let Expression::Identifier(obj_ident) = &*member.object {
-                    eprintln!(
-                        "[lower] registry member call fallback '{}.{}(...)' obj_ty_id={}",
-                        self.interner.resolve(obj_ident.name),
-                        method_name,
-                        obj_type_id
-                    );
-                }
-            }
-
-            let receiver_requires_late_bound = if let Expression::Identifier(obj_ident) =
-                &*member.object
-            {
-                self.identifier_requires_late_bound_dispatch(obj_ident.name)
-            } else {
-                false
-            } || (nominal_type_id.is_none()
-                && (self.type_requires_late_bound_dispatch(object.ty)
-                    || self.type_requires_late_bound_dispatch(self.get_expr_type(&member.object))));
-            let has_registry_dispatch = (obj_type_id != UNRESOLVED_TYPE_ID
-                && (self
-                    .type_registry
-                    .lookup_method(obj_type_id, method_name)
-                    .is_some()
-                    || (args.is_empty()
-                        && self
-                            .type_registry
-                            .lookup_property(obj_type_id, method_name)
-                            .is_some())))
-                || late_bound_ctor_has_dispatch;
-
-            // Handle-backed Mutex<T> methods that map to dedicated bytecode opcodes.
-            if obj_type_id == MUTEX_TYPE_ID && args.is_empty() {
-                match method_name {
-                    "lock" => {
-                        self.emit(IrInstr::MutexLock {
-                            mutex: object.clone(),
-                        });
-                        self.emit(IrInstr::Assign {
-                            dest: dest.clone(),
-                            value: IrValue::Constant(IrConstant::Null),
-                        });
-                        return dest;
-                    }
-                    "unlock" => {
-                        self.emit(IrInstr::MutexUnlock {
-                            mutex: object.clone(),
-                        });
-                        self.emit(IrInstr::Assign {
-                            dest: dest.clone(),
-                            value: IrValue::Constant(IrConstant::Null),
-                        });
-                        return dest;
-                    }
-                    _ => {}
-                }
-            }
-
-            if let Some(result) = self.try_lower_late_bound_member_call(
-                dest.clone(),
-                member,
-                &call.callee,
-                object.clone(),
-                nominal_type_id,
-                receiver_requires_late_bound,
-                has_registry_dispatch,
-                method_name,
-                call_ty,
-                &args,
-            ) {
-                return result;
-            }
-
-            if let Some(result) = self.try_lower_registry_member_dispatch(
-                dest.clone(),
-                call,
-                object.clone(),
-                obj_type_id,
-                method_name,
-                &args,
-            ) {
-                return result;
-            }
-
-            if let Some(result) = self.try_lower_dynamic_member_fallbacks(
-                dest.clone(),
-                member,
-                &call.callee,
-                object.clone(),
-                nominal_type_id,
-                obj_type_id,
-                method_name,
-                &args,
-            ) {
-                return result;
-            }
-
-            let class_name = inferred_nominal_type_id.and_then(|cid| {
-                self.class_map.iter().find_map(|(&sym, &id)| {
-                    if id == cid {
-                        Some(self.interner.resolve(sym).to_string())
-                    } else {
-                        None
-                    }
-                })
-            });
-            let object_type = class_name
-                .map(|name| format!("class {}", name))
-                .or_else(|| {
-                    if obj_type_id != UNRESOLVED_TYPE_ID {
-                        Some(format!("type id {}", obj_type_id))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "unknown receiver type".to_string());
 
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
                     message: format!(
-                        "unresolved member call '{}()' on {}: no class or registry dispatch path",
-                        method_name, object_type
+                        "semantic member dispatch '{}(...)' did not emit IR",
+                        method_name
                     ),
                 });
             self.poison_register(&dest);
@@ -6264,15 +6111,12 @@ impl<'a> Lowerer<'a> {
         let callee_ty = self.get_expr_type(&call.callee);
         let callee_ty_raw = callee_ty.as_u32();
         let ambient_runtime_callable = matches!(
-            &*call.callee,
-            Expression::Identifier(ident)
-                if self
-                    .ambient_builtin_globals
-                    .contains(self.interner.resolve(ident.name))
-                    && !self.object_expr_is_class_constructor_ref(&Expression::Identifier(
-                        ident.clone(),
-                    ))
-        );
+            self.semantic_value_origin_kind_for_expr(&call.callee),
+            Some(
+                crate::semantics::ValueOriginKind::BuiltinGlobalValue
+                    | crate::semantics::ValueOriginKind::BuiltinNamespace
+            )
+        ) && !self.object_expr_is_class_constructor_ref(&call.callee);
         if std::env::var("RAYA_DEBUG_CALL_FALLBACK").is_ok() {
             let callee_desc = match &*call.callee {
                 Expression::Identifier(id) => {
@@ -6343,7 +6187,7 @@ impl<'a> Lowerer<'a> {
         match &*call.callee {
             Expression::Member(member) => {
                 let receiver = self.lower_expr(&member.object);
-                let closure = self.lower_expr(&call.callee);
+                let closure = self.lower_member_from_base(member, Some(receiver.clone()));
                 let plan = self.plan_apply_invoke(
                     Some(receiver),
                     closure,
@@ -6579,10 +6423,41 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_member(&mut self, member: &ast::MemberExpression) -> Register {
+        self.lower_member_from_base(member, None)
+    }
+
+    fn nominal_member_call_requires_property_get(
+        &self,
+        nominal_type_id: NominalTypeId,
+        method_name_symbol: Symbol,
+    ) -> bool {
+        let mut current = Some(nominal_type_id);
+        while let Some(class_id) = current {
+            let Some(class_info) = self.class_info_map.get(&class_id) else {
+                break;
+            };
+            if class_info.methods.iter().rev().any(|method| {
+                method.name == method_name_symbol && method.kind == ast::MethodKind::Getter
+            }) {
+                return true;
+            }
+            current = class_info.parent_class;
+        }
+        false
+    }
+
+    fn lower_member_from_base(
+        &mut self,
+        member: &ast::MemberExpression,
+        prelowered_object: Option<Register>,
+    ) -> Register {
         let prop_name = self.interner.resolve(member.property.name);
         let semantic_member_target_kind = self
-            .semantic_member_target(member.span.start)
+            .semantic_member_target(member.span.start, member.span.end)
             .map(|target| target.kind);
+        let semantic_property_dispatch_kind = self
+            .semantic_property_dispatch(member.span.start, member.span.end)
+            .map(|dispatch| dispatch.kind);
 
         if matches!(member.object.as_ref(), Expression::Super(_)) {
             let dest = self.alloc_register(UNRESOLVED);
@@ -6608,6 +6483,20 @@ impl<'a> Lowerer<'a> {
                     });
                     return dest;
                 }
+            }
+        }
+
+        if !matches!(
+            semantic_member_target_kind,
+            Some(
+                crate::semantics::MemberTargetKind::NominalMethod
+                    | crate::semantics::MemberTargetKind::StaticMethod
+            )
+        ) {
+            if let Some(result) =
+                self.emit_property_read_from_dispatch(member, prelowered_object.clone())
+            {
+                return result;
             }
         }
 
@@ -6754,8 +6643,17 @@ impl<'a> Lowerer<'a> {
         // Try to determine the class type of the object for field resolution.
         // Explicit structural alias projections must not reuse provider field indices.
         let nominal_type_id = if matches!(
+            semantic_property_dispatch_kind,
+            Some(
+                crate::semantics::PropertyDispatchKind::StructuralSlot
+                    | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
+                    | crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
+                    | crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty
+                    | crate::semantics::PropertyDispatchKind::DynamicProperty
+            )
+        ) || matches!(
             semantic_member_target_kind,
-            Some(crate::semantics::MemberTargetKind::StructuralSlot)
+            Some(crate::semantics::MemberTargetKind::BuiltinProperty)
         ) || self.prefers_structural_member_projection(&member.object)
         {
             None
@@ -6763,7 +6661,7 @@ impl<'a> Lowerer<'a> {
             self.infer_nominal_type_id(&member.object)
         };
 
-        let object = self.lower_expr(&member.object);
+        let object = prelowered_object.unwrap_or_else(|| self.lower_expr(&member.object));
         let nominal_type_id = nominal_type_id
             .or_else(|| self.infer_nominal_type_id(&member.object))
             .or_else(|| self.nominal_type_id_from_type_id(object.ty));
@@ -6772,8 +6670,11 @@ impl<'a> Lowerer<'a> {
                 && self.nominal_type_uses_runtime_instance_publication(id)
         });
         let use_js_runtime_member_semantics = matches!(
-            semantic_member_target_kind,
-            Some(crate::semantics::MemberTargetKind::DynamicProperty)
+            semantic_property_dispatch_kind,
+            Some(
+                crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty
+                    | crate::semantics::PropertyDispatchKind::DynamicProperty
+            )
         ) || use_runtime_published_instance_member_semantics
             || self.js_mode_uses_runtime_member_semantics(
                 &member.object,
@@ -6945,79 +6846,6 @@ impl<'a> Lowerer<'a> {
             let dest = self.alloc_register(member_ty);
             self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
-        }
-
-        // Registry-based property dispatch (replaces hardcoded .length checks)
-        if obj_ty_id != UNRESOLVED_TYPE_ID {
-            if let Some(action) = self.type_registry.lookup_property(obj_ty_id, prop_name) {
-                match action {
-                    crate::compiler::type_registry::DispatchAction::Opcode(kind) => {
-                        let dest = self.alloc_register(TypeId::new(INT_TYPE_ID)); // length returns int
-                        match kind {
-                            crate::compiler::type_registry::OpcodeKind::StringLen => {
-                                self.emit(IrInstr::StringLen {
-                                    dest: dest.clone(),
-                                    string: object,
-                                });
-                            }
-                            crate::compiler::type_registry::OpcodeKind::ArrayLen => {
-                                self.emit(IrInstr::ArrayLen {
-                                    dest: dest.clone(),
-                                    array: object,
-                                });
-                            }
-                        }
-                        return dest;
-                    }
-                    crate::compiler::type_registry::DispatchAction::NativeCall(method_id) => {
-                        let mut dest = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
-                        if let Some(ret_type) = self.type_registry.lookup_return_type(method_id) {
-                            dest.ty = TypeId::new(ret_type);
-                        }
-                        self.emit(IrInstr::NativeCall {
-                            dest: Some(dest.clone()),
-                            native_id: method_id,
-                            args: vec![object],
-                        });
-                        return dest;
-                    }
-                    crate::compiler::type_registry::DispatchAction::DeclaredField(field_type) => {
-                        let member_ty = {
-                            let member_expr = Expression::Member(member.clone());
-                            let inferred = self.get_expr_type(&member_expr);
-                            if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                                field_type.map(TypeId::new).unwrap_or(UNRESOLVED)
-                            } else {
-                                inferred
-                            }
-                        };
-                        let dest = self.alloc_register(member_ty);
-                        self.emit_dyn_get_named(dest.clone(), object, prop_name);
-                        return dest;
-                    }
-                    crate::compiler::type_registry::DispatchAction::ClassMethod(_, _) => {
-                        // Properties shouldn't use ClassMethod
-                    }
-                }
-            }
-            if self
-                .type_registry
-                .lookup_method(obj_ty_id, prop_name)
-                .is_some()
-            {
-                let member_ty = {
-                    let member_expr = Expression::Member(member.clone());
-                    let inferred = self.get_expr_type(&member_expr);
-                    if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                        UNRESOLVED
-                    } else {
-                        inferred
-                    }
-                };
-                let dest = self.alloc_register(member_ty);
-                self.emit_dyn_get_named(dest.clone(), object, prop_name);
-                return dest;
-            }
         }
 
         // Look up field index and type by name if we know the class type (including inherited fields)
@@ -7345,14 +7173,8 @@ impl<'a> Lowerer<'a> {
 
         // Late-bound dispatch: imported objects without local metadata need
         // deferred resolution via LateBoundMember (resolved after monomorphization).
-        let receiver_requires_late_bound = match &*member.object {
-            Expression::Identifier(obj_ident) => {
-                self.identifier_requires_late_bound_dispatch(obj_ident.name)
-            }
-            _ => false,
-        } || (nominal_type_id.is_none()
-            && (self.type_requires_late_bound_dispatch(object.ty)
-                || self.type_requires_late_bound_dispatch(self.get_expr_type(&member.object))));
+        let receiver_requires_late_bound = semantic_property_dispatch_kind
+            == Some(crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty);
         if nominal_type_id.is_none() && receiver_requires_late_bound {
             let checker_validated = {
                 let obj_ty = self.get_expr_type(&member.object);
@@ -9816,8 +9638,21 @@ impl<'a> Lowerer<'a> {
                 }
                 Expression::Member(member) => {
                     let prop_name = self.interner.resolve(member.property.name);
+                    let semantic_property_dispatch_kind = self
+                        .semantic_property_dispatch(member.span.start, member.span.end)
+                        .map(|dispatch| dispatch.kind);
                     let dynamic_any_object = matches!(&*member.object, Expression::Identifier(ident) if self.dynamic_any_vars.contains(&ident.name));
                     let nominal_type_id = if dynamic_any_object
+                        || matches!(
+                            semantic_property_dispatch_kind,
+                            Some(
+                                crate::semantics::PropertyDispatchKind::StructuralSlot
+                                    | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
+                                    | crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
+                                    | crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty
+                                    | crate::semantics::PropertyDispatchKind::DynamicProperty
+                            )
+                        )
                         || self.prefers_structural_member_projection(&member.object)
                     {
                         None
@@ -9835,8 +9670,15 @@ impl<'a> Lowerer<'a> {
                             !self.object_expr_is_class_constructor_ref(&member.object)
                                 && self.nominal_type_uses_runtime_instance_publication(id)
                         });
-                    let use_js_runtime_member_semantics =
-                        use_runtime_published_instance_member_semantics
+                    let use_js_runtime_member_semantics = matches!(
+                        semantic_property_dispatch_kind,
+                        Some(
+                            crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty
+                                | crate::semantics::PropertyDispatchKind::DynamicProperty
+                                | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
+                                | crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
+                        )
+                    ) || use_runtime_published_instance_member_semantics
                             || self.js_mode_uses_runtime_member_semantics(
                                 &member.object,
                                 object.ty,
@@ -9859,7 +9701,8 @@ impl<'a> Lowerer<'a> {
                             UNRESOLVED_TYPE_ID
                         }
                     };
-                    if use_js_runtime_member_semantics {
+                    if self.emit_property_write_from_dispatch(member, object.clone(), rhs.clone()) {
+                    } else if use_js_runtime_member_semantics {
                         self.emit_js_named_property_assignment(object, prop_name, rhs);
                     } else if let Some(nominal_type_id) = nominal_type_id {
                         if let Some(field) = self
@@ -10139,11 +9982,14 @@ impl<'a> Lowerer<'a> {
             }
             Expression::Member(member) => {
                 let prop_name = self.interner.resolve(member.property.name).to_string();
+                let semantic_property_dispatch_kind = self
+                    .semantic_property_dispatch(member.span.start, member.span.end)
+                    .map(|dispatch| dispatch.kind);
 
                 // Check for static field write: ClassName.staticField = value
                 if let Expression::Identifier(ident) = &*member.object {
                     if let Some(nominal_type_id) = self
-                        .semantic_object_shape_type_id(ident.span.start)
+                        .semantic_object_shape_type_id(ident.span.start, ident.span.end)
                         .and_then(|ty| self.nominal_type_id_from_type_id(ty))
                         .or_else(|| {
                             self.object_expr_is_class_constructor_ref(&member.object)
@@ -10175,6 +10021,16 @@ impl<'a> Lowerer<'a> {
                 // Instance/object field write
                 let dynamic_any_object = matches!(&*member.object, Expression::Identifier(ident) if self.dynamic_any_vars.contains(&ident.name));
                 let nominal_type_id = if dynamic_any_object
+                    || matches!(
+                        semantic_property_dispatch_kind,
+                            Some(
+                                crate::semantics::PropertyDispatchKind::StructuralSlot
+                                    | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
+                                    | crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
+                                    | crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty
+                                    | crate::semantics::PropertyDispatchKind::DynamicProperty
+                            )
+                    )
                     || self.prefers_structural_member_projection(&member.object)
                 {
                     None
@@ -10192,8 +10048,15 @@ impl<'a> Lowerer<'a> {
                         !self.object_expr_is_class_constructor_ref(&member.object)
                             && self.nominal_type_uses_runtime_instance_publication(id)
                     });
-                let use_js_runtime_member_semantics =
-                    use_runtime_published_instance_member_semantics
+                let use_js_runtime_member_semantics = matches!(
+                    semantic_property_dispatch_kind,
+                    Some(
+                        crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty
+                            | crate::semantics::PropertyDispatchKind::DynamicProperty
+                            | crate::semantics::PropertyDispatchKind::BuiltinNamespaceProperty
+                            | crate::semantics::PropertyDispatchKind::ImportedNamespaceExport
+                    )
+                ) || use_runtime_published_instance_member_semantics
                         || self.js_mode_uses_runtime_member_semantics(
                             &member.object,
                             object.ty,
@@ -10217,7 +10080,8 @@ impl<'a> Lowerer<'a> {
                     }
                 };
 
-                if use_js_runtime_member_semantics {
+                if self.emit_property_write_from_dispatch(member, object.clone(), value.clone()) {
+                } else if use_js_runtime_member_semantics {
                     self.emit_js_named_property_assignment(object, &prop_name, value.clone());
                 } else if let Some(nominal_type_id) = nominal_type_id {
                     if let Some(field) = self
@@ -10430,7 +10294,12 @@ impl<'a> Lowerer<'a> {
         };
 
         let callable_kind =
-            self.callable_kind_for_span(func.span.start, func.is_async, func.is_generator, false);
+            self.callable_kind_for_span(
+                func.span.start,
+                func.is_async,
+                func.is_generator,
+                func.is_method,
+            );
         if Self::callable_spawns_task(callable_kind) {
             self.async_closures.insert(func_id);
         }
@@ -10664,7 +10533,12 @@ impl<'a> Lowerer<'a> {
         self.scan_for_captured_vars(&func.body.statements, &func.params, &closure_locals);
 
         let callable_kind =
-            self.callable_kind_for_span(func.span.start, func.is_async, func.is_generator, false);
+            self.callable_kind_for_span(
+                func.span.start,
+                func.is_async,
+                func.is_generator,
+                func.is_method,
+            );
         let runtime_generator = self.callable_uses_runtime_generator_semantics(callable_kind);
         let mut ir_func = crate::ir::IrFunction::new(&function_name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
@@ -10696,7 +10570,8 @@ impl<'a> Lowerer<'a> {
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
 
         if use_js_parameter_env {
-            let env_object = self.lower_activation_direct_eval_environment_object(func.span.start);
+            let env_object = self
+                .lower_activation_direct_eval_environment_object(func.span.start, func.span.start);
             let _ = self.emit_ensure_activation_direct_eval_env(env_object);
         }
 
@@ -11211,14 +11086,14 @@ impl<'a> Lowerer<'a> {
                     }
                     if let Some(nominal_type_id) = nominal_type_id {
                         self.nominal_binding_cache.insert(ident.name, nominal_type_id);
-                        self.clear_late_bound_object_binding(ident.name);
+                        self.clear_runtime_dispatch_hint(ident.name);
                     } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
                         self.nominal_binding_cache.remove(&ident.name);
                         self.projection_layout_cache
                             .remove(&ident.name);
-                        self.mark_late_bound_object_binding(ident.name, ctor_symbol, ctor_type);
+                        self.set_runtime_dispatch_hint(ident.name, ctor_symbol, ctor_type);
                     } else {
-                        self.clear_late_bound_object_binding(ident.name);
+                        self.clear_runtime_dispatch_hint(ident.name);
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
@@ -11308,7 +11183,10 @@ impl<'a> Lowerer<'a> {
 
         if use_js_parameter_env {
             let env_object =
-                self.lower_activation_direct_eval_environment_object(arrow.span.start);
+                self.lower_activation_direct_eval_environment_object(
+                    arrow.span.start,
+                    arrow.span.start,
+                );
             let _ = self.emit_ensure_activation_direct_eval_env(env_object);
         }
 
@@ -11708,10 +11586,16 @@ impl<'a> Lowerer<'a> {
             // unresolvable identifier must stay non-throwing even when normal
             // unresolved-runtime fallback is disabled for this profile.
             let binding = self.resolve_identifier_binding(ident.name, ident.span.start);
+            let semantic_kind = self.semantic_identifier_resolution_kind(ident.span.start);
             let needs_non_throwing_lookup = matches!(
                 binding,
                 None | Some(super::ResolvedBinding::AmbientGlobal { .. })
-            ) && !self.ambient_builtin_globals.contains(name)
+            ) || matches!(
+                semantic_kind,
+                Some(crate::semantics::ResolvedIdentifierKind::AmbientGlobal)
+            );
+            let needs_non_throwing_lookup = needs_non_throwing_lookup
+                && !self.semantic_identifier_is_builtin_global(ident.span.start)
                 && !matches!(name, "Infinity" | "NaN" | "undefined" | "arguments");
             if needs_non_throwing_lookup {
                 if self.in_direct_eval_function {
@@ -11754,33 +11638,37 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_new(&mut self, new_expr: &ast::NewExpression) -> Register {
-        // Constructor results are object-like by default. Keep unresolved until a
-        // concrete class/type path assigns a precise type.
-        let dest = self.alloc_register(UNRESOLVED);
-        let semantic_constructor = self.semantic_constructor_target(new_expr.span.start);
-        let semantic_constructor_kind = semantic_constructor.map(|target| target.kind);
+        let semantic_constructor =
+            self.semantic_constructor_target(new_expr.span.start, new_expr.span.end);
+        let dispatch = self
+            .semantic_constructor_dispatch(new_expr.span.start, new_expr.span.end)
+            .cloned();
+        let dispatch_kind = dispatch
+            .as_ref()
+            .map(|dispatch| dispatch.kind)
+            .unwrap_or(crate::semantics::ConstructorDispatchKind::DynamicConstructor);
         let semantic_callee_nominal_type_id = semantic_constructor
             .and_then(|target| target.callee_type_id)
             .and_then(|ty| self.nominal_type_id_from_type_id(ty));
+        let result_ty = dispatch
+            .as_ref()
+            .and_then(|dispatch| dispatch.result_type_id)
+            .filter(|ty| ty.as_u32() != UNRESOLVED_TYPE_ID)
+            .unwrap_or(UNRESOLVED);
+        let dest = self.alloc_register(result_ty);
 
         if new_expr.has_spread_arguments() {
-            let ctor_value = if let Expression::Identifier(ident) = &*new_expr.callee {
-                if matches!(
-                    semantic_constructor_kind,
-                    Some(crate::semantics::ConstructorTargetKind::NominalClass)
-                ) {
-                    if let Some(nominal_type_id) =
-                        semantic_callee_nominal_type_id.or_else(|| self.infer_nominal_type_id(&new_expr.callee))
+            let ctor_value = match dispatch_kind {
+                crate::semantics::ConstructorDispatchKind::NominalClass => {
+                    if let Some(nominal_type_id) = semantic_callee_nominal_type_id
+                        .or_else(|| self.infer_nominal_type_id(&new_expr.callee))
                     {
                         self.load_class_value_for_nominal_type(nominal_type_id)
                     } else {
                         self.lower_expr(&new_expr.callee)
                     }
-                } else {
-                    self.lower_expr(&new_expr.callee)
                 }
-            } else {
-                self.lower_expr(&new_expr.callee)
+                _ => self.lower_expr(&new_expr.callee),
             };
             let args_array = self.lower_call_argument_array(&new_expr.arguments);
             self.emit(IrInstr::NativeCall {
@@ -11791,185 +11679,48 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        if let Expression::Identifier(ident) = &*new_expr.callee {
-            // Handle built-in primitive constructors
-            let name = self.interner.resolve(ident.name);
-            if self.js_this_binding_compat
-                && self.function_depth > 0
-                && self.js_script_lexical_globals.contains_key(&ident.name)
-            {
-                let ctor_value = self.lower_identifier(ident);
-                let return_ty = {
-                    let expr = Expression::New(new_expr.clone());
-                    let inferred = self.get_expr_type(&expr);
-                    if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                        UNRESOLVED
+        if matches!(
+            dispatch_kind,
+            crate::semantics::ConstructorDispatchKind::NominalClass
+        ) {
+            let nominal_type_id = semantic_callee_nominal_type_id
+                .or_else(|| self.infer_nominal_type_id(&new_expr.callee))
+                .or_else(|| {
+                    if let Expression::Identifier(ident) = &*new_expr.callee {
+                        self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
                     } else {
-                        inferred
+                        None
                     }
-                };
-                let ctor_dest = self.alloc_register(return_ty);
-                let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
-                native_args.push(ctor_value);
-                for arg in &new_expr.arguments {
-                    native_args.push(self.lower_expr(arg.expression()));
-                }
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(ctor_dest.clone()),
-                    native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
-                    args: native_args,
                 });
-                return ctor_dest;
-            }
-
-            if name == "Object" && new_expr.arguments.is_empty() && new_expr.type_args.is_none() {
-                let object_ty = self
-                    .type_ctx
-                    .lookup_named_type("Object")
-                    .unwrap_or(TypeId::new(UNRESOLVED_TYPE_ID));
-                let object_dest = self.alloc_register(object_ty);
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(object_dest.clone()),
-                    native_id: crate::compiler::native_id::OBJECT_NEW,
-                    args: vec![],
-                });
-                return object_dest;
-            }
-            if name == TC::CHANNEL_TYPE_NAME {
-                // When the Channel class definition is unavailable, lower directly to opcode IR.
-                // If the Channel class exists in this module, use normal class
-                // construction so methods dispatch through wrapper methods (`channelId` field).
-                let has_channel_class = matches!(
-                    semantic_constructor_kind,
-                    Some(crate::semantics::ConstructorTargetKind::NominalClass)
-                );
-                if !has_channel_class {
-                    let channel_dest = self.alloc_register(TypeId::new(CHANNEL_TYPE_ID));
-                    let capacity = if let Some(first_arg) = new_expr.argument_expression(0) {
-                        self.lower_expr(first_arg)
-                    } else {
-                        self.emit_i32_const(0)
-                    };
-                    self.emit(IrInstr::NewChannel {
-                        dest: channel_dest.clone(),
-                        capacity,
-                    });
-                    return channel_dest;
-                }
-            }
-
-            if name == TC::MUTEX_TYPE_NAME {
-                // Ambient builtin path: mutex values are handle-backed and constructed via opcode.
-                // If a concrete Mutex class is present in this module, regular class
-                // construction should take precedence.
-                let has_mutex_class = matches!(
-                    semantic_constructor_kind,
-                    Some(crate::semantics::ConstructorTargetKind::NominalClass)
-                );
-                if !has_mutex_class {
-                    let mutex_dest = self.alloc_register(TypeId::new(MUTEX_TYPE_ID));
-                    self.emit(IrInstr::NewMutex {
-                        dest: mutex_dest.clone(),
-                    });
-                    return mutex_dest;
-                }
-            }
-
-            if self.js_this_binding_compat
-                && matches!(
-                    name,
-                    "Error"
-                        | "TypeError"
-                        | "RangeError"
-                        | "ReferenceError"
-                        | "SyntaxError"
-                        | "URIError"
-                        | "EvalError"
-                        | "AggregateError"
-                        | "ChannelClosedError"
-                        | "AssertionError"
-                )
-            {
-                let ctor_ty = self
-                    .type_ctx
-                    .lookup_named_type(name)
-                    .unwrap_or(TypeId::new(UNRESOLVED_TYPE_ID));
-                let ctor_dest = self.alloc_register(ctor_ty);
-                let ctor_value = self.lower_expr(&new_expr.callee);
-                let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
-                native_args.push(ctor_value);
-                for arg in &new_expr.arguments {
-                    native_args.push(self.lower_expr(arg.expression()));
-                }
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(ctor_dest.clone()),
-                    native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
-                    args: native_args,
-                });
-                return ctor_dest;
-            }
-
-            // Look up class ID from known class symbols or class-typed aliases.
-            let nominal_type_id_opt = self
-                .class_map
-                .get(&ident.name)
-                .copied()
-                .or(semantic_callee_nominal_type_id);
-            if let Some(nominal_type_id) = nominal_type_id_opt {
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!(
-                        "[lower] new {} -> nominal_type_id={}",
-                        name,
-                        nominal_type_id.as_u32()
-                    );
-                }
-                // Create the object
+            if let Some(nominal_type_id) = nominal_type_id {
                 self.emit(IrInstr::NewType {
                     dest: dest.clone(),
                     nominal_type_id,
                 });
 
-                let constructor_func_id = self
+                if let Some(ctor_func_id) = self
                     .class_info_map
                     .get(&nominal_type_id)
-                    .and_then(|info| info.constructor);
-
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!(
-                        "[lower] new {} ctor_func_id={:?}",
-                        name,
-                        constructor_func_id.map(|id| id.as_u32())
-                    );
-                }
-
-                // Call the constructor if one exists
-                if let Some(ctor_func_id) = constructor_func_id {
-                    // Get constructor parameter info for default values
+                    .and_then(|info| info.constructor)
+                {
                     let ctor_params = self
                         .class_info_map
                         .get(&nominal_type_id)
                         .map(|info| info.constructor_params.clone())
                         .unwrap_or_default();
-
-                    // Lower constructor arguments
                     let mut args = Vec::new();
-                    args.push(dest.clone()); // Pass 'this' as first argument
-
-                    // Add provided arguments
+                    args.push(dest.clone());
                     for arg in &new_expr.arguments {
                         args.push(self.lower_expr(arg.expression()));
                     }
-
-                    // Fill in default values for missing arguments
                     let provided_count = new_expr.arguments.len();
-                    for (i, param_info) in ctor_params.iter().enumerate() {
-                        if i >= provided_count {
-                            if let Some(ref default_expr) = param_info.default_value {
+                    for (index, param_info) in ctor_params.iter().enumerate() {
+                        if index >= provided_count {
+                            if let Some(default_expr) = &param_info.default_value {
                                 args.push(self.lower_expr(default_expr));
                             }
                         }
                     }
-
                     self.emit(IrInstr::ConstructType {
                         dest: dest.clone(),
                         object: dest.clone(),
@@ -11984,129 +11735,76 @@ impl<'a> Lowerer<'a> {
                         );
                     }
                 }
-
                 return dest;
             }
 
-            let ctor_source_symbol = self
-                .constructor_value_ctor_map
-                .get(&ident.name)
-                .copied()
-                .unwrap_or(ident.name);
-            let ctor_source_name = self.interner.resolve(ctor_source_symbol);
-            let mut callee_ty = self.get_expr_type(&new_expr.callee);
-            if callee_ty.as_u32() == UNRESOLVED_TYPE_ID {
-                callee_ty = self
-                    .type_ctx
-                    .lookup_named_type(name)
-                    .or_else(|| self.type_ctx.lookup_named_type(ctor_source_name))
-                    .unwrap_or(callee_ty);
-            }
-            let runtime_bound_constructor = self.import_bindings.contains(&ident.name)
-                || self.constructor_value_ctor_map.contains_key(&ident.name)
-                || (self.ambient_builtin_globals.contains(name)
-                    && !matches!(
-                        semantic_constructor_kind,
-                        Some(crate::semantics::ConstructorTargetKind::NominalClass)
-                    )
-                    && self.type_has_construct_signature(callee_ty));
-            if runtime_bound_constructor {
-                let return_ty = self
-                    .first_construct_signature_return_type(callee_ty)
-                    .unwrap_or(UNRESOLVED);
-                let ctor_dest = self.alloc_register(return_ty);
-                let nominal_type_id = self.lower_expr(&new_expr.callee);
+            if self.js_this_binding_compat {
                 let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
-                native_args.push(nominal_type_id);
+                native_args.push(self.lower_expr(&new_expr.callee));
                 for arg in &new_expr.arguments {
                     native_args.push(self.lower_expr(arg.expression()));
                 }
                 self.emit(IrInstr::NativeCall {
-                    dest: Some(ctor_dest.clone()),
+                    dest: Some(dest.clone()),
                     native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
                     args: native_args,
                 });
-                return ctor_dest;
-            }
-
-            // Builtin class constructors (Map/Set/Buffer/Date/etc.) are resolved via
-            // native constructor IDs in the type registry when no runtime-bound class
-            // value is available in the current module environment.
-            if let Some(native_id) = self.type_registry.constructor_native_id(name) {
-                let ctor_ty = self
-                    .type_ctx
-                    .lookup_named_type(name)
-                    .unwrap_or(TypeId::new(UNRESOLVED_TYPE_ID));
-                let ctor_dest = self.alloc_register(ctor_ty);
-                let mut args = Vec::with_capacity(new_expr.arguments.len());
-                for arg in &new_expr.arguments {
-                    args.push(self.lower_expr(arg.expression()));
-                }
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(ctor_dest.clone()),
-                    native_id,
-                    args,
-                });
-                if name == "Object" {
-                    self.register_object_fields.insert(
-                        ctor_dest.id,
-                        vec![
-                            ("value".to_string(), 0),
-                            ("writable".to_string(), 1),
-                            ("configurable".to_string(), 2),
-                            ("enumerable".to_string(), 3),
-                            ("get".to_string(), 4),
-                            ("set".to_string(), 5),
-                        ],
-                    );
-                }
-                return ctor_dest;
-            }
-
-            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                eprintln!(
-                    "[lower] new {} ctor_source={} callee_ty={} has_construct_sig={} ambient_builtin={}",
-                    name,
-                    ctor_source_name,
-                    callee_ty.as_u32(),
-                    self.type_has_construct_signature(callee_ty),
-                    self.ambient_builtin_globals.contains(name)
-                );
-            }
-            if self.type_has_construct_signature(callee_ty) {
-                let return_ty = self
-                    .first_construct_signature_return_type(callee_ty)
-                    .unwrap_or(UNRESOLVED);
-                let ctor_dest = self.alloc_register(return_ty);
-                let nominal_type_id = self.lower_expr(&new_expr.callee);
-                let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
-                native_args.push(nominal_type_id);
-                for arg in &new_expr.arguments {
-                    native_args.push(self.lower_expr(arg.expression()));
-                }
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(ctor_dest.clone()),
-                    native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
-                    args: native_args,
-                });
-                return ctor_dest;
+                return dest;
             }
         }
 
-        if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
-            let ctor_dest = self.alloc_register(UNRESOLVED);
-            let ctor_value = self.lower_expr(&new_expr.callee);
+        if matches!(
+            dispatch_kind,
+            crate::semantics::ConstructorDispatchKind::BuiltinNativeConstructor
+        ) {
+            if let Expression::Identifier(ident) = &*new_expr.callee {
+                let name = self.interner.resolve(ident.name);
+                if name == TC::CHANNEL_TYPE_NAME {
+                    let channel_dest = self.alloc_register(TypeId::new(CHANNEL_TYPE_ID));
+                    let capacity = if let Some(first_arg) = new_expr.argument_expression(0) {
+                        self.lower_expr(first_arg)
+                    } else {
+                        self.emit_i32_const(0)
+                    };
+                    self.emit(IrInstr::NewChannel {
+                        dest: channel_dest.clone(),
+                        capacity,
+                    });
+                    return channel_dest;
+                }
+                if name == TC::MUTEX_TYPE_NAME {
+                    let mutex_dest = self.alloc_register(TypeId::new(MUTEX_TYPE_ID));
+                    self.emit(IrInstr::NewMutex {
+                        dest: mutex_dest.clone(),
+                    });
+                    return mutex_dest;
+                }
+            }
+        }
+
+        if matches!(
+            dispatch_kind,
+            crate::semantics::ConstructorDispatchKind::ImportedConstructorValue
+                | crate::semantics::ConstructorDispatchKind::RuntimeConstructorValue
+                | crate::semantics::ConstructorDispatchKind::DynamicConstructor
+        ) && (self.js_this_binding_compat
+            || matches!(
+                dispatch_kind,
+                crate::semantics::ConstructorDispatchKind::ImportedConstructorValue
+                    | crate::semantics::ConstructorDispatchKind::RuntimeConstructorValue
+            ))
+        {
             let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
-            native_args.push(ctor_value);
+            native_args.push(self.lower_expr(&new_expr.callee));
             for arg in &new_expr.arguments {
                 native_args.push(self.lower_expr(arg.expression()));
             }
             self.emit(IrInstr::NativeCall {
-                dest: Some(ctor_dest.clone()),
+                dest: Some(dest.clone()),
                 native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
                 args: native_args,
             });
-            return ctor_dest;
+            return dest;
         }
 
         let ctor_name = if let Expression::Identifier(ident) = &*new_expr.callee {
@@ -13558,7 +13256,7 @@ impl<'a> Lowerer<'a> {
 
     /// Infer the class ID of an expression (for method call resolution)
     pub(super) fn infer_nominal_type_id(&self, expr: &Expression) -> Option<NominalTypeId> {
-        if let Some(shape) = self.semantic_object_shape(expr.span().start) {
+        if let Some(shape) = self.semantic_object_shape(expr.span().start, expr.span().end) {
             match shape.kind {
                 crate::semantics::ObjectShapeKind::StructuralObject
                 | crate::semantics::ObjectShapeKind::Dynamic => return None,
@@ -13594,7 +13292,7 @@ impl<'a> Lowerer<'a> {
                 })
             }
             Expression::Identifier(ident) => self
-                .semantic_object_shape_type_id(ident.span.start)
+                .semantic_object_shape_type_id(ident.span.start, ident.span.end)
                 .and_then(|ty| self.nominal_type_id_from_type_id(ty))
                 .or_else(|| {
                     self.object_expr_is_class_constructor_ref(expr)
@@ -13606,7 +13304,7 @@ impl<'a> Lowerer<'a> {
                 .or_else(|| self.nominal_type_id_from_type_id(self.get_expr_type(expr))),
             Expression::TypeCast(cast) => {
                 if self
-                    .semantic_object_shape_kind(expr.span().start)
+                    .semantic_object_shape_kind(expr.span().start, expr.span().end)
                     .is_some_and(|kind| kind == crate::semantics::ObjectShapeKind::StructuralObject)
                     || self.type_is_dynamic_any_like(self.get_expr_type(expr))
                 {
@@ -13713,7 +13411,9 @@ impl<'a> Lowerer<'a> {
         }
 
         match self.type_ctx.get(ty_id) {
-            Some(Type::Function(func)) => func.is_async,
+            Some(Type::Function(func)) => {
+                func.is_async && self.type_id_returns_task_like(func.return_type)
+            }
             Some(Type::Object(obj)) => obj
                 .call_signatures
                 .iter()
@@ -13737,6 +13437,32 @@ impl<'a> Lowerer<'a> {
                 .copied()
                 .any(|member| self.type_id_is_async_callable(member)),
             Some(Type::Generic(generic)) => self.type_id_is_async_callable(generic.base),
+            _ => false,
+        }
+    }
+
+    fn type_id_returns_task_like(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        if ty_id.as_u32() == UNRESOLVED_TYPE_ID {
+            return false;
+        }
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Task(_)) => true,
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .is_some_and(|named| self.type_id_returns_task_like(named)),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_id_returns_task_like(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_id_returns_task_like(member)),
+            Some(Type::Generic(generic)) => self.type_id_returns_task_like(generic.base),
             _ => false,
         }
     }
@@ -13791,111 +13517,6 @@ impl<'a> Lowerer<'a> {
             }
             _ => false,
         }
-    }
-
-    fn checker_validated_member_call_kind(
-        &self,
-        ty_id: TypeId,
-        member_name: &str,
-    ) -> Option<CheckerValidatedMemberCallKind> {
-        use crate::parser::types::ty::Type;
-
-        match self.type_ctx.get(ty_id) {
-            Some(Type::Class(class_ty)) => {
-                if class_ty
-                    .methods
-                    .iter()
-                    .any(|method| method.name == member_name)
-                {
-                    Some(CheckerValidatedMemberCallKind::Method)
-                } else if class_ty
-                    .properties
-                    .iter()
-                    .any(|property| property.name == member_name)
-                {
-                    Some(CheckerValidatedMemberCallKind::CallableProperty)
-                } else {
-                    None
-                }
-            }
-            Some(Type::Reference(type_ref)) => self
-                .type_ctx
-                .lookup_named_type(&type_ref.name)
-                .and_then(|named| self.checker_validated_member_call_kind(named, member_name)),
-            Some(Type::TypeVar(tv)) => tv.constraint.and_then(|constraint| {
-                self.checker_validated_member_call_kind(constraint, member_name)
-            }),
-            Some(Type::Union(union)) => union
-                .members
-                .iter()
-                .copied()
-                .find_map(|member| self.checker_validated_member_call_kind(member, member_name)),
-            Some(Type::Generic(generic)) => {
-                self.checker_validated_member_call_kind(generic.base, member_name)
-            }
-            _ => None,
-        }
-    }
-
-    fn late_bound_member_call_is_async(
-        &self,
-        receiver: &Expression,
-        callee: &Expression,
-        method_name: &str,
-    ) -> bool {
-        let callee_ty = self.get_expr_type(callee);
-        if self.type_id_is_async_callable(callee_ty) {
-            return true;
-        }
-
-        let Expression::Identifier(receiver_ident) = receiver else {
-            return false;
-        };
-
-        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-            eprintln!(
-                "[lower] late-bound async check '{}.{}' callee_ty={}",
-                self.interner.resolve(receiver_ident.name),
-                method_name,
-                callee_ty.as_u32()
-            );
-        }
-
-        if let Some(&receiver_ty) = self.late_bound_object_type_map.get(&receiver_ident.name) {
-            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                eprintln!(
-                    "[lower] late-bound async check via ctor ty id {}",
-                    receiver_ty.as_u32()
-                );
-            }
-            if self.class_type_has_async_method(receiver_ty, method_name) {
-                return true;
-            }
-        }
-
-        if let Some(&ctor_symbol) = self.late_bound_object_ctor_map.get(&receiver_ident.name) {
-            let ctor_name = self.interner.resolve(ctor_symbol);
-            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                eprintln!(
-                    "[lower] late-bound async check via ctor name '{}'",
-                    ctor_name
-                );
-            }
-            if let Some(ctor_ty) = self.type_ctx.lookup_named_type(ctor_name) {
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!(
-                        "[lower] late-bound async ctor '{}' resolved ty id {}",
-                        ctor_name,
-                        ctor_ty.as_u32()
-                    );
-                }
-                if self.class_type_has_async_method(ctor_ty, method_name) {
-                    return true;
-                }
-            }
-        }
-
-        false
     }
 
     pub(super) fn nominal_type_id_from_type_id(&self, ty_id: TypeId) -> Option<NominalTypeId> {

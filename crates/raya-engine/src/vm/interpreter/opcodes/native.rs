@@ -1673,18 +1673,87 @@ impl<'a> Interpreter<'a> {
         closure: Option<Value>,
         caller_task: &Arc<Task>,
     ) -> Result<Value, VmError> {
+        let debug_generator_tasks = std::env::var("RAYA_DEBUG_GENERATOR_TASKS").is_ok();
         let is_async = function_module
             .functions
             .get(func_id)
             .is_some_and(|function| function.is_async);
+        let debug_func_name = if debug_generator_tasks {
+            function_module
+                .functions
+                .get(func_id)
+                .map(|function| function.name.clone())
+                .unwrap_or_else(|| "<unknown>".to_string())
+        } else {
+            String::new()
+        };
         let generator_task = Arc::new(Task::with_args(
             func_id,
             function_module,
             Some(caller_task.id()),
             args,
         ));
+        if debug_generator_tasks {
+            eprintln!(
+                "[generator-task] create task={:?} parent={:?} module={} func={}#{} closure={} caller_closure={}",
+                generator_task.id(),
+                caller_task.id(),
+                generator_task.current_module().metadata.name,
+                debug_func_name,
+                func_id,
+                closure
+                    .map(|value| format!("{:#x}", value.raw()))
+                    .unwrap_or_else(|| "none".to_string()),
+                caller_task
+                    .current_closure()
+                    .map(|value| format!("{:#x}", value.raw()))
+                    .unwrap_or_else(|| "none".to_string()),
+            );
+        }
         if let Some(closure) = closure {
             generator_task.push_closure(closure);
+            if let Some(closure_ptr) = unsafe { closure.as_ptr::<Object>() } {
+                let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                if generator_task.current_active_direct_eval_env().is_none() {
+                    if let Some(env) = closure_obj.callable_direct_eval_env() {
+                        let is_strict = generator_task
+                            .current_module()
+                            .functions
+                            .get(func_id)
+                            .is_some_and(|function| function.is_strict_js);
+                        generator_task.push_active_direct_eval_env(
+                            env,
+                            is_strict,
+                            closure_obj.callable_direct_eval_uses_script_global_bindings(),
+                            closure_obj.callable_direct_eval_persist_caller_declarations(),
+                        );
+                    }
+                }
+                if generator_task.current_active_js_home_object().is_none() {
+                    let inherited_home_object = caller_task.current_closure().and_then(|current| {
+                        let current_ptr = unsafe { current.as_ptr::<Object>() }?;
+                        let current_obj = unsafe { &*current_ptr.as_ptr() };
+                        current_obj.callable_home_object()
+                    });
+                    if let Some(home_object) =
+                        inherited_home_object.or_else(|| closure_obj.callable_home_object())
+                    {
+                        generator_task.push_active_js_home_object(home_object);
+                    }
+                }
+                if generator_task.current_active_js_new_target().is_none() {
+                    let inherited_new_target = caller_task.current_closure().and_then(|current| {
+                        let current_ptr = unsafe { current.as_ptr::<Object>() }?;
+                        let current_obj = unsafe { &*current_ptr.as_ptr() };
+                        current_obj.callable_new_target()
+                    });
+                    if let Some(new_target) =
+                        inherited_new_target.or_else(|| closure_obj.callable_new_target())
+                    {
+                        generator_task.push_active_js_new_target(new_target);
+                    }
+                }
+            }
         }
         self.inherit_generator_task_context(&generator_task, caller_task);
         self.tasks
@@ -10069,6 +10138,8 @@ impl<'a> Interpreter<'a> {
             eprintln!("[dynamic-fn] compile:parsed-ast");
         }
 
+        let ambient_builtin_globals = self.dynamic_js_ambient_builtin_globals();
+
         let mut direct_eval_binding_names =
             if let Some(_entry_name) = options.direct_eval_entry_function.as_ref() {
                 if options.direct_eval_binding_names.is_empty() {
@@ -10096,6 +10167,54 @@ impl<'a> Interpreter<'a> {
         if let Some(entry_name) = options.direct_eval_entry_function.as_ref() {
             direct_eval_binding_names.remove(entry_name);
         }
+        direct_eval_binding_names.retain(|name| {
+            !ambient_builtin_globals.contains(name)
+                && !matches!(
+                    name.as_str(),
+                    "Infinity"
+                        | "NaN"
+                        | "undefined"
+                        | "globalThis"
+                        | "Math"
+                        | "String"
+                        | "Number"
+                        | "Boolean"
+                        | "Function"
+                        | "Array"
+                        | "BigInt"
+                        | "Error"
+                        | "TypeError"
+                        | "RangeError"
+                        | "ReferenceError"
+                        | "SyntaxError"
+                        | "URIError"
+                        | "EvalError"
+                        | "AggregateError"
+                        | "parseInt"
+                        | "parseFloat"
+                        | "isNaN"
+                        | "isFinite"
+                        | "decodeURI"
+                        | "decodeURIComponent"
+                        | "encodeURI"
+                        | "encodeURIComponent"
+                        | "escape"
+                        | "unescape"
+                        | "EventEmitter"
+                        | "Object"
+                        | "Reflect"
+                        | "JSON"
+                        | "Map"
+                        | "Set"
+                        | "Date"
+                        | "Buffer"
+                        | "RegExp"
+                        | "Promise"
+                        | "Channel"
+                        | "Mutex"
+                        | "Symbol"
+                )
+        });
 
         let mut type_ctx = TypeContext::new();
         let policy = CheckerPolicy::for_mode(TypeSystemMode::Js);
@@ -10129,8 +10248,6 @@ impl<'a> Interpreter<'a> {
             symbols.update_type(ScopeId(scope_id), &name, ty);
         }
 
-        let mut ambient_builtin_globals = self.dynamic_js_ambient_builtin_globals();
-        ambient_builtin_globals.extend(direct_eval_binding_names.iter().cloned());
         let module_identity = format!(
             "{}/{}",
             module_identity_prefix,

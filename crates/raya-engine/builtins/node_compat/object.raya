@@ -16,6 +16,54 @@ const OBJECT_GET_OWN_PROPERTY_SYMBOLS: number = 0x003E;
 const NC_REFLECT_GET_FIELD_NAMES: number = 0x0D23;
 const OBJECT_SAME_VALUE: number = 0x0008;
 
+function __objectSameValue(a: unknown, b: unknown): boolean {
+    return __NATIVE_CALL<boolean>(OBJECT_SAME_VALUE, a, b);
+}
+
+function __objectDefineProperty<T, D>(obj: T, key: any, descriptor: D): T {
+    return __NATIVE_CALL<T>(OBJECT_DEFINE_PROPERTY, obj, key, descriptor);
+}
+
+function __objectGetOwnPropertyDescriptor<T>(obj: T, key: any): any {
+    return __NATIVE_CALL<any>(OBJECT_GET_OWN_PROPERTY_DESCRIPTOR, obj, key);
+}
+
+function __objectGetOwnPropertyNames<T>(obj: T): string[] {
+    return __NATIVE_CALL<string[]>(NC_REFLECT_GET_FIELD_NAMES, obj);
+}
+
+function __objectGetPrototypeOf<T>(obj: T): Object | null {
+    return __NATIVE_CALL<Object | null>(OBJECT_GET_PROTOTYPE_OF, obj);
+}
+
+function __objectSetPrototypeOf<T>(obj: T, proto: Object | null): T {
+    let ok = __NATIVE_CALL<boolean>(OBJECT_SET_PROTOTYPE_OF, obj, proto);
+    if (!ok) {
+        throw new TypeError("Object.setPrototypeOf failed");
+    }
+    return obj;
+}
+
+function __objectIsExtensible<T>(obj: T): boolean {
+    return __NATIVE_CALL<boolean>(OBJECT_IS_EXTENSIBLE, obj);
+}
+
+function __objectPreventExtensions<T>(obj: T): T {
+    return __NATIVE_CALL<T>(OBJECT_PREVENT_EXTENSIONS, obj);
+}
+
+function __objectKeys(obj: any): string[] {
+    let names = __objectGetOwnPropertyNames(obj);
+    let result: string[] = [];
+    for (let i: number = 0; i < names.length; i = i + 1) {
+        let desc = __objectGetOwnPropertyDescriptor(obj, names[i]);
+        if (desc != null && desc["enumerable"] == true) {
+            result.push(names[i]);
+        }
+    }
+    return result;
+}
+
 class Object {
     constructor() {
     }
@@ -30,11 +78,11 @@ class Object {
     }
 
     hasOwnProperty(key: any): boolean {
-        return Object.getOwnPropertyDescriptor(this, key) != null;
+        return __objectGetOwnPropertyDescriptor(this, key) != null;
     }
 
     propertyIsEnumerable(key: any): boolean {
-        let desc = Object.getOwnPropertyDescriptor(this, key);
+        let desc = __objectGetOwnPropertyDescriptor(this, key);
         if (desc == null) {
             return false;
         }
@@ -49,12 +97,12 @@ class Object {
         if (valueType != "object" && valueType != "function") {
             return false;
         }
-        let proto = Object.getPrototypeOf(value);
+        let proto = __objectGetPrototypeOf(value);
         while (proto != null) {
-            if (Object.is(proto, this)) {
+            if (__objectSameValue(proto, this)) {
                 return true;
             }
-            proto = Object.getPrototypeOf(proto);
+            proto = __objectGetPrototypeOf(proto);
         }
         return false;
     }
@@ -72,20 +120,20 @@ class Object {
     }
 
     static is(a: unknown, b: unknown): boolean {
-        return __NATIVE_CALL<boolean>(OBJECT_SAME_VALUE, a, b);
+        return __objectSameValue(a, b);
     }
 
     // Node compatibility APIs for descriptor-style property control.
     static defineProperty<T, D>(obj: T, key: any, descriptor: D): T {
-        return __NATIVE_CALL<T>(OBJECT_DEFINE_PROPERTY, obj, key, descriptor);
+        return __objectDefineProperty(obj, key, descriptor);
     }
 
     static getOwnPropertyDescriptor<T>(obj: T, key: any): any {
-        return __NATIVE_CALL<any>(OBJECT_GET_OWN_PROPERTY_DESCRIPTOR, obj, key);
+        return __objectGetOwnPropertyDescriptor(obj, key);
     }
 
     static getOwnPropertyNames<T>(obj: T): string[] {
-        return __NATIVE_CALL<string[]>(NC_REFLECT_GET_FIELD_NAMES, obj);
+        return __objectGetOwnPropertyNames(obj);
     }
 
     static getOwnPropertySymbols<T>(obj: T): Symbol[] {
@@ -93,23 +141,19 @@ class Object {
     }
 
     static getPrototypeOf<T>(obj: T): Object | null {
-        return __NATIVE_CALL<Object | null>(OBJECT_GET_PROTOTYPE_OF, obj);
+        return __objectGetPrototypeOf(obj);
     }
 
     static setPrototypeOf<T>(obj: T, proto: Object | null): T {
-        let ok = __NATIVE_CALL<boolean>(OBJECT_SET_PROTOTYPE_OF, obj, proto);
-        if (!ok) {
-            throw new TypeError("Object.setPrototypeOf failed");
-        }
-        return obj;
+        return __objectSetPrototypeOf(obj, proto);
     }
 
     static isExtensible<T>(obj: T): boolean {
-        return __NATIVE_CALL<boolean>(OBJECT_IS_EXTENSIBLE, obj);
+        return __objectIsExtensible(obj);
     }
 
     static preventExtensions<T>(obj: T): T {
-        return __NATIVE_CALL<T>(OBJECT_PREVENT_EXTENSIONS, obj);
+        return __objectPreventExtensions(obj);
     }
 
     static defineProperties<T, D>(obj: T, descriptors: D): T {
@@ -117,19 +161,11 @@ class Object {
     }
 
     static keys(obj: any): string[] {
-        let names = Object.getOwnPropertyNames(obj);
-        let result: string[] = [];
-        for (let i: number = 0; i < names.length; i = i + 1) {
-            let desc = Object.getOwnPropertyDescriptor(obj, names[i]);
-            if (desc != null && desc["enumerable"] == true) {
-                result.push(names[i]);
-            }
-        }
-        return result;
+        return __objectKeys(obj);
     }
 
     static values(obj: any): any[] {
-        let k = Object.keys(obj);
+        let k = __objectKeys(obj);
         let result: any[] = [];
         for (let i: number = 0; i < k.length; i = i + 1) {
             result.push(obj[k[i]]);
@@ -138,7 +174,7 @@ class Object {
     }
 
     static entries(obj: any): any[] {
-        let k = Object.keys(obj);
+        let k = __objectKeys(obj);
         let result: any[] = [];
         for (let i: number = 0; i < k.length; i = i + 1) {
             result.push([k[i], obj[k[i]]]);
@@ -160,7 +196,7 @@ class Object {
         for (let i: number = 0; i < sources.length; i = i + 1) {
             let source = sources[i];
             if (source != null) {
-                let keys = Object.keys(source);
+                let keys = __objectKeys(source);
                 for (let j: number = 0; j < keys.length; j = j + 1) {
                     target[keys[j]] = source[keys[j]];
                 }
@@ -171,23 +207,23 @@ class Object {
 
     static create(proto: any, props: any): any {
         let obj: any = {};
-        Object.setPrototypeOf(obj, proto);
+        __objectSetPrototypeOf(obj, proto);
         if (props != null) {
-            Object.defineProperties(obj, props);
+            __NATIVE_CALL<any>(OBJECT_DEFINE_PROPERTIES, obj, props);
         }
         return obj;
     }
 
     static freeze(obj: any): any {
-        Object.preventExtensions(obj);
-        let names = Object.getOwnPropertyNames(obj);
+        __objectPreventExtensions(obj);
+        let names = __objectGetOwnPropertyNames(obj);
         for (let i: number = 0; i < names.length; i = i + 1) {
-            let desc = Object.getOwnPropertyDescriptor(obj, names[i]);
+            let desc = __objectGetOwnPropertyDescriptor(obj, names[i]);
             if (desc != null) {
                 if (desc["get"] != null || desc["set"] != null) {
-                    Object.defineProperty(obj, names[i], { configurable: false });
+                    __objectDefineProperty(obj, names[i], { configurable: false });
                 } else {
-                    Object.defineProperty(obj, names[i], { writable: false, configurable: false });
+                    __objectDefineProperty(obj, names[i], { writable: false, configurable: false });
                 }
             }
         }
@@ -195,19 +231,19 @@ class Object {
     }
 
     static seal(obj: any): any {
-        Object.preventExtensions(obj);
-        let names = Object.getOwnPropertyNames(obj);
+        __objectPreventExtensions(obj);
+        let names = __objectGetOwnPropertyNames(obj);
         for (let i: number = 0; i < names.length; i = i + 1) {
-            Object.defineProperty(obj, names[i], { configurable: false });
+            __objectDefineProperty(obj, names[i], { configurable: false });
         }
         return obj;
     }
 
     static isFrozen(obj: any): boolean {
-        if (!Object.isExtensible(obj)) {
-            let names = Object.getOwnPropertyNames(obj);
+        if (!__objectIsExtensible(obj)) {
+            let names = __objectGetOwnPropertyNames(obj);
             for (let i: number = 0; i < names.length; i = i + 1) {
-                let desc = Object.getOwnPropertyDescriptor(obj, names[i]);
+                let desc = __objectGetOwnPropertyDescriptor(obj, names[i]);
                 if (desc != null) {
                     if (desc["configurable"] == true) {
                         return false;
@@ -223,10 +259,10 @@ class Object {
     }
 
     static isSealed(obj: any): boolean {
-        if (!Object.isExtensible(obj)) {
-            let names = Object.getOwnPropertyNames(obj);
+        if (!__objectIsExtensible(obj)) {
+            let names = __objectGetOwnPropertyNames(obj);
             for (let i: number = 0; i < names.length; i = i + 1) {
-                let desc = Object.getOwnPropertyDescriptor(obj, names[i]);
+                let desc = __objectGetOwnPropertyDescriptor(obj, names[i]);
                 if (desc != null && desc["configurable"] == true) {
                     return false;
                 }
@@ -237,7 +273,7 @@ class Object {
     }
 
     static hasOwn(obj: any, key: any): boolean {
-        return Object.getOwnPropertyDescriptor(obj, key) != null;
+        return __objectGetOwnPropertyDescriptor(obj, key) != null;
     }
 }
 

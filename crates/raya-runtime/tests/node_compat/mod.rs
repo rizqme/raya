@@ -1,4 +1,5 @@
 use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, Session};
+use std::time::Duration;
 
 fn expect_bool(value: raya_runtime::Value, expected: bool) {
     let actual = value.as_bool().unwrap_or(false);
@@ -29,6 +30,34 @@ fn expect_node_compat_string(source: &str, expected: &str) {
         .unwrap_or(&formatted)
         .to_string();
     assert_eq!(actual, expected, "expected {:?}, got {}", expected, formatted);
+}
+
+fn expect_node_compat_async_global_string(source: &str, expected: &str) {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+    let program = runtime
+        .compile_program_source(source)
+        .expect("node-compat compile should succeed");
+    let mut vm = runtime.create_vm();
+    runtime
+        .execute_program_with_vm(&program, &mut vm)
+        .expect("node-compat execute should succeed");
+    assert!(
+        vm.wait_all(Duration::from_millis(500)),
+        "async work should settle"
+    );
+    let value = vm
+        .builtin_global_named_field_value("globalThis", "__result")
+        .expect("globalThis.__result should be set");
+    let actual = vm
+        .plain_string_value(value)
+        .or_else(|| value.as_i32().map(|n| n.to_string()))
+        .or_else(|| value.as_u32().map(|n| n.to_string()))
+        .or_else(|| value.as_f64().map(|n| n.to_string()))
+        .unwrap_or_else(|| format!("{value:?}"));
+    assert_eq!(actual, expected, "expected {:?}, got {:?}", expected, actual);
 }
 
 #[test]
@@ -267,6 +296,35 @@ fn test_node_compat_direct_eval_assignment_updates_outer_binding() {
 }
 
 #[test]
+fn test_node_compat_direct_eval_function_binding_delete_uses_runtime_env() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let initialResult = 0;
+            let postDeletion = null;
+            let thrownName = "";
+            (function() {
+                eval("initialResult = f(); delete f; postDeletion = function() { f; }; function f() { return 33; }");
+            }());
+            try {
+                postDeletion();
+            } catch (error) {
+                thrownName = error != null && error.name ? error.name : String(error);
+            }
+            return initialResult == 33 && thrownName == "ReferenceError";
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
 fn test_node_compat_with_assignment_and_delete_use_identifier_reference() {
     let runtime = Runtime::with_options(RuntimeOptions {
         builtin_mode: BuiltinMode::NodeCompat,
@@ -409,5 +467,114 @@ fn test_node_compat_for_let_direct_eval_uses_iteration_env() {
         return JSON.stringify(out);
         "#,
         "[1,3]",
+    );
+}
+
+#[test]
+fn test_node_compat_builtin_registry_dispatch_for_map_methods() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            const map = new Map();
+            map.set("x", 1);
+            return map.get("x") == 1;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_constructor_value_alias_dispatches_through_runtime_constructor() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            class Foo {
+                value = 1;
+            }
+            const C = Foo;
+            const instance = new C();
+            return instance.value == 1;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_async_generator_function_expression_resolves_after_next() {
+    expect_node_compat_async_global_string(
+        r#"
+        var callCount = 0;
+        var ref;
+        ref = async function* g() {
+            callCount = callCount + 1;
+        };
+        ref(42, "TC39",).next().then(() => {
+            globalThis.__result = "" + callCount;
+        }, err => {
+            globalThis.__result = "err:" + err;
+        });
+        return null;
+        "#,
+        "1",
+    );
+}
+
+#[test]
+fn test_node_compat_async_generator_method_resolves_after_next() {
+    expect_node_compat_async_global_string(
+        r#"
+        var callCount = 0;
+        var obj = {
+          async *method() {
+            callCount = callCount + 1;
+          }
+        };
+        var ref = obj.method;
+        ref(42, "TC39",).next().then(() => {
+            globalThis.__result = "" + callCount;
+        }, err => {
+            globalThis.__result = "err:" + err;
+        });
+        return null;
+        "#,
+        "1",
+    );
+}
+
+#[test]
+fn test_node_compat_async_private_generator_method_resolves_after_next() {
+    expect_node_compat_async_global_string(
+        r#"
+        var callCount = 0;
+        class C {
+          async * #method() {
+            callCount = callCount + 1;
+          }
+          get method() {
+            return this.#method;
+          }
+        }
+        new C().method(42, "TC39",).next().then(() => {
+            globalThis.__result = "" + callCount;
+        }, err => {
+            globalThis.__result = "err:" + err;
+        });
+        return null;
+        "#,
+        "1",
     );
 }

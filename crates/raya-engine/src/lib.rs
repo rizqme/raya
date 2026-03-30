@@ -111,15 +111,18 @@ pub use parser::{
 
 pub use semantics::{
     build_semantic_hir, build_semantic_lowering_plan, build_semantic_lowering_plan_with_types,
-    BindingKind, BindingOpKind, CallOpKind, CallTargetKind, CallableKind,
-    ConcurrencySemantics, ConstructorTargetKind, DestructuringPlan, EnvHandle, EnvRecordKind,
-    FunctionSemantics, LoopScopePlan, LoweringSemantics, MemberTargetKind, ObjectShapeKind,
-    OptimizationProfile, ReferenceExprKind, ResolvedIdentifierKind, RuntimeSemanticsBase,
-    SemanticBinding, SemanticBindingOp, SemanticCallOp, SemanticCallTarget, SemanticCallable,
+    BindingKind, BindingOpKind, CallCompletionKind, CallDispatchKind, CallOpKind,
+    CallTargetKind, CallableKind, ConcurrencySemantics, ConstructorDispatchKind,
+    ConstructorTargetKind, DestructuringPlan, EnvHandle, EnvRecordKind, FunctionSemantics,
+    LoopScopePlan, LoweringSemantics, MemberTargetKind, ObjectShapeKind, OptimizationProfile,
+    PropertyDispatchKind, ReferenceExprKind, ResolvedIdentifierKind, RuntimeSemanticsBase,
+    SemanticBinding, SemanticBindingOp, SemanticCallDispatch, SemanticCallOp,
+    SemanticCallTarget, SemanticCallable, SemanticConstructorDispatch,
     SemanticConstructorTarget, SemanticHirModule, SemanticLoweringPlan, SemanticMemberTarget,
-    SemanticObjectShape, SemanticProfile, SemanticReferenceExpr, SemanticResolvedIdentifier,
-    SemanticTopLevelCallable, SemanticUpdateOp, SourceKind,
-    SuspensionKind, SuspensionPoint, TypingDiscipline, UpdateOpKind,
+    SemanticObjectShape, SemanticProfile, SemanticPropertyDispatch, SemanticReferenceExpr,
+    SemanticResolvedIdentifier, SemanticTopLevelCallable, SemanticUpdateOp,
+    SemanticValueOrigin, SourceKind, SuspensionKind, SuspensionPoint, TypingDiscipline,
+    UpdateOpKind, ValueOriginKind,
 };
 
 // ============================================================================

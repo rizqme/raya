@@ -2881,6 +2881,38 @@ mod tests {
     }
 
     #[test]
+    fn test_semantic_plan_marks_builtin_global_identifier_as_builtin_global() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            Object.keys;
+            "#,
+            SemanticProfile::js(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.resolved_identifiers.iter().any(|resolved| {
+            resolved.name == "Object"
+                && resolved.kind == raya_engine::ResolvedIdentifierKind::BuiltinGlobal
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_marks_unbound_identifier_as_ambient_global() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            typeof public;
+            "#,
+            SemanticProfile::js(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.resolved_identifiers.iter().any(|resolved| {
+            resolved.name == "public"
+                && resolved.kind == raya_engine::ResolvedIdentifierKind::AmbientGlobal
+        }));
+    }
+
+    #[test]
     fn test_semantic_plan_classifies_nominal_constructor_target() {
         let plan = inspect_semantic_plan_with_profile(
             r#"
@@ -2944,6 +2976,29 @@ mod tests {
     }
 
     #[test]
+    fn test_semantic_plan_keeps_runtime_published_object_literal_members_dynamic() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            const obj = {
+                get value() { return 1; },
+                get ['value']() { return 2; }
+            };
+            obj.value;
+            "#,
+            SemanticProfile::js(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.object_shapes.iter().any(|shape| {
+            shape.kind == raya_engine::ObjectShapeKind::Dynamic
+        }));
+        assert!(plan.hir.property_dispatches.iter().any(|dispatch| {
+            dispatch.property_name.as_deref() == Some("value")
+                && dispatch.kind == raya_engine::PropertyDispatchKind::DynamicProperty
+        }));
+    }
+
+    #[test]
     fn test_semantic_plan_distinguishes_class_value_shape() {
         let plan = inspect_semantic_plan_with_profile(
             r#"
@@ -2963,6 +3018,94 @@ mod tests {
         assert!(plan.hir.member_targets.iter().any(|target| {
             target.name.as_deref() == Some("make")
                 && target.kind == raya_engine::MemberTargetKind::StaticMethod
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_builtin_property_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            function main() {
+                return JSON.stringify;
+            }
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.property_dispatches.iter().any(|dispatch| {
+            dispatch.property_name.as_deref() == Some("stringify")
+                && dispatch.kind == raya_engine::PropertyDispatchKind::BuiltinNamespaceProperty
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_builtin_method_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            function main(value: string) {
+                return value.trim();
+            }
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.call_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("trim")
+                && dispatch.kind == raya_engine::CallDispatchKind::BuiltinInstanceMethod
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_builtin_namespace_call_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            function main() {
+                return JSON.parse("{}");
+            }
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.call_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("parse")
+                && dispatch.kind == raya_engine::CallDispatchKind::BuiltinNamespaceMethod
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_runtime_constructor_value_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            class Foo {
+                value = 1;
+            }
+            const C = Foo;
+            new C();
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.constructor_dispatches.iter().any(|dispatch| {
+            dispatch.kind == raya_engine::ConstructorDispatchKind::RuntimeConstructorValue
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_builtin_constructor_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            new Channel();
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.constructor_dispatches.iter().any(|dispatch| {
+            dispatch.kind == raya_engine::ConstructorDispatchKind::BuiltinNativeConstructor
         }));
     }
 

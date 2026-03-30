@@ -772,9 +772,9 @@ pub struct Lowerer<'a> {
     /// Method return class-name fallback for forward references
     /// (e.g., `accept(): TcpStream | null` declared before `class TcpStream`).
     method_return_type_alias_map: FxHashMap<(NominalTypeId, Symbol), String>,
-    /// Variables bound to constructor/class values (e.g. `let C = Box;`).
-    constructor_value_ctor_map: FxHashMap<Symbol, Symbol>,
-    constructor_value_type_map: FxHashMap<Symbol, TypeId>,
+    /// Cached constructor-like value metadata for emission-only helpers.
+    runtime_constructor_symbol_cache: FxHashMap<Symbol, Symbol>,
+    runtime_constructor_type_cache: FxHashMap<Symbol, TypeId>,
     /// Next global variable index (for static fields and module-level variables)
     next_global_index: u16,
     /// Module-level variable name to global index mapping.
@@ -794,15 +794,12 @@ pub struct Lowerer<'a> {
     import_bindings: FxHashSet<Symbol>,
     /// Ambient builtin globals available without explicit source declarations/imports.
     ambient_builtin_globals: FxHashSet<String>,
-    /// Variables initialized from imported class constructors where no local
-    /// class metadata is available. These require late-bound member dispatch.
-    late_bound_object_vars: FxHashSet<Symbol>,
-    /// Constructor symbol for late-bound imported-class instances.
-    /// Keyed by local variable symbol.
-    late_bound_object_ctor_map: FxHashMap<Symbol, Symbol>,
-    /// Checker/lowering TypeId for late-bound imported-class constructor symbols.
-    /// Keyed by local variable symbol.
-    late_bound_object_type_map: FxHashMap<Symbol, TypeId>,
+    /// Cached runtime-dispatch binding hints used only for emission details.
+    runtime_dispatch_object_bindings: FxHashSet<Symbol>,
+    /// Constructor symbol cache for runtime-dispatch binding hints.
+    runtime_dispatch_ctor_cache: FxHashMap<Symbol, Symbol>,
+    /// Type cache for runtime-dispatch binding hints.
+    runtime_dispatch_type_cache: FxHashMap<Symbol, TypeId>,
     /// Synthetic global slot for `export default <expr>` materialization.
     default_export_global: Option<u16>,
     /// Depth counter: 0 = module top-level, >0 = inside function declaration.
@@ -1585,8 +1582,8 @@ impl<'a> Lowerer<'a> {
             function_return_type_alias_map: FxHashMap::default(),
             method_return_type_map: FxHashMap::default(),
             method_return_type_alias_map: FxHashMap::default(),
-            constructor_value_ctor_map: FxHashMap::default(),
-            constructor_value_type_map: FxHashMap::default(),
+            runtime_constructor_symbol_cache: FxHashMap::default(),
+            runtime_constructor_type_cache: FxHashMap::default(),
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
             js_script_lexical_globals: FxHashMap::default(),
@@ -1594,9 +1591,9 @@ impl<'a> Lowerer<'a> {
             js_script_const_globals: FxHashSet::default(),
             import_bindings: FxHashSet::default(),
             ambient_builtin_globals: FxHashSet::default(),
-            late_bound_object_vars: FxHashSet::default(),
-            late_bound_object_ctor_map: FxHashMap::default(),
-            late_bound_object_type_map: FxHashMap::default(),
+            runtime_dispatch_object_bindings: FxHashSet::default(),
+            runtime_dispatch_ctor_cache: FxHashMap::default(),
+            runtime_dispatch_type_cache: FxHashMap::default(),
             default_export_global: None,
             function_depth: 0,
             block_depth: 0,
@@ -2113,11 +2110,6 @@ impl<'a> Lowerer<'a> {
     /// Get the TypeId for an expression from the type checker's expr_types map.
     /// Falls back to UNRESOLVED if not found (compiler couldn't determine type).
     fn get_expr_type(&self, expr: &Expression) -> TypeId {
-        if let Expression::Identifier(ident) = expr {
-            if let Some(&ty) = self.constructor_value_type_map.get(&ident.name) {
-                return ty;
-            }
-        }
         let expr_id = expr as *const _ as usize;
         self.expr_types
             .get(&expr_id)
@@ -2673,7 +2665,7 @@ impl<'a> Lowerer<'a> {
             if let Some(type_ann) = &decl.type_annotation {
                 if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
                     self.nominal_binding_cache.insert(name, nominal_type_id);
-                    self.clear_late_bound_object_binding(name);
+                    self.clear_runtime_dispatch_hint(name);
                 }
             }
 
@@ -2700,7 +2692,7 @@ impl<'a> Lowerer<'a> {
                             );
                             if let Some(nominal_type_id) = nominal_type_id {
                                 self.nominal_binding_cache.insert(name, nominal_type_id);
-                                self.clear_late_bound_object_binding(name);
+                                self.clear_runtime_dispatch_hint(name);
                                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                     eprintln!(
                                         "[lower] nominal_binding_cache: '{}' = nominal_type_id({}) (from new {}())",
@@ -2709,21 +2701,19 @@ impl<'a> Lowerer<'a> {
                                         self.interner.resolve(nominal_type_ident.name)
                                     );
                                 }
-                            } else if self.import_bindings.contains(&nominal_type_ident.name)
-                                || self
-                                    .ambient_builtin_globals
-                                    .contains(self.interner.resolve(nominal_type_ident.name))
+                            } else if let Some((ctor_symbol, ctor_type)) =
+                                self.new_expr_runtime_dispatch_binding_hint(new_expr)
                             {
-                                self.mark_late_bound_object_binding(
+                                self.set_runtime_dispatch_hint(
                                     name,
-                                    nominal_type_ident.name,
-                                    ctor_ty,
+                                    ctor_symbol,
+                                    ctor_type,
                                 );
                                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                     eprintln!(
-                                        "[lower] late_bound_object_vars: '{}' marked (from runtime-bound new {}())",
+                                        "[lower] runtime dispatch bind: '{}' marked (from runtime-bound new {}())",
                                         self.interner.resolve(name),
-                                        self.interner.resolve(nominal_type_ident.name)
+                                        self.interner.resolve(ctor_symbol)
                                     );
                                 }
                             } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
@@ -2740,7 +2730,7 @@ impl<'a> Lowerer<'a> {
                             self.try_extract_class_from_type(&cast.target_type)
                         {
                             self.nominal_binding_cache.insert(name, nominal_type_id);
-                            self.clear_late_bound_object_binding(name);
+                            self.clear_runtime_dispatch_hint(name);
                             if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                 eprintln!(
                                     "[lower] nominal_binding_cache: '{}' = nominal_type_id({}) (from cast)",
@@ -4259,14 +4249,14 @@ impl<'a> Lowerer<'a> {
                     }
                     if let Some(nominal_type_id) = nominal_type_id {
                         self.nominal_binding_cache.insert(ident.name, nominal_type_id);
-                        self.clear_late_bound_object_binding(ident.name);
+                        self.clear_runtime_dispatch_hint(ident.name);
                     } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
                         self.nominal_binding_cache.remove(&ident.name);
                         self.projection_layout_cache
                             .remove(&ident.name);
-                        self.mark_late_bound_object_binding(ident.name, ctor_symbol, ctor_type);
+                        self.set_runtime_dispatch_hint(ident.name, ctor_symbol, ctor_type);
                     } else {
-                        self.clear_late_bound_object_binding(ident.name);
+                        self.clear_runtime_dispatch_hint(ident.name);
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
@@ -4367,7 +4357,8 @@ impl<'a> Lowerer<'a> {
             .add_block(BasicBlock::with_label(entry_block, "entry"));
 
         if use_js_parameter_env {
-            let env_object = self.lower_activation_direct_eval_environment_object(func.span.start);
+            let env_object = self
+                .lower_activation_direct_eval_environment_object(func.span.start, func.span.start);
             let _ = self.emit_ensure_activation_direct_eval_env(env_object);
         }
 
@@ -5106,18 +5097,18 @@ impl<'a> Lowerer<'a> {
                                 if let Some(param_nominal_type_id) = param_nominal_type_id {
                                     self.nominal_binding_cache
                                         .insert(ident.name, param_nominal_type_id);
-                                    self.clear_late_bound_object_binding(ident.name);
+                                    self.clear_runtime_dispatch_hint(ident.name);
                                 } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
                                     self.nominal_binding_cache.remove(&ident.name);
                                     self.projection_layout_cache
                                         .remove(&ident.name);
-                                    self.mark_late_bound_object_binding(
+                                    self.set_runtime_dispatch_hint(
                                         ident.name,
                                         ctor_symbol,
                                         ctor_type,
                                     );
                                 } else {
-                                    self.clear_late_bound_object_binding(ident.name);
+                                    self.clear_runtime_dispatch_hint(ident.name);
                                 }
                                 self.register_variable_type_hints_from_annotation(
                                     ident.name, type_ann,
@@ -5533,18 +5524,18 @@ impl<'a> Lowerer<'a> {
                             if let Some(param_nominal_type_id) = param_nominal_type_id {
                                 self.nominal_binding_cache
                                     .insert(ident.name, param_nominal_type_id);
-                                self.clear_late_bound_object_binding(ident.name);
+                                self.clear_runtime_dispatch_hint(ident.name);
                             } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
                                 self.nominal_binding_cache.remove(&ident.name);
                                 self.projection_layout_cache
                                     .remove(&ident.name);
-                                self.mark_late_bound_object_binding(
+                                self.set_runtime_dispatch_hint(
                                     ident.name,
                                     ctor_symbol,
                                     ctor_type,
                                 );
                             } else {
-                                self.clear_late_bound_object_binding(ident.name);
+                                self.clear_runtime_dispatch_hint(ident.name);
                             }
                             self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                             if self.type_annotation_is_callable(type_ann) {
@@ -7928,22 +7919,13 @@ impl<'a> Lowerer<'a> {
 
         let ctor_symbol = type_ref.name.name;
         let ctor_name = self.interner.resolve(ctor_symbol);
-        if !self.import_bindings.contains(&ctor_symbol)
-            && !self.ambient_builtin_globals.contains(ctor_name)
-        {
-            return None;
-        }
         if matches!(
             ctor_name,
             TypeContext::MUTEX_TYPE_NAME | TypeContext::CHANNEL_TYPE_NAME
         ) {
             return None;
         }
-        if self
-            .type_ctx
-            .lookup_named_type(ctor_name)
-            .is_some_and(|ty| self.type_uses_runtime_handle_dispatch(ty))
-        {
+        if self.nominal_type_id_from_type_name(ctor_name).is_some() {
             return None;
         }
 
@@ -7952,10 +7934,23 @@ impl<'a> Lowerer<'a> {
         if resolved.is_some_and(|ty| self.type_has_checker_validated_class_members(ty)) {
             return None;
         }
-        if resolved.is_some_and(|ty| self.type_uses_runtime_handle_dispatch(ty)) {
+        if resolved.is_some_and(|ty| self.type_is_handle_dispatch_builtin(ty)) {
             return None;
         }
-        Some((ctor_symbol, resolved))
+        let constructor_type = resolved.or_else(|| self.type_ctx.lookup_named_type(ctor_name));
+        if constructor_type.is_some_and(|ty| self.type_is_handle_dispatch_builtin(ty)) {
+            return None;
+        }
+        if !constructor_type.is_some_and(|ty| {
+            self.type_has_construct_signature(ty)
+                || matches!(
+                    self.type_ctx.get(ty),
+                    Some(crate::parser::types::Type::Class(_))
+                )
+        }) {
+            return None;
+        }
+        Some((ctor_symbol, constructor_type))
     }
 
     fn try_extract_object_alias_name_from_type(
@@ -8021,15 +8016,15 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn clear_late_bound_object_binding(&mut self, name: Symbol) {
-        self.late_bound_object_vars.remove(&name);
-        self.late_bound_object_ctor_map.remove(&name);
-        self.late_bound_object_type_map.remove(&name);
+    fn clear_runtime_dispatch_hint(&mut self, name: Symbol) {
+        self.runtime_dispatch_object_bindings.remove(&name);
+        self.runtime_dispatch_ctor_cache.remove(&name);
+        self.runtime_dispatch_type_cache.remove(&name);
     }
 
     fn clear_constructor_value_binding(&mut self, name: Symbol) {
-        self.constructor_value_ctor_map.remove(&name);
-        self.constructor_value_type_map.remove(&name);
+        self.runtime_constructor_symbol_cache.remove(&name);
+        self.runtime_constructor_type_cache.remove(&name);
     }
 
     fn mark_constructor_value_binding(
@@ -8038,12 +8033,12 @@ impl<'a> Lowerer<'a> {
         constructor_symbol: Symbol,
         constructor_type: Option<TypeId>,
     ) {
-        self.constructor_value_ctor_map
+        self.runtime_constructor_symbol_cache
             .insert(name, constructor_symbol);
         if let Some(ty) = constructor_type {
-            self.constructor_value_type_map.insert(name, ty);
+            self.runtime_constructor_type_cache.insert(name, ty);
         } else {
-            self.constructor_value_type_map.remove(&name);
+            self.runtime_constructor_type_cache.remove(&name);
         }
     }
 
@@ -8053,7 +8048,7 @@ impl<'a> Lowerer<'a> {
         preferred_type: Option<TypeId>,
     ) {
         let constructor_ty = preferred_type
-            .or_else(|| self.constructor_value_type_map.get(&name).copied())
+            .or_else(|| self.runtime_constructor_type_cache.get(&name).copied())
             .or_else(|| self.type_ctx.lookup_named_type(self.interner.resolve(name)));
 
         let Some(constructor_ty) = constructor_ty else {
@@ -8079,71 +8074,35 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    pub(super) fn identifier_requires_late_bound_dispatch(&self, name: Symbol) -> bool {
-        let resolved = self.interner.resolve(name);
-        if self.nominal_type_id_from_type_name(resolved).is_some()
-            || self.type_registry.has_builtin_dispatch_type(resolved)
-        {
-            return false;
-        }
-
-        if self.late_bound_object_vars.contains(&name)
-            || self.constructor_value_ctor_map.contains_key(&name)
-        {
-            return true;
-        }
-
-        if self.variable_object_type_aliases.contains_key(&name)
-            || self
-                .constructor_value_type_map
-                .get(&name)
-                .is_some_and(|ty| self.type_has_construct_signature(*ty))
-        {
-            return false;
-        }
-
-        self.ambient_builtin_globals.contains(resolved)
+    pub(super) fn binding_uses_runtime_dispatch_hint(&self, name: Symbol) -> bool {
+        self.runtime_dispatch_object_bindings.contains(&name)
+            || self.runtime_constructor_symbol_cache.contains_key(&name)
     }
 
-    pub(super) fn type_requires_late_bound_dispatch(&self, ty_id: TypeId) -> bool {
-        use crate::parser::types::ty::Type;
-
-        match self.type_ctx.get(ty_id) {
-            Some(Type::Class(class_ty)) => {
-                self.nominal_type_id_from_type_name(&class_ty.name)
-                    .is_none()
-                    && !self.type_registry.has_builtin_dispatch_type(&class_ty.name)
-            }
-            Some(Type::Reference(type_ref)) => self
-                .type_ctx
-                .lookup_named_type(&type_ref.name)
-                .is_some_and(|named| self.type_requires_late_bound_dispatch(named)),
-            Some(Type::Union(union)) => union
-                .members
-                .iter()
-                .copied()
-                .any(|member| self.type_requires_late_bound_dispatch(member)),
-            Some(Type::TypeVar(tv)) => tv
-                .constraint
-                .is_some_and(|constraint| self.type_requires_late_bound_dispatch(constraint)),
-            Some(Type::Generic(generic)) => self.type_requires_late_bound_dispatch(generic.base),
-            _ => false,
-        }
+    pub(super) fn binding_uses_builtin_dispatch_hint(&self, name: Symbol) -> bool {
+        self.runtime_dispatch_ctor_cache
+            .get(&name)
+            .copied()
+            .or_else(|| self.runtime_constructor_symbol_cache.get(&name).copied())
+            .is_some_and(|ctor_symbol| {
+                self.type_registry
+                    .has_builtin_dispatch_type(self.interner.resolve(ctor_symbol))
+            })
     }
 
-    fn mark_late_bound_object_binding(
+    fn set_runtime_dispatch_hint(
         &mut self,
         name: Symbol,
         constructor_symbol: Symbol,
         constructor_type: Option<TypeId>,
     ) {
-        self.late_bound_object_vars.insert(name);
-        self.late_bound_object_ctor_map
+        self.runtime_dispatch_object_bindings.insert(name);
+        self.runtime_dispatch_ctor_cache
             .insert(name, constructor_symbol);
         if let Some(ty) = constructor_type {
-            self.late_bound_object_type_map.insert(name, ty);
+            self.runtime_dispatch_type_cache.insert(name, ty);
         } else {
-            self.late_bound_object_type_map.remove(&name);
+            self.runtime_dispatch_type_cache.remove(&name);
         }
         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
             let ctor_ty = constructor_type

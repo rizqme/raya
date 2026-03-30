@@ -359,8 +359,6 @@ impl TypeRegistry {
                 "Map" => Some(map::NEW),
                 "Set" => Some(set::NEW),
                 "Buffer" => Some(buffer::NEW),
-                // Date values are represented as timestamps; constructor maps to NOW.
-                "Date" => Some(date::NOW),
                 _ => None,
             };
             if let Some(native_id) = constructor_id {
