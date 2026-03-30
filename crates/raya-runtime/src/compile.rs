@@ -11,8 +11,8 @@ use raya_engine::parser::checker::{
 };
 use raya_engine::parser::{Interner, LexError, ParseError, Parser, TypeContext};
 use raya_engine::semantics::{
-    build_semantic_hir, build_semantic_lowering_plan, SemanticHirModule, SemanticLoweringPlan,
-    SemanticProfile, SourceKind,
+    build_semantic_hir, build_semantic_lowering_plan_with_types, SemanticHirModule,
+    SemanticLoweringPlan, SemanticProfile, SourceKind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -371,12 +371,19 @@ pub fn inspect_semantic_plan_with_profile(
     source: &str,
     profile: SemanticProfile,
 ) -> Result<SemanticLoweringPlan, RuntimeError> {
-    let parser = parser_for_profile(source, profile)
-        .map_err(|errors| RuntimeError::Lex(format!("{errors:?}")))?;
-    let (ast, interner) = parser
-        .parse()
-        .map_err(|errors| RuntimeError::Parse(format!("{errors:?}")))?;
-    Ok(build_semantic_lowering_plan(&ast, &interner, profile))
+    let builtin_mode = if profile.js_this_binding_compat {
+        BuiltinMode::NodeCompat
+    } else {
+        BuiltinMode::RayaStrict
+    };
+    let checked = GraphFrontend::new(source, builtin_mode, profile, None)?.compile_checked()?;
+    Ok(build_semantic_lowering_plan_with_types(
+        &checked.ast,
+        &checked.interner,
+        profile,
+        Some(&checked.type_ctx),
+        Some(&checked.check_result.expr_types),
+    ))
 }
 
 /// Compile Raya source code to a bytecode module.
@@ -2870,6 +2877,92 @@ mod tests {
             resolved.name == "i"
                 && resolved.kind == raya_engine::ResolvedIdentifierKind::RuntimeEnvLookup
                 && resolved.binding_kind == Some(raya_engine::BindingKind::Lexical)
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_nominal_constructor_target() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            class Foo {
+                value = 1;
+            }
+            new Foo();
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.constructor_targets.iter().any(|target| {
+            target.kind == raya_engine::ConstructorTargetKind::NominalClass
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_nominal_member_call() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            class Foo {
+                method(): number { return 1; }
+            }
+            function main(obj: Foo) {
+                return obj.method();
+            }
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.member_targets.iter().any(|target| {
+            target.name.as_deref() == Some("method")
+                && target.kind == raya_engine::MemberTargetKind::NominalMethod
+        }));
+        assert!(plan.hir.call_targets.iter().any(|target| {
+            target.kind == raya_engine::CallTargetKind::NominalMethod
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_structural_member_call() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            function main(obj: { method(): number }) {
+                return obj.method();
+            }
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.member_targets.iter().any(|target| {
+            target.name.as_deref() == Some("method")
+                && target.kind == raya_engine::MemberTargetKind::StructuralSlot
+        }));
+        assert!(plan.hir.call_targets.iter().any(|target| {
+            target.kind == raya_engine::CallTargetKind::StructuralCall
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_distinguishes_class_value_shape() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            class Foo {
+                static make(): number { return 1; }
+            }
+            Foo.make();
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.object_shapes.iter().any(|shape| {
+            shape.kind == raya_engine::ObjectShapeKind::ClassValue
+                && shape.type_name.as_deref() == Some("Foo")
+        }));
+        assert!(plan.hir.member_targets.iter().any(|target| {
+            target.name.as_deref() == Some("make")
+                && target.kind == raya_engine::MemberTargetKind::StaticMethod
         }));
     }
 

@@ -5,10 +5,12 @@
 //! profile instead of scattering booleans across layers.
 
 use crate::parser::ast::{
-    self, Expression, FunctionDecl, MethodDecl, Pattern, Statement, UnaryOperator, VariableKind,
+    self, AssignmentOperator, Expression, FunctionDecl, MethodDecl, Pattern, Statement,
+    UnaryOperator, VariableKind,
 };
 use crate::parser::checker::{CheckerPolicy, EarlyErrorOptions, TsTypeFlags, TypeSystemMode};
-use crate::parser::{Interner, Symbol};
+use crate::parser::types::ty::{ClassType, InterfaceType, ObjectType, Type};
+use crate::parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::Path;
 
@@ -447,6 +449,85 @@ pub struct LoopScopePlan {
     pub binding_names: Vec<String>,
 }
 
+/// Semantic object/value shape classification used by lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectShapeKind {
+    ClassValue,
+    NominalInstance,
+    StructuralObject,
+    BuiltinValue,
+    Dynamic,
+}
+
+/// Semantic object-shape summary for an expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticObjectShape {
+    pub span_start: usize,
+    pub kind: ObjectShapeKind,
+    pub type_id: Option<TypeId>,
+    pub type_name: Option<String>,
+}
+
+/// Semantic member target classification used by lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemberTargetKind {
+    NominalField,
+    NominalMethod,
+    StaticMethod,
+    StructuralSlot,
+    BuiltinProperty,
+    DynamicProperty,
+}
+
+/// Semantic member target summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticMemberTarget {
+    pub span_start: usize,
+    pub kind: MemberTargetKind,
+    pub name: Option<String>,
+    pub receiver_type_id: Option<TypeId>,
+    pub receiver_shape_kind: ObjectShapeKind,
+}
+
+/// Semantic call target classification used by lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallTargetKind {
+    PlainFunction,
+    NominalMethod,
+    StaticMethod,
+    StructuralCall,
+    ConstructorLikeValue,
+    DynamicCall,
+}
+
+/// Semantic call target summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticCallTarget {
+    pub span_start: usize,
+    pub kind: CallTargetKind,
+    pub receiver_type_id: Option<TypeId>,
+    pub member_name: Option<String>,
+    pub return_type_id: Option<TypeId>,
+    pub return_shape: Option<SemanticObjectShape>,
+}
+
+/// Semantic constructor target classification used by lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConstructorTargetKind {
+    NominalClass,
+    ConstructorLikeValue,
+    DynamicConstructor,
+}
+
+/// Semantic constructor target summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticConstructorTarget {
+    pub span_start: usize,
+    pub kind: ConstructorTargetKind,
+    pub instance_shape: Option<SemanticObjectShape>,
+    pub callee_type_id: Option<TypeId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScopeSnapshotBinding {
     pub symbol: Symbol,
@@ -488,9 +569,13 @@ pub struct SemanticHirModule {
     pub bindings: Vec<SemanticBinding>,
     pub references: Vec<SemanticReferenceExpr>,
     pub resolved_identifiers: Vec<SemanticResolvedIdentifier>,
+    pub object_shapes: Vec<SemanticObjectShape>,
+    pub member_targets: Vec<SemanticMemberTarget>,
     pub binding_ops: Vec<SemanticBindingOp>,
     pub update_ops: Vec<SemanticUpdateOp>,
     pub call_ops: Vec<SemanticCallOp>,
+    pub call_targets: Vec<SemanticCallTarget>,
+    pub constructor_targets: Vec<SemanticConstructorTarget>,
     pub destructuring_plans: Vec<DestructuringPlan>,
     pub loop_scopes: Vec<LoopScopePlan>,
     pub suspension_points: Vec<SuspensionPoint>,
@@ -512,9 +597,13 @@ pub struct SemanticLoweringPlan {
     callable_kinds_by_span: FxHashMap<usize, CallableKind>,
     references_by_span: FxHashMap<usize, SemanticReferenceExpr>,
     resolved_identifiers_by_span: FxHashMap<usize, SemanticResolvedIdentifier>,
+    object_shapes_by_span: FxHashMap<usize, SemanticObjectShape>,
+    member_targets_by_span: FxHashMap<usize, SemanticMemberTarget>,
     binding_ops_by_span: FxHashMap<usize, SemanticBindingOp>,
     update_ops_by_span: FxHashMap<usize, SemanticUpdateOp>,
     call_ops_by_span: FxHashMap<usize, SemanticCallOp>,
+    call_targets_by_span: FxHashMap<usize, SemanticCallTarget>,
+    constructor_targets_by_span: FxHashMap<usize, SemanticConstructorTarget>,
     destructuring_by_span: FxHashMap<usize, DestructuringPlan>,
     loop_scopes_by_span: FxHashMap<usize, LoopScopePlan>,
     scope_snapshots_by_span: FxHashMap<usize, Vec<ScopeSnapshotBinding>>,
@@ -535,9 +624,13 @@ impl SemanticLoweringPlan {
                 bindings: Vec::new(),
                 references: Vec::new(),
                 resolved_identifiers: Vec::new(),
+                object_shapes: Vec::new(),
+                member_targets: Vec::new(),
                 binding_ops: Vec::new(),
                 update_ops: Vec::new(),
                 call_ops: Vec::new(),
+                call_targets: Vec::new(),
+                constructor_targets: Vec::new(),
                 destructuring_plans: Vec::new(),
                 loop_scopes: Vec::new(),
                 suspension_points: Vec::new(),
@@ -546,9 +639,13 @@ impl SemanticLoweringPlan {
             callable_kinds_by_span: FxHashMap::default(),
             references_by_span: FxHashMap::default(),
             resolved_identifiers_by_span: FxHashMap::default(),
+            object_shapes_by_span: FxHashMap::default(),
+            member_targets_by_span: FxHashMap::default(),
             binding_ops_by_span: FxHashMap::default(),
             update_ops_by_span: FxHashMap::default(),
             call_ops_by_span: FxHashMap::default(),
+            call_targets_by_span: FxHashMap::default(),
+            constructor_targets_by_span: FxHashMap::default(),
             destructuring_by_span: FxHashMap::default(),
             loop_scopes_by_span: FxHashMap::default(),
             scope_snapshots_by_span: FxHashMap::default(),
@@ -587,6 +684,14 @@ impl SemanticLoweringPlan {
         self.resolved_identifiers_by_span.get(&span_start)
     }
 
+    pub fn object_shape_at_span(&self, span_start: usize) -> Option<&SemanticObjectShape> {
+        self.object_shapes_by_span.get(&span_start)
+    }
+
+    pub fn member_target_at_span(&self, span_start: usize) -> Option<&SemanticMemberTarget> {
+        self.member_targets_by_span.get(&span_start)
+    }
+
     pub fn binding_op_at_span(&self, span_start: usize) -> Option<&SemanticBindingOp> {
         self.binding_ops_by_span.get(&span_start)
     }
@@ -597,6 +702,17 @@ impl SemanticLoweringPlan {
 
     pub fn call_op_at_span(&self, span_start: usize) -> Option<&SemanticCallOp> {
         self.call_ops_by_span.get(&span_start)
+    }
+
+    pub fn call_target_at_span(&self, span_start: usize) -> Option<&SemanticCallTarget> {
+        self.call_targets_by_span.get(&span_start)
+    }
+
+    pub fn constructor_target_at_span(
+        &self,
+        span_start: usize,
+    ) -> Option<&SemanticConstructorTarget> {
+        self.constructor_targets_by_span.get(&span_start)
     }
 
     pub fn destructuring_plan_at_span(&self, span_start: usize) -> Option<&DestructuringPlan> {
@@ -652,16 +768,35 @@ pub fn build_semantic_lowering_plan(
     interner: &Interner,
     profile: SemanticProfile,
 ) -> SemanticLoweringPlan {
+    build_semantic_lowering_plan_with_types(module, interner, profile, None, None)
+}
+
+/// Build a lowering-oriented semantic plan from an AST module plus checker type data.
+pub fn build_semantic_lowering_plan_with_types(
+    module: &ast::Module,
+    interner: &Interner,
+    profile: SemanticProfile,
+    type_ctx: Option<&TypeContext>,
+    expr_types: Option<&FxHashMap<usize, TypeId>>,
+) -> SemanticLoweringPlan {
     let mut builder = SemanticHirBuilder {
         interner,
+        typed: type_ctx.zip(expr_types).map(|(type_ctx, expr_types)| TypedSemanticInfo {
+            type_ctx,
+            expr_types,
+        }),
         callables: Vec::new(),
         function_semantics: Vec::new(),
         bindings: Vec::new(),
         references: Vec::new(),
         resolved_identifiers: Vec::new(),
+        object_shapes: Vec::new(),
+        member_targets: Vec::new(),
         binding_ops: Vec::new(),
         update_ops: Vec::new(),
         call_ops: Vec::new(),
+        call_targets: Vec::new(),
+        constructor_targets: Vec::new(),
         destructuring_plans: Vec::new(),
         loop_scopes: Vec::new(),
         suspension_points: Vec::new(),
@@ -705,9 +840,13 @@ pub fn build_semantic_lowering_plan(
             .collect(),
         references: builder.references,
         resolved_identifiers: builder.resolved_identifiers,
+        object_shapes: builder.object_shapes,
+        member_targets: builder.member_targets,
         binding_ops: builder.binding_ops,
         update_ops: builder.update_ops,
         call_ops: builder.call_ops,
+        call_targets: builder.call_targets,
+        constructor_targets: builder.constructor_targets,
         destructuring_plans: builder.destructuring_plans,
         loop_scopes: builder.loop_scopes,
         suspension_points: builder.suspension_points,
@@ -730,6 +869,18 @@ pub fn build_semantic_lowering_plan(
         .cloned()
         .map(|resolved| (resolved.span_start, resolved))
         .collect();
+    let object_shapes_by_span = hir
+        .object_shapes
+        .iter()
+        .cloned()
+        .map(|shape| (shape.span_start, shape))
+        .collect();
+    let member_targets_by_span = hir
+        .member_targets
+        .iter()
+        .cloned()
+        .map(|target| (target.span_start, target))
+        .collect();
     let binding_ops_by_span = hir
         .binding_ops
         .iter()
@@ -748,6 +899,18 @@ pub fn build_semantic_lowering_plan(
         .cloned()
         .map(|op| (op.span_start, op))
         .collect();
+    let call_targets_by_span = hir
+        .call_targets
+        .iter()
+        .cloned()
+        .map(|target| (target.span_start, target))
+        .collect();
+    let constructor_targets_by_span = hir
+        .constructor_targets
+        .iter()
+        .cloned()
+        .map(|target| (target.span_start, target))
+        .collect();
     let destructuring_by_span = hir
         .destructuring_plans
         .iter()
@@ -765,9 +928,13 @@ pub fn build_semantic_lowering_plan(
         callable_kinds_by_span,
         references_by_span,
         resolved_identifiers_by_span,
+        object_shapes_by_span,
+        member_targets_by_span,
         binding_ops_by_span,
         update_ops_by_span,
         call_ops_by_span,
+        call_targets_by_span,
+        constructor_targets_by_span,
         destructuring_by_span,
         loop_scopes_by_span,
         scope_snapshots_by_span: builder.scope_snapshots_by_span,
@@ -811,6 +978,7 @@ enum ScopeFrameKind {
 struct ScopeFrame {
     kind: ScopeFrameKind,
     bindings: FxHashMap<Symbol, ScopeBindingInfo>,
+    value_facts: FxHashMap<Symbol, ScopeValueFact>,
 }
 
 impl ScopeFrame {
@@ -818,20 +986,45 @@ impl ScopeFrame {
         Self {
             kind,
             bindings: FxHashMap::default(),
+            value_facts: FxHashMap::default(),
         }
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemanticBoundMethodInfo {
+    kind: CallTargetKind,
+    receiver_type_id: Option<TypeId>,
+    member_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScopeValueFact {
+    shape: Option<SemanticObjectShape>,
+    bound_method: Option<SemanticBoundMethodInfo>,
+}
+
+#[derive(Clone, Copy)]
+struct TypedSemanticInfo<'a> {
+    type_ctx: &'a TypeContext,
+    expr_types: &'a FxHashMap<usize, TypeId>,
+}
+
 struct SemanticHirBuilder<'a> {
     interner: &'a Interner,
+    typed: Option<TypedSemanticInfo<'a>>,
     callables: Vec<SemanticCallableInfo>,
     function_semantics: Vec<FunctionSemantics>,
     bindings: Vec<SemanticBindingInfo>,
     references: Vec<SemanticReferenceExpr>,
     resolved_identifiers: Vec<SemanticResolvedIdentifier>,
+    object_shapes: Vec<SemanticObjectShape>,
+    member_targets: Vec<SemanticMemberTarget>,
     binding_ops: Vec<SemanticBindingOp>,
     update_ops: Vec<SemanticUpdateOp>,
     call_ops: Vec<SemanticCallOp>,
+    call_targets: Vec<SemanticCallTarget>,
+    constructor_targets: Vec<SemanticConstructorTarget>,
     destructuring_plans: Vec<DestructuringPlan>,
     loop_scopes: Vec<LoopScopePlan>,
     suspension_points: Vec<SuspensionPoint>,
@@ -969,6 +1162,42 @@ impl<'a> SemanticHirBuilder<'a> {
             .find_map(|scope| scope.bindings.get(&symbol).copied())
     }
 
+    fn resolve_scope_value_fact(&self, symbol: Symbol) -> Option<&ScopeValueFact> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.value_facts.get(&symbol))
+    }
+
+    fn binding_scope_index(&self, symbol: Symbol) -> Option<usize> {
+        self.scopes
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, scope)| scope.bindings.contains_key(&symbol).then_some(index))
+    }
+
+    fn set_scope_value_fact(&mut self, symbol: Symbol, fact: Option<ScopeValueFact>) {
+        let Some(scope_index) = self.binding_scope_index(symbol) else {
+            return;
+        };
+        if let Some(scope) = self.scopes.get_mut(scope_index) {
+            if let Some(fact) = fact {
+                scope.value_facts.insert(symbol, fact);
+            } else {
+                scope.value_facts.remove(&symbol);
+            }
+        }
+    }
+
+    fn clear_pattern_value_facts(&mut self, pattern: &Pattern) {
+        let mut names = Vec::new();
+        Self::collect_pattern_symbols(pattern, &mut names);
+        for name in names {
+            self.set_scope_value_fact(name, None);
+        }
+    }
+
     fn record_resolved_identifier(&mut self, ident: &ast::Identifier) {
         let name = self.identifier(ident);
         let implicit_arguments_binding_depth = (name == "arguments")
@@ -1023,6 +1252,555 @@ impl<'a> SemanticHirBuilder<'a> {
             ast::PropertyKey::StringLiteral(lit) => Some(self.symbol(lit.value)),
             ast::PropertyKey::IntLiteral(lit) => Some(lit.value.to_string()),
             ast::PropertyKey::Computed(_) => None,
+        }
+    }
+
+    fn expr_type(&self, expr: &Expression) -> Option<TypeId> {
+        let typed = self.typed?;
+        typed.expr_types.get(&(expr as *const Expression as usize)).copied()
+    }
+
+    fn binding_kind_for_identifier_expr(&self, expr: &Expression) -> Option<BindingKind> {
+        let Expression::Identifier(ident) = expr else {
+            return None;
+        };
+        self.resolve_scope_binding(ident.name).map(|binding| binding.kind)
+    }
+
+    fn object_shape_kind_for_type_id(
+        &self,
+        ty_id: TypeId,
+        binding_kind: Option<BindingKind>,
+    ) -> ObjectShapeKind {
+        let Some(typed) = self.typed else {
+            return ObjectShapeKind::Dynamic;
+        };
+
+        if binding_kind == Some(BindingKind::Class) {
+            return ObjectShapeKind::ClassValue;
+        }
+
+        match typed.type_ctx.get(ty_id) {
+            Some(Type::Reference(reference)) => typed
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .map(|resolved| self.object_shape_kind_for_type_id(resolved, binding_kind))
+                .unwrap_or(ObjectShapeKind::Dynamic),
+            Some(Type::Generic(generic)) => {
+                self.object_shape_kind_for_type_id(generic.base, binding_kind)
+            }
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .map(|constraint| self.object_shape_kind_for_type_id(constraint, binding_kind))
+                .unwrap_or(ObjectShapeKind::Dynamic),
+            Some(Type::Union(union)) => {
+                let mut kind = None;
+                for member in &union.members {
+                    let member_kind = self.object_shape_kind_for_type_id(*member, binding_kind);
+                    match kind {
+                        None => kind = Some(member_kind),
+                        Some(existing) if existing == member_kind => {}
+                        _ => return ObjectShapeKind::Dynamic,
+                    }
+                }
+                kind.unwrap_or(ObjectShapeKind::Dynamic)
+            }
+            Some(Type::Class(_)) => ObjectShapeKind::NominalInstance,
+            Some(Type::Object(_) | Type::Interface(_)) => ObjectShapeKind::StructuralObject,
+            Some(
+                Type::Function(_)
+                | Type::Array(_)
+                | Type::Task(_)
+                | Type::Mutex
+                | Type::RegExp
+                | Type::Channel(_)
+                | Type::Map(_)
+                | Type::Set(_)
+                | Type::Date
+                | Type::Buffer
+                | Type::Tuple(_),
+            ) => ObjectShapeKind::BuiltinValue,
+            _ => ObjectShapeKind::Dynamic,
+        }
+    }
+
+    fn type_name_for_type_id(&self, ty_id: TypeId) -> Option<String> {
+        let typed = self.typed?;
+        match typed.type_ctx.get(ty_id) {
+            Some(Type::Class(class_ty)) => Some(class_ty.name.clone()),
+            Some(Type::Interface(interface_ty)) => Some(interface_ty.name.clone()),
+            Some(Type::Reference(reference)) => Some(reference.name.clone()),
+            Some(Type::Array(_)) => Some(TypeContext::ARRAY_TYPE_NAME.to_string()),
+            Some(Type::Task(_)) => Some(TypeContext::PROMISE_TYPE_NAME.to_string()),
+            Some(Type::Channel(_)) => Some(TypeContext::CHANNEL_TYPE_NAME.to_string()),
+            Some(Type::Map(_)) => Some(TypeContext::MAP_TYPE_NAME.to_string()),
+            Some(Type::Set(_)) => Some(TypeContext::SET_TYPE_NAME.to_string()),
+            Some(Type::RegExp) => Some("RegExp".to_string()),
+            Some(Type::Date) => Some("Date".to_string()),
+            Some(Type::Buffer) => Some("Buffer".to_string()),
+            _ => None,
+        }
+    }
+
+    fn object_shape_for_expr(&self, expr: &Expression) -> Option<SemanticObjectShape> {
+        if let Expression::Identifier(ident) = expr {
+            if let Some(shape) = self
+                .resolve_scope_value_fact(ident.name)
+                .and_then(|fact| fact.shape.clone())
+            {
+                return Some(shape);
+            }
+        }
+
+        let type_id = self.expr_type(expr)?;
+        let binding_kind = self.binding_kind_for_identifier_expr(expr);
+        Some(SemanticObjectShape {
+            span_start: expr.span().start,
+            kind: self.object_shape_kind_for_type_id(type_id, binding_kind),
+            type_id: Some(type_id),
+            type_name: self.type_name_for_type_id(type_id),
+        })
+    }
+
+    fn class_includes_method(&self, class_ty: &ClassType, name: &str) -> bool {
+        if class_ty.methods.iter().any(|method| method.name == name) {
+            return true;
+        }
+        let Some(typed) = self.typed else {
+            return false;
+        };
+        class_ty.extends.is_some_and(|parent| match typed.type_ctx.get(parent) {
+            Some(Type::Class(parent_class)) => self.class_includes_method(parent_class, name),
+            _ => false,
+        })
+    }
+
+    fn class_includes_property(&self, class_ty: &ClassType, name: &str) -> bool {
+        if class_ty.properties.iter().any(|property| property.name == name) {
+            return true;
+        }
+        let Some(typed) = self.typed else {
+            return false;
+        };
+        class_ty.extends.is_some_and(|parent| match typed.type_ctx.get(parent) {
+            Some(Type::Class(parent_class)) => self.class_includes_property(parent_class, name),
+            _ => false,
+        })
+    }
+
+    fn class_includes_static_method(&self, class_ty: &ClassType, name: &str) -> bool {
+        class_ty.static_methods.iter().any(|method| method.name == name)
+    }
+
+    fn class_includes_static_property(&self, class_ty: &ClassType, name: &str) -> bool {
+        class_ty
+            .static_properties
+            .iter()
+            .any(|property| property.name == name)
+    }
+
+    fn structural_includes_slot_type(&self, ty_id: TypeId, name: &str) -> bool {
+        let Some(typed) = self.typed else {
+            return false;
+        };
+        match typed.type_ctx.get(ty_id) {
+            Some(Type::Object(ObjectType {
+                properties,
+                call_signatures: _,
+                construct_signatures: _,
+                index_signature: _,
+            })) => properties.iter().any(|property| property.name == name),
+            Some(Type::Interface(InterfaceType {
+                properties,
+                methods,
+                extends,
+                ..
+            })) => {
+                properties.iter().any(|property| property.name == name)
+                    || methods.iter().any(|method| method.name == name)
+                    || extends
+                        .iter()
+                        .copied()
+                        .any(|parent| self.structural_includes_slot_type(parent, name))
+            }
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.structural_includes_slot_type(constraint, name)),
+            Some(Type::Reference(reference)) => typed
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|resolved| self.structural_includes_slot_type(resolved, name)),
+            Some(Type::Generic(generic)) => self.structural_includes_slot_type(generic.base, name),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.structural_includes_slot_type(member, name)),
+            _ => false,
+        }
+    }
+
+    fn record_object_shape_for_expr(&mut self, expr: &Expression) {
+        if let Some(shape) = self.object_shape_for_expr(expr) {
+            self.object_shapes.push(shape);
+        }
+    }
+
+    fn record_member_target_for_expr(&mut self, member: &ast::MemberExpression) {
+        let Some(shape) = self.object_shape_for_expr(&member.object) else {
+            return;
+        };
+        let name = self.identifier(&member.property);
+        let kind = self.member_target_kind_for_shape_and_name(&shape, &name);
+
+        self.member_targets.push(SemanticMemberTarget {
+            span_start: member.span.start,
+            kind,
+            name: Some(name),
+            receiver_type_id: shape.type_id,
+            receiver_shape_kind: shape.kind,
+        });
+    }
+
+    fn record_call_target_for_expr(&mut self, call: &ast::CallExpression) {
+        let (kind, receiver_type_id, member_name) = match &*call.callee {
+            Expression::Member(member) => {
+                let name = self.identifier(&member.property);
+                match self.object_shape_for_expr(&member.object) {
+                    Some(shape) => match self.member_target_kind_for_shape_and_name(&shape, &name) {
+                        MemberTargetKind::NominalMethod => {
+                            (CallTargetKind::NominalMethod, shape.type_id, Some(name))
+                        }
+                        MemberTargetKind::StaticMethod => {
+                            (CallTargetKind::StaticMethod, shape.type_id, Some(name))
+                        }
+                        MemberTargetKind::StructuralSlot => {
+                            (CallTargetKind::StructuralCall, shape.type_id, Some(name))
+                        }
+                        MemberTargetKind::BuiltinProperty
+                            if matches!(
+                                shape.kind,
+                                ObjectShapeKind::BuiltinValue | ObjectShapeKind::ClassValue
+                            ) =>
+                        {
+                            (CallTargetKind::NominalMethod, shape.type_id, Some(name))
+                        }
+                        _ => (CallTargetKind::DynamicCall, shape.type_id, Some(name)),
+                    },
+                    None => (CallTargetKind::DynamicCall, None, Some(name)),
+                }
+            }
+            Expression::Identifier(ident) => {
+                if let Some(bound_method) = self
+                    .resolve_scope_value_fact(ident.name)
+                    .and_then(|fact| fact.bound_method.clone())
+                {
+                    (
+                        bound_method.kind,
+                        bound_method.receiver_type_id,
+                        bound_method.member_name,
+                    )
+                } else {
+                    let callee_ty = self.expr_type(&call.callee);
+                    let callee_shape = self.object_shape_for_expr(&call.callee);
+                    if callee_shape
+                        .as_ref()
+                        .is_some_and(|shape| shape.kind == ObjectShapeKind::ClassValue)
+                    {
+                        (CallTargetKind::ConstructorLikeValue, None, None)
+                    } else if callee_ty.is_some_and(|ty| self.type_is_callable_type(ty)) {
+                        (CallTargetKind::PlainFunction, None, None)
+                    } else {
+                        (CallTargetKind::DynamicCall, None, None)
+                    }
+                }
+            }
+            _ => {
+                let callee_ty = self.expr_type(&call.callee);
+                (
+                    callee_ty
+                        .filter(|&ty| self.type_is_callable_type(ty))
+                        .map(|_| CallTargetKind::PlainFunction)
+                        .unwrap_or(CallTargetKind::DynamicCall),
+                    None,
+                    None,
+                )
+            }
+        };
+
+        self.call_targets.push(SemanticCallTarget {
+            span_start: call.span.start,
+            kind,
+            receiver_type_id,
+            member_name,
+            return_type_id: self.expr_type(&Expression::Call(call.clone())),
+            return_shape: None,
+        });
+    }
+
+    fn record_constructor_target_for_expr(&mut self, new_expr: &ast::NewExpression) {
+        let callee_type_id = self.expr_type(&new_expr.callee);
+        let kind = match &*new_expr.callee {
+            Expression::Identifier(ident)
+                if self.resolve_scope_binding(ident.name).is_some_and(|binding| binding.kind == BindingKind::Class) =>
+            {
+                ConstructorTargetKind::NominalClass
+            }
+            _ => callee_type_id
+                .map(|ty| {
+                    if self.type_is_nominal_class_type(ty) {
+                        ConstructorTargetKind::NominalClass
+                    } else if self.type_has_construct_signatures(ty) {
+                        ConstructorTargetKind::ConstructorLikeValue
+                    } else {
+                        ConstructorTargetKind::DynamicConstructor
+                    }
+                })
+                .unwrap_or(ConstructorTargetKind::DynamicConstructor),
+        };
+
+        self.constructor_targets.push(SemanticConstructorTarget {
+            span_start: new_expr.span.start,
+            kind,
+            instance_shape: None,
+            callee_type_id,
+        });
+    }
+
+    fn bound_method_info_for_expr(
+        &self,
+        expr: &Expression,
+    ) -> Option<SemanticBoundMethodInfo> {
+        match expr {
+            Expression::Identifier(ident) => self
+                .resolve_scope_value_fact(ident.name)
+                .and_then(|fact| fact.bound_method.clone()),
+            Expression::Parenthesized(paren) => self.bound_method_info_for_expr(&paren.expression),
+            Expression::Member(member) => {
+                let receiver_shape = self.object_shape_for_expr(&member.object)?;
+                let member_name = self.identifier(&member.property);
+                let kind = match self.member_target_kind_for_shape_and_name(
+                    &receiver_shape,
+                    &member_name,
+                ) {
+                    MemberTargetKind::NominalMethod | MemberTargetKind::BuiltinProperty => {
+                        CallTargetKind::NominalMethod
+                    }
+                    MemberTargetKind::StaticMethod => CallTargetKind::StaticMethod,
+                    _ => return None,
+                };
+                Some(SemanticBoundMethodInfo {
+                    kind,
+                    receiver_type_id: receiver_shape.type_id,
+                    member_name: Some(member_name),
+                })
+            }
+            Expression::TypeCast(cast) => self.bound_method_info_for_expr(&cast.object),
+            _ => None,
+        }
+    }
+
+    fn value_fact_for_expr(&self, expr: &Expression) -> Option<ScopeValueFact> {
+        let shape = match expr {
+            Expression::Identifier(ident) => self
+                .resolve_scope_value_fact(ident.name)
+                .and_then(|fact| fact.shape.clone())
+                .or_else(|| self.object_shape_for_expr(expr)),
+            Expression::Parenthesized(paren) => self
+                .value_fact_for_expr(&paren.expression)
+                .and_then(|fact| fact.shape),
+            _ => self.object_shape_for_expr(expr),
+        };
+        let bound_method = self.bound_method_info_for_expr(expr);
+        if shape.is_none() && bound_method.is_none() {
+            None
+        } else {
+            Some(ScopeValueFact {
+                shape,
+                bound_method,
+            })
+        }
+    }
+
+    fn apply_value_fact_to_pattern(&mut self, pattern: &Pattern, expr: Option<&Expression>) {
+        match pattern {
+            Pattern::Identifier(ident) => {
+                let fact = expr.and_then(|expr| self.value_fact_for_expr(expr));
+                self.set_scope_value_fact(ident.name, fact);
+            }
+            Pattern::Array(_)
+            | Pattern::Object(_)
+            | Pattern::Rest(_) => self.clear_pattern_value_facts(pattern),
+        }
+    }
+
+    fn clear_assignment_target_value_facts(&mut self, expr: &Expression) {
+        match expr {
+            Expression::Identifier(ident) => self.set_scope_value_fact(ident.name, None),
+            Expression::Parenthesized(paren) => {
+                self.clear_assignment_target_value_facts(&paren.expression)
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_value_fact_to_assignment_target(
+        &mut self,
+        expr: &Expression,
+        value_expr: Option<&Expression>,
+    ) {
+        match expr {
+            Expression::Identifier(ident) => {
+                let fact = value_expr.and_then(|expr| self.value_fact_for_expr(expr));
+                self.set_scope_value_fact(ident.name, fact);
+            }
+            Expression::Parenthesized(paren) => {
+                self.apply_value_fact_to_assignment_target(&paren.expression, value_expr)
+            }
+            _ => {}
+        }
+    }
+
+    fn member_target_kind_for_shape_and_name(
+        &self,
+        shape: &SemanticObjectShape,
+        name: &str,
+    ) -> MemberTargetKind {
+        let Some(receiver_ty) = shape.type_id else {
+            return MemberTargetKind::DynamicProperty;
+        };
+        let Some(typed) = self.typed else {
+            return MemberTargetKind::DynamicProperty;
+        };
+
+        let effective_receiver_ty = match typed.type_ctx.get(receiver_ty) {
+            Some(Type::Reference(reference)) => typed
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .unwrap_or(receiver_ty),
+            Some(Type::Generic(generic)) => generic.base,
+            Some(Type::TypeVar(tv)) => tv.constraint.unwrap_or(receiver_ty),
+            _ => receiver_ty,
+        };
+
+        match typed.type_ctx.get(effective_receiver_ty) {
+            Some(Type::Class(class_ty)) => match shape.kind {
+                ObjectShapeKind::ClassValue => {
+                    if self.class_includes_static_method(class_ty, name) {
+                        MemberTargetKind::StaticMethod
+                    } else if self.class_includes_static_property(class_ty, name) {
+                        MemberTargetKind::BuiltinProperty
+                    } else {
+                        MemberTargetKind::DynamicProperty
+                    }
+                }
+                _ => {
+                    if self.class_includes_method(class_ty, name) {
+                        MemberTargetKind::NominalMethod
+                    } else if self.class_includes_property(class_ty, name) {
+                        MemberTargetKind::NominalField
+                    } else {
+                        MemberTargetKind::DynamicProperty
+                    }
+                }
+            },
+            Some(
+                Type::Object(_)
+                | Type::Interface(_)
+                | Type::TypeVar(_)
+                | Type::Reference(_)
+                | Type::Generic(_)
+                | Type::Union(_),
+            ) => {
+                if self.structural_includes_slot_type(effective_receiver_ty, name) {
+                    MemberTargetKind::StructuralSlot
+                } else {
+                    MemberTargetKind::DynamicProperty
+                }
+            }
+            Some(
+                Type::Array(_)
+                | Type::Task(_)
+                | Type::Mutex
+                | Type::RegExp
+                | Type::Channel(_)
+                | Type::Map(_)
+                | Type::Set(_)
+                | Type::Date
+                | Type::Buffer
+                | Type::Tuple(_)
+                | Type::Function(_),
+            ) => MemberTargetKind::BuiltinProperty,
+            _ => MemberTargetKind::DynamicProperty,
+        }
+    }
+
+    fn type_is_nominal_class_type(&self, ty_id: TypeId) -> bool {
+        let Some(typed) = self.typed else {
+            return false;
+        };
+        match typed.type_ctx.get(ty_id) {
+            Some(Type::Class(_)) => true,
+            Some(Type::Reference(reference)) => typed
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|resolved| self.type_is_nominal_class_type(resolved)),
+            Some(Type::Generic(generic)) => self.type_is_nominal_class_type(generic.base),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_is_nominal_class_type(constraint)),
+            _ => false,
+        }
+    }
+
+    fn type_has_construct_signatures(&self, ty_id: TypeId) -> bool {
+        let Some(typed) = self.typed else {
+            return false;
+        };
+        match typed.type_ctx.get(ty_id) {
+            Some(Type::Class(class_ty)) => !class_ty.is_abstract,
+            Some(Type::Function(_)) => true,
+            Some(Type::Object(obj)) => !obj.construct_signatures.is_empty(),
+            Some(Type::Interface(interface_ty)) => !interface_ty.construct_signatures.is_empty(),
+            Some(Type::Reference(reference)) => typed
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|resolved| self.type_has_construct_signatures(resolved)),
+            Some(Type::Generic(generic)) => self.type_has_construct_signatures(generic.base),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_has_construct_signatures(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_has_construct_signatures(member)),
+            _ => false,
+        }
+    }
+
+    fn type_is_callable_type(&self, ty_id: TypeId) -> bool {
+        let Some(typed) = self.typed else {
+            return false;
+        };
+        match typed.type_ctx.get(ty_id) {
+            Some(Type::Function(_)) => true,
+            Some(Type::Object(obj)) => !obj.call_signatures.is_empty(),
+            Some(Type::Interface(interface_ty)) => !interface_ty.call_signatures.is_empty(),
+            Some(Type::Reference(reference)) => typed
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|resolved| self.type_is_callable_type(resolved)),
+            Some(Type::Generic(generic)) => self.type_is_callable_type(generic.base),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_is_callable_type(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_is_callable_type(member)),
+            _ => false,
         }
     }
 
@@ -1497,6 +2275,7 @@ impl<'a> SemanticHirBuilder<'a> {
                 if let Some(init) = &var_decl.initializer {
                     self.visit_expr(init);
                 }
+                self.apply_value_fact_to_pattern(&var_decl.pattern, var_decl.initializer.as_ref());
                 if matches!(kind, BindingKind::Lexical) {
                     self.clear_pattern_tdz(&var_decl.pattern);
                 }
@@ -1760,9 +2539,11 @@ impl<'a> SemanticHirBuilder<'a> {
     }
 
     fn visit_expr(&mut self, expr: &Expression) {
+        self.record_object_shape_for_expr(expr);
         match expr {
             Expression::Call(call) => {
                 self.record_call_op(call);
+                self.record_call_target_for_expr(call);
                 self.visit_expr(&call.callee);
                 for arg in &call.arguments {
                     self.visit_expr(arg.expression());
@@ -1840,6 +2621,7 @@ impl<'a> SemanticHirBuilder<'a> {
             }
             Expression::Member(member) => {
                 self.record_reference_expr(expr);
+                self.record_member_target_for_expr(member);
                 self.visit_expr(&member.object);
             }
             Expression::Index(index) => {
@@ -1853,6 +2635,7 @@ impl<'a> SemanticHirBuilder<'a> {
                     kind: CallOpKind::Constructor,
                     callee_span_start: new_expr.callee.span().start,
                 });
+                self.record_constructor_target_for_expr(new_expr);
                 self.visit_expr(&new_expr.callee);
                 for arg in &new_expr.arguments {
                     self.visit_expr(arg.expression());
@@ -1868,6 +2651,11 @@ impl<'a> SemanticHirBuilder<'a> {
                 });
                 self.visit_expr(&assign.left);
                 self.visit_expr(&assign.right);
+                if matches!(assign.operator, AssignmentOperator::Assign) {
+                    self.apply_value_fact_to_assignment_target(&assign.left, Some(&assign.right));
+                } else {
+                    self.clear_assignment_target_value_facts(&assign.left);
+                }
             }
             Expression::Binary(binary) => {
                 self.visit_expr(&binary.left);

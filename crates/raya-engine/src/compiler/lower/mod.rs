@@ -735,12 +735,12 @@ pub struct Lowerer<'a> {
     /// Variables that are read from an outer scope by a nested closure.
     captured_read_vars: FxHashSet<Symbol>,
     /// Map from variable name to its class type (for field access resolution)
-    variable_class_map: FxHashMap<Symbol, NominalTypeId>,
+    nominal_binding_cache: FxHashMap<Symbol, NominalTypeId>,
     /// Variables explicitly annotated as `any`/`unknown`, which must suppress
     /// nominal member dispatch even if their initializer was nominal.
     dynamic_any_vars: FxHashSet<Symbol>,
     /// Map from array variable name to its element's class type (for for-of loop type inference)
-    array_element_class_map: FxHashMap<Symbol, NominalTypeId>,
+    array_element_nominal_cache: FxHashMap<Symbol, NominalTypeId>,
     /// Current class being processed (for method lowering)
     current_class: Option<NominalTypeId>,
     /// Whether the currently lowered callable uses the class constructor as `this`.
@@ -764,10 +764,6 @@ pub struct Lowerer<'a> {
     method_slot_map: FxHashMap<(NominalTypeId, Symbol), u16>,
     /// Static method name to function ID mapping
     static_method_map: FxHashMap<(NominalTypeId, Symbol), FunctionId>,
-    /// Method return type class mapping (for chained method call resolution)
-    method_return_class_map: FxHashMap<(NominalTypeId, Symbol), NominalTypeId>,
-    /// Function return type class mapping (for method dispatch on objects returned from standalone function calls)
-    function_return_class_map: FxHashMap<Symbol, NominalTypeId>,
     /// Function return type alias mapping (for stable object field layout on alias-typed returns)
     function_return_type_alias_map: FxHashMap<Symbol, String>,
     /// Method return TypeId mapping (for ALL return types, not just class types)
@@ -776,9 +772,6 @@ pub struct Lowerer<'a> {
     /// Method return class-name fallback for forward references
     /// (e.g., `accept(): TcpStream | null` declared before `class TcpStream`).
     method_return_type_alias_map: FxHashMap<(NominalTypeId, Symbol), String>,
-    /// Tracks variables holding bound methods: var_name → (nominal_type_id, method_name)
-    /// Used to propagate return types when calling bound method variables.
-    bound_method_vars: FxHashMap<Symbol, (NominalTypeId, Symbol)>,
     /// Variables bound to constructor/class values (e.g. `let C = Box;`).
     constructor_value_ctor_map: FxHashMap<Symbol, Symbol>,
     constructor_value_type_map: FxHashMap<Symbol, TypeId>,
@@ -877,7 +870,7 @@ pub struct Lowerer<'a> {
     variable_object_type_aliases: FxHashMap<Symbol, String>,
     /// Explicit structural projection layout for variables whose static view should
     /// use shape-slot access instead of nominal class dispatch.
-    variable_structural_projection_fields: FxHashMap<Symbol, Vec<(String, usize)>>,
+    projection_layout_cache: FxHashMap<Symbol, Vec<(String, usize)>>,
     /// Canonical structural shapes referenced by this module.
     module_structural_shapes: FxHashMap<u64, Vec<String>>,
     /// Ordered structural layouts referenced by this module.
@@ -1486,10 +1479,6 @@ impl<'a> Lowerer<'a> {
                 self.function_return_type_alias_map
                     .insert(fn_name, ret_name);
             }
-            if let Some(nominal_type_id) = self.try_extract_class_from_type(ret_type) {
-                self.function_return_class_map
-                    .insert(fn_name, nominal_type_id);
-            }
         }
     }
 
@@ -1579,9 +1568,9 @@ impl<'a> Lowerer<'a> {
             refcell_registers: FxHashMap::default(),
             captured_read_vars: FxHashSet::default(),
             refcell_inner_types: FxHashMap::default(),
-            variable_class_map: FxHashMap::default(),
+            nominal_binding_cache: FxHashMap::default(),
             dynamic_any_vars: FxHashSet::default(),
-            array_element_class_map: FxHashMap::default(),
+            array_element_nominal_cache: FxHashMap::default(),
             current_class: None,
             current_method_is_static: false,
             this_register: None,
@@ -1593,12 +1582,9 @@ impl<'a> Lowerer<'a> {
             method_map: FxHashMap::default(),
             method_slot_map: FxHashMap::default(),
             static_method_map: FxHashMap::default(),
-            method_return_class_map: FxHashMap::default(),
-            function_return_class_map: FxHashMap::default(),
             function_return_type_alias_map: FxHashMap::default(),
             method_return_type_map: FxHashMap::default(),
             method_return_type_alias_map: FxHashMap::default(),
-            bound_method_vars: FxHashMap::default(),
             constructor_value_ctor_map: FxHashMap::default(),
             constructor_value_type_map: FxHashMap::default(),
             next_global_index: 0,
@@ -1635,7 +1621,7 @@ impl<'a> Lowerer<'a> {
             variable_object_fields: FxHashMap::default(),
             variable_nested_object_fields: FxHashMap::default(),
             variable_object_type_aliases: FxHashMap::default(),
-            variable_structural_projection_fields: FxHashMap::default(),
+            projection_layout_cache: FxHashMap::default(),
             module_structural_shapes: FxHashMap::default(),
             module_structural_layouts: FxHashMap::default(),
             task_result_type_aliases: FxHashMap::default(),
@@ -2275,7 +2261,7 @@ impl<'a> Lowerer<'a> {
                                         self.structural_static_slot_layout_from_type(imported_ty)
                                     {
                                         if !layout.is_empty() {
-                                            self.variable_structural_projection_fields.insert(
+                                            self.projection_layout_cache.insert(
                                                 local_name,
                                                 layout
                                                     .into_iter()
@@ -2284,7 +2270,7 @@ impl<'a> Lowerer<'a> {
                                                     })
                                                     .collect(),
                                             );
-                                            self.variable_class_map.remove(&local_name);
+                                            self.nominal_binding_cache.remove(&local_name);
                                         }
                                     }
                                 }
@@ -2669,186 +2655,180 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Pre-pass: populate variable_class_map for module-level variable declarations.
-        // This must happen BEFORE the second pass (which lowers functions) so that
-        // functions referencing module-level variables (e.g., `math.abs()` where
-        // `const math = new Math()`) can resolve the correct class type for method dispatch.
+        // Pre-pass: seed module-level nominal/layout caches for non-dynamic nominal lowering.
+        // These caches are convenience lookups only; semantic object meaning still comes from
+        // the semantic lowering plan.
         for raw_stmt in &module.statements {
             let stmt = Self::unwrap_export(raw_stmt);
             self.set_span(stmt.span());
-            if let Statement::VariableDecl(decl) = stmt {
-                if let Pattern::Identifier(ident) = &decl.pattern {
-                    let name = ident.name;
-                    // Track class type from explicit type annotation
-                    if let Some(type_ann) = &decl.type_annotation {
-                        if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
-                            self.variable_class_map.insert(name, nominal_type_id);
-                            self.clear_late_bound_object_binding(name);
-                        }
-                    }
-                    // Track class type from new expression (e.g., `const math = new Math()`)
-                    #[allow(clippy::collapsible_match)]
-                    if !self.variable_class_map.contains_key(&name) {
-                        if let Some(init) = &decl.initializer {
-                            if let ast::Expression::New(new_expr) = init {
-                                if let ast::Expression::Identifier(nominal_type_ident) =
-                                    &*new_expr.callee
-                                {
-                                    let ctor_ty = self
-                                        .get_expr_type(&new_expr.callee)
-                                        .as_u32()
-                                        .ne(&UNRESOLVED_TYPE_ID)
-                                        .then(|| self.get_expr_type(&new_expr.callee))
-                                        .or_else(|| {
-                                            self.type_ctx.lookup_named_type(
-                                                self.interner.resolve(nominal_type_ident.name),
-                                            )
-                                        });
-                                    let nominal_type_id = self
-                                        .resolve_runtime_bound_new_nominal_type(
-                                            nominal_type_ident.name,
-                                            ctor_ty,
-                                            self.get_expr_type(init)
-                                                .as_u32()
-                                                .ne(&UNRESOLVED_TYPE_ID)
-                                                .then(|| self.get_expr_type(init)),
-                                        );
-                                    if let Some(nominal_type_id) = nominal_type_id {
-                                        self.variable_class_map.insert(name, nominal_type_id);
-                                        self.clear_late_bound_object_binding(name);
-                                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                                            eprintln!(
-                                                "[lower] variable_class_map: '{}' = nominal_type_id({}) (from new {}())",
-                                                self.interner.resolve(name),
-                                                nominal_type_id.as_u32(),
-                                                self.interner.resolve(nominal_type_ident.name)
-                                            );
-                                        }
-                                    } else if self
-                                        .import_bindings
-                                        .contains(&nominal_type_ident.name)
-                                        || self.ambient_builtin_globals.contains(
-                                            self.interner.resolve(nominal_type_ident.name),
-                                        )
-                                    {
-                                        self.mark_late_bound_object_binding(
-                                            name,
-                                            nominal_type_ident.name,
-                                            ctor_ty,
-                                        );
-                                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                                            eprintln!(
-                                                "[lower] late_bound_object_vars: '{}' marked (from runtime-bound new {}())",
-                                                self.interner.resolve(name),
-                                                self.interner.resolve(nominal_type_ident.name)
-                                            );
-                                        }
-                                    } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                                        eprintln!(
-                                            "[lower] variable_class_map: '{}' NOT added — class '{}' not in class_map",
-                                            self.interner.resolve(name),
-                                            self.interner.resolve(nominal_type_ident.name)
-                                        );
-                                    }
-                                }
-                            } else if let ast::Expression::TypeCast(cast) = init {
-                                // Preserve class dispatch for import bindings such as:
-                                //   const path = (__std_exports___node_path.default as __t___node_path_NodePath);
-                                if let Some(nominal_type_id) =
-                                    self.try_extract_class_from_type(&cast.target_type)
-                                {
-                                    self.variable_class_map.insert(name, nominal_type_id);
-                                    self.clear_late_bound_object_binding(name);
-                                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                                        eprintln!(
-                                            "[lower] variable_class_map: '{}' = nominal_type_id({}) (from cast)",
-                                            self.interner.resolve(name),
-                                            nominal_type_id.as_u32(),
-                                        );
-                                    }
-                                }
-                            } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                                // Log why annotation-less non-new expressions are skipped
-                                let var_name = self.interner.resolve(name);
-                                if !var_name.starts_with('_') {
+            let Statement::VariableDecl(decl) = stmt else {
+                continue;
+            };
+            let Pattern::Identifier(ident) = &decl.pattern else {
+                continue;
+            };
+
+            let name = ident.name;
+
+            if let Some(type_ann) = &decl.type_annotation {
+                if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
+                    self.nominal_binding_cache.insert(name, nominal_type_id);
+                    self.clear_late_bound_object_binding(name);
+                }
+            }
+
+            if let Some(init) = &decl.initializer {
+                match init {
+                    ast::Expression::New(new_expr) => {
+                        if let ast::Expression::Identifier(nominal_type_ident) = &*new_expr.callee {
+                            let ctor_ty = self
+                                .get_expr_type(&new_expr.callee)
+                                .as_u32()
+                                .ne(&UNRESOLVED_TYPE_ID)
+                                .then(|| self.get_expr_type(&new_expr.callee))
+                                .or_else(|| {
+                                    self.type_ctx
+                                        .lookup_named_type(self.interner.resolve(nominal_type_ident.name))
+                                });
+                            let nominal_type_id = self.resolve_runtime_bound_new_nominal_type(
+                                nominal_type_ident.name,
+                                ctor_ty,
+                                self.get_expr_type(init)
+                                    .as_u32()
+                                    .ne(&UNRESOLVED_TYPE_ID)
+                                    .then(|| self.get_expr_type(init)),
+                            );
+                            if let Some(nominal_type_id) = nominal_type_id {
+                                self.nominal_binding_cache.insert(name, nominal_type_id);
+                                self.clear_late_bound_object_binding(name);
+                                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                     eprintln!(
-                                        "[lower] variable_class_map: '{}' NOT added — initializer is not a new-expr and no class type annotation",
-                                        var_name
+                                        "[lower] nominal_binding_cache: '{}' = nominal_type_id({}) (from new {}())",
+                                        self.interner.resolve(name),
+                                        nominal_type_id.as_u32(),
+                                        self.interner.resolve(nominal_type_ident.name)
                                     );
                                 }
+                            } else if self.import_bindings.contains(&nominal_type_ident.name)
+                                || self
+                                    .ambient_builtin_globals
+                                    .contains(self.interner.resolve(nominal_type_ident.name))
+                            {
+                                self.mark_late_bound_object_binding(
+                                    name,
+                                    nominal_type_ident.name,
+                                    ctor_ty,
+                                );
+                                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                    eprintln!(
+                                        "[lower] late_bound_object_vars: '{}' marked (from runtime-bound new {}())",
+                                        self.interner.resolve(name),
+                                        self.interner.resolve(nominal_type_ident.name)
+                                    );
+                                }
+                            } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                eprintln!(
+                                    "[lower] nominal_binding_cache: '{}' NOT added — unresolved constructor '{}'",
+                                    self.interner.resolve(name),
+                                    self.interner.resolve(nominal_type_ident.name)
+                                );
                             }
                         }
-                    } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                        let var_name = self.interner.resolve(name);
-                        eprintln!(
-                            "[lower] variable_class_map: '{}' added from type annotation",
-                            var_name
-                        );
                     }
-                    // Populate object field layout for __std_exports_<tag> variables.
-                    // When the initializer is `__std_module_<tag>()`, the return type is
-                    // `__std_exports_type_<tag>` whose field layout is already known.
-                    // Populating variable_object_fields here makes has_concrete_layout=true
-                    // in lower_member, so LoadFieldExact (static index) is emitted instead of
-                    // LateBoundMember (name-based lookup that returns null at runtime).
-                    if let Some(init) = &decl.initializer {
-                        let (call_expr, cast_alias_name) = match init {
-                            ast::Expression::Call(call_expr) => (Some(call_expr), None),
-                            ast::Expression::TypeCast(cast) => {
-                                let alias_name = match &cast.target_type.ty {
-                                    ast::Type::Reference(type_ref) => {
-                                        Some(self.interner.resolve(type_ref.name.name).to_string())
-                                    }
-                                    _ => None,
-                                };
-                                if let ast::Expression::Call(call_expr) = &*cast.object {
-                                    (Some(call_expr), alias_name)
-                                } else {
-                                    (None, alias_name)
-                                }
+                    ast::Expression::TypeCast(cast) => {
+                        if let Some(nominal_type_id) =
+                            self.try_extract_class_from_type(&cast.target_type)
+                        {
+                            self.nominal_binding_cache.insert(name, nominal_type_id);
+                            self.clear_late_bound_object_binding(name);
+                            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                eprintln!(
+                                    "[lower] nominal_binding_cache: '{}' = nominal_type_id({}) (from cast)",
+                                    self.interner.resolve(name),
+                                    nominal_type_id.as_u32(),
+                                );
                             }
-                            _ => (None, None),
-                        };
+                        }
+                    }
+                    _ => {
+                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                            let var_name = self.interner.resolve(name);
+                            if !var_name.starts_with('_') {
+                                eprintln!(
+                                    "[lower] nominal_binding_cache: '{}' NOT added — initializer is not a new-expr and no class type annotation",
+                                    var_name
+                                );
+                            }
+                        }
+                    }
+                }
+            } else if decl.type_annotation.is_some() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok()
+            {
+                eprintln!(
+                    "[lower] nominal_binding_cache: '{}' added from type annotation",
+                    self.interner.resolve(name)
+                );
+            }
 
-                        if let Some(call_expr) = call_expr {
-                            if let ast::Expression::Identifier(func_ident) = &*call_expr.callee {
-                                let func_name = self.interner.resolve(func_ident.name).to_string();
-                                let inferred_alias =
-                                    if let Some(tag) = func_name.strip_prefix("__std_module_") {
-                                        Some(format!("__std_exports_type_{}", tag))
-                                    } else if let Some(module_id) =
-                                        func_name.strip_prefix("__raya_mod_init_")
-                                    {
-                                        Some(format!("__raya_mod_exports_type_{}", module_id))
-                                    } else {
-                                        None
-                                    };
-                                if let Some(alias_name) = cast_alias_name.or(inferred_alias) {
-                                    if let Some(fields) =
-                                        self.type_alias_object_fields.get(&alias_name).cloned()
-                                    {
-                                        let field_layout: Vec<(String, usize)> = fields
+            // Populate object field layout for __std_exports_<tag> variables.
+            if let Some(init) = &decl.initializer {
+                let (call_expr, cast_alias_name) = match init {
+                    ast::Expression::Call(call_expr) => (Some(call_expr), None),
+                    ast::Expression::TypeCast(cast) => {
+                        let alias_name = match &cast.target_type.ty {
+                            ast::Type::Reference(type_ref) => {
+                                Some(self.interner.resolve(type_ref.name.name).to_string())
+                            }
+                            _ => None,
+                        };
+                        if let ast::Expression::Call(call_expr) = &*cast.object {
+                            (Some(call_expr), alias_name)
+                        } else {
+                            (None, alias_name)
+                        }
+                    }
+                    _ => (None, None),
+                };
+
+                if let Some(call_expr) = call_expr {
+                    if let ast::Expression::Identifier(func_ident) = &*call_expr.callee {
+                        let func_name = self.interner.resolve(func_ident.name).to_string();
+                        let inferred_alias = if let Some(tag) = func_name.strip_prefix("__std_module_")
+                        {
+                            Some(format!("__std_exports_type_{}", tag))
+                        } else if let Some(module_id) = func_name.strip_prefix("__raya_mod_init_") {
+                            Some(format!("__raya_mod_exports_type_{}", module_id))
+                        } else {
+                            None
+                        };
+                        if let Some(alias_name) = cast_alias_name.or(inferred_alias) {
+                            if let Some(fields) =
+                                self.type_alias_object_fields.get(&alias_name).cloned()
+                            {
+                                let field_layout: Vec<(String, usize)> = fields
+                                    .iter()
+                                    .map(|(n, idx, _)| (n.clone(), *idx as usize))
+                                    .collect();
+                                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                    eprintln!(
+                                        "[lower] __std_exports prepass: '{}' -> alias='{}' fields=[{}]",
+                                        self.interner.resolve(name),
+                                        alias_name,
+                                        field_layout
                                             .iter()
-                                            .map(|(n, idx, _)| (n.clone(), *idx as usize))
-                                            .collect();
-                                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                                            eprintln!(
-                                                "[lower] __std_exports prepass: '{}' -> alias='{}' fields=[{}]",
-                                                self.interner.resolve(name),
-                                                alias_name,
-                                                field_layout.iter().map(|(n,i)| format!("{}:{}", n, i)).collect::<Vec<_>>().join(", ")
-                                            );
-                                        }
-                                        self.variable_object_fields.insert(name, field_layout);
-                                        self.variable_object_type_aliases.insert(name, alias_name);
-                                    } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                                        eprintln!(
-                                            "[lower] __std_exports prepass: '{}' -> alias='{}' NOT FOUND in type_alias_object_fields",
-                                            self.interner.resolve(name),
-                                            alias_name
-                                        );
-                                    }
+                                            .map(|(n, i)| format!("{}:{}", n, i))
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    );
                                 }
+                                self.variable_object_fields.insert(name, field_layout);
+                                self.variable_object_type_aliases.insert(name, alias_name);
+                            } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                eprintln!(
+                                    "[lower] __std_exports prepass: '{}' -> alias='{}' NOT FOUND in type_alias_object_fields",
+                                    self.interner.resolve(name),
+                                    alias_name
+                                );
                             }
                         }
                     }
@@ -3841,12 +3821,7 @@ impl<'a> Lowerer<'a> {
                         }
 
                         if let Some(ret_type) = &method.return_type {
-                            if let Some(ret_nominal_type_id) =
-                                self.try_extract_class_from_type(ret_type)
-                            {
-                                self.method_return_class_map
-                                    .insert((nominal_type_id, method_name), ret_nominal_type_id);
-                            } else if let Some(ret_class_name) =
+                            if let Some(ret_class_name) =
                                 self.try_extract_class_name_from_type(ret_type)
                             {
                                 self.method_return_type_alias_map
@@ -4270,24 +4245,24 @@ impl<'a> Lowerer<'a> {
                         if let Some(layout) =
                             self.structural_projection_layout_from_type_id(expected_ty)
                         {
-                            self.variable_structural_projection_fields
+                            self.projection_layout_cache
                                 .insert(ident.name, layout);
-                            self.variable_class_map.remove(&ident.name);
+                            self.nominal_binding_cache.remove(&ident.name);
                         } else {
-                            self.variable_structural_projection_fields
+                            self.projection_layout_cache
                                 .remove(&ident.name);
-                            self.variable_class_map.remove(&ident.name);
+                            self.nominal_binding_cache.remove(&ident.name);
                         }
                     } else {
-                        self.variable_structural_projection_fields
+                        self.projection_layout_cache
                             .remove(&ident.name);
                     }
                     if let Some(nominal_type_id) = nominal_type_id {
-                        self.variable_class_map.insert(ident.name, nominal_type_id);
+                        self.nominal_binding_cache.insert(ident.name, nominal_type_id);
                         self.clear_late_bound_object_binding(ident.name);
                     } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
-                        self.variable_class_map.remove(&ident.name);
-                        self.variable_structural_projection_fields
+                        self.nominal_binding_cache.remove(&ident.name);
+                        self.projection_layout_cache
                             .remove(&ident.name);
                         self.mark_late_bound_object_binding(ident.name, ctor_symbol, ctor_type);
                     } else {
@@ -4992,7 +4967,7 @@ impl<'a> Lowerer<'a> {
                             fixed_param_count = 1;
                         }
                         if let Some(this_sym) = self.interner.lookup("this") {
-                            self.variable_class_map.insert(this_sym, nominal_type_id);
+                            self.nominal_binding_cache.insert(this_sym, nominal_type_id);
                         }
                         let has_destructuring = method.params.iter().any(|p| {
                             !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
@@ -5116,25 +5091,25 @@ impl<'a> Lowerer<'a> {
                                     if let Some(layout) =
                                         self.structural_projection_layout_from_type_id(expected_ty)
                                     {
-                                        self.variable_structural_projection_fields
+                                        self.projection_layout_cache
                                             .insert(ident.name, layout);
-                                        self.variable_class_map.remove(&ident.name);
+                                        self.nominal_binding_cache.remove(&ident.name);
                                     } else {
-                                        self.variable_structural_projection_fields
+                                        self.projection_layout_cache
                                             .remove(&ident.name);
-                                        self.variable_class_map.remove(&ident.name);
+                                        self.nominal_binding_cache.remove(&ident.name);
                                     }
                                 } else {
-                                    self.variable_structural_projection_fields
+                                    self.projection_layout_cache
                                         .remove(&ident.name);
                                 }
                                 if let Some(param_nominal_type_id) = param_nominal_type_id {
-                                    self.variable_class_map
+                                    self.nominal_binding_cache
                                         .insert(ident.name, param_nominal_type_id);
                                     self.clear_late_bound_object_binding(ident.name);
                                 } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
-                                    self.variable_class_map.remove(&ident.name);
-                                    self.variable_structural_projection_fields
+                                    self.nominal_binding_cache.remove(&ident.name);
+                                    self.projection_layout_cache
                                         .remove(&ident.name);
                                     self.mark_late_bound_object_binding(
                                         ident.name,
@@ -5381,7 +5356,7 @@ impl<'a> Lowerer<'a> {
                     self.current_method_is_static = false;
                     self.this_register = None;
                     if let Some(this_sym) = self.interner.lookup("this") {
-                        self.variable_class_map.remove(&this_sym);
+                        self.nominal_binding_cache.remove(&this_sym);
                     }
                     self.current_method_env_globals = None;
                 }
@@ -5437,7 +5412,7 @@ impl<'a> Lowerer<'a> {
                 params.push(this_reg.clone());
                 self.this_register = Some(this_reg);
                 if let Some(this_sym) = self.interner.lookup("this") {
-                    self.variable_class_map.insert(this_sym, nominal_type_id);
+                    self.nominal_binding_cache.insert(this_sym, nominal_type_id);
                 }
                 self.next_local = 1; // Explicit parameters start at slot 1
 
@@ -5543,25 +5518,25 @@ impl<'a> Lowerer<'a> {
                                 if let Some(layout) =
                                     self.structural_projection_layout_from_type_id(expected_ty)
                                 {
-                                    self.variable_structural_projection_fields
+                                    self.projection_layout_cache
                                         .insert(ident.name, layout);
-                                    self.variable_class_map.remove(&ident.name);
+                                    self.nominal_binding_cache.remove(&ident.name);
                                 } else {
-                                    self.variable_structural_projection_fields
+                                    self.projection_layout_cache
                                         .remove(&ident.name);
-                                    self.variable_class_map.remove(&ident.name);
+                                    self.nominal_binding_cache.remove(&ident.name);
                                 }
                             } else {
-                                self.variable_structural_projection_fields
+                                self.projection_layout_cache
                                     .remove(&ident.name);
                             }
                             if let Some(param_nominal_type_id) = param_nominal_type_id {
-                                self.variable_class_map
+                                self.nominal_binding_cache
                                     .insert(ident.name, param_nominal_type_id);
                                 self.clear_late_bound_object_binding(ident.name);
                             } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
-                                self.variable_class_map.remove(&ident.name);
-                                self.variable_structural_projection_fields
+                                self.nominal_binding_cache.remove(&ident.name);
+                                self.projection_layout_cache
                                     .remove(&ident.name);
                                 self.mark_late_bound_object_binding(
                                     ident.name,
@@ -5761,7 +5736,7 @@ impl<'a> Lowerer<'a> {
                 self.this_register = None;
                 self.pending_constructor_prologue = None;
                 if let Some(this_sym) = self.interner.lookup("this") {
-                    self.variable_class_map.remove(&this_sym);
+                    self.nominal_binding_cache.remove(&this_sym);
                 }
                 self.current_method_env_globals = None;
                 break; // Only one constructor
@@ -5832,7 +5807,7 @@ impl<'a> Lowerer<'a> {
             let this_reg = self.alloc_register(this_ty);
             self.this_register = Some(this_reg.clone());
             if let Some(this_sym) = self.interner.lookup("this") {
-                self.variable_class_map.insert(this_sym, nominal_type_id);
+                self.nominal_binding_cache.insert(this_sym, nominal_type_id);
             }
             let mut params = vec![this_reg.clone()];
             let mut forwarded_args = Vec::with_capacity(forwarded_param_count + 1);
@@ -5897,7 +5872,7 @@ impl<'a> Lowerer<'a> {
             self.this_register = None;
             self.pending_constructor_prologue = None;
             if let Some(this_sym) = self.interner.lookup("this") {
-                self.variable_class_map.remove(&this_sym);
+                self.nominal_binding_cache.remove(&this_sym);
             }
             self.current_method_env_globals = None;
         }
@@ -7397,8 +7372,6 @@ impl<'a> Lowerer<'a> {
                         .and_then(|class_ty| self.nominal_type_id_from_type_id(class_ty))
                 })
             })
-            .or_else(|| self.class_map.get(&constructor_symbol).copied())
-            .or_else(|| self.variable_class_map.get(&constructor_symbol).copied())
             .or_else(|| {
                 self.nominal_type_id_from_type_name(self.interner.resolve(constructor_symbol))
             })
@@ -8094,20 +8067,23 @@ impl<'a> Lowerer<'a> {
         self.mark_constructor_value_binding(name, name, Some(constructor_ty));
         if let Some(layout) = self.structural_static_slot_layout_from_type(constructor_ty) {
             if !layout.is_empty() {
-                self.variable_structural_projection_fields.insert(
+                self.projection_layout_cache.insert(
                     name,
                     layout
                         .into_iter()
                         .map(|(field_name, field_idx)| (field_name, field_idx as usize))
                         .collect(),
                 );
-                self.variable_class_map.remove(&name);
+                self.nominal_binding_cache.remove(&name);
             }
         }
     }
 
     pub(super) fn identifier_requires_late_bound_dispatch(&self, name: Symbol) -> bool {
-        if self.class_map.contains_key(&name) {
+        let resolved = self.interner.resolve(name);
+        if self.nominal_type_id_from_type_name(resolved).is_some()
+            || self.type_registry.has_builtin_dispatch_type(resolved)
+        {
             return false;
         }
 
@@ -8117,17 +8093,16 @@ impl<'a> Lowerer<'a> {
             return true;
         }
 
-        if self
-            .variable_structural_projection_fields
-            .contains_key(&name)
+        if self.variable_object_type_aliases.contains_key(&name)
+            || self
+                .constructor_value_type_map
+                .get(&name)
+                .is_some_and(|ty| self.type_has_construct_signature(*ty))
         {
             return false;
         }
 
-        let resolved = self.interner.resolve(name);
         self.ambient_builtin_globals.contains(resolved)
-            && !self.class_map.contains_key(&name)
-            && !self.variable_class_map.contains_key(&name)
     }
 
     pub(super) fn type_requires_late_bound_dispatch(&self, ty_id: TypeId) -> bool {
@@ -8592,7 +8567,7 @@ mod nominal_type_identity_tests {
 
         let env_sym = interner.lookup("env").expect("env symbol");
         let env_nominal_type_id = lowerer
-            .variable_class_map
+            .nominal_binding_cache
             .get(&env_sym)
             .copied()
             .expect("env variable should have class mapping");
@@ -8651,69 +8626,13 @@ mod nominal_type_identity_tests {
             .expect("logger alias should resolve");
         let logger_sym = interner.lookup("logger").expect("logger symbol");
         let var_class = lowerer
-            .variable_class_map
+            .nominal_binding_cache
             .get(&logger_sym)
             .copied()
             .expect("logger variable should preserve class mapping");
         assert_eq!(
             var_class, nominal_type_id,
             "logger cast alias should preserve LoggerNamespace class id"
-        );
-    }
-
-    #[test]
-    fn function_and_method_nullable_class_returns_preserve_nominal_type_identity() {
-        let source = r#"
-            class JsonValue {
-                get(): JsonValue | null { return null; }
-            }
-            class Util {
-                static mk(): JsonValue | null { return null; }
-            }
-
-            function make(): JsonValue | null { return null; }
-
-            const fromFn = make();
-            const base = new JsonValue();
-            const fromMethod = base.get();
-            const fromStatic = Util.mk();
-        "#;
-
-        let parser = Parser::new(source).expect("lexer error");
-        let (module, interner) = parser.parse().expect("parse error");
-        let type_ctx = TypeContext::new();
-        let mut lowerer = Lowerer::new(&type_ctx, &interner);
-        let _ir = lowerer.lower_module(&module);
-        assert!(
-            lowerer.errors().is_empty(),
-            "unexpected lowerer errors: {:?}",
-            lowerer.errors()
-        );
-
-        let json_sym = interner.lookup("JsonValue").expect("JsonValue symbol");
-        let json_class = lowerer
-            .class_map
-            .get(&json_sym)
-            .copied()
-            .expect("JsonValue class id");
-
-        let from_fn_sym = interner.lookup("fromFn").expect("fromFn symbol");
-        let from_method_sym = interner.lookup("fromMethod").expect("fromMethod symbol");
-        let from_static_sym = interner.lookup("fromStatic").expect("fromStatic symbol");
-        assert_eq!(
-            lowerer.variable_class_map.get(&from_fn_sym).copied(),
-            Some(json_class),
-            "function nullable return should preserve class id"
-        );
-        assert_eq!(
-            lowerer.variable_class_map.get(&from_method_sym).copied(),
-            Some(json_class),
-            "method nullable return should preserve class id"
-        );
-        assert_eq!(
-            lowerer.variable_class_map.get(&from_static_sym).copied(),
-            Some(json_class),
-            "static nullable return should preserve class id"
         );
     }
 

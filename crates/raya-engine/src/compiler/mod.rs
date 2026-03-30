@@ -48,7 +48,7 @@ use crate::parser::ast;
 use crate::parser::Interner;
 use crate::parser::TypeContext;
 use crate::parser::TypeId;
-use crate::semantics::{build_semantic_lowering_plan, SemanticProfile};
+use crate::semantics::{build_semantic_lowering_plan_with_types, SemanticProfile};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{HashMap, HashSet};
 
@@ -220,7 +220,13 @@ impl<'a> Compiler<'a> {
         emit_sourcemap: bool,
     ) -> lower::Lowerer<'_> {
         let semantic_plan =
-            build_semantic_lowering_plan(module, self.interner, self.semantic_profile);
+            build_semantic_lowering_plan_with_types(
+                module,
+                self.interner,
+                self.semantic_profile,
+                Some(&self.type_ctx),
+                Some(&self.expr_types),
+            );
         lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
             .with_type_annotation_types(self.type_annotation_types.clone())
             .with_sourcemap(emit_sourcemap)

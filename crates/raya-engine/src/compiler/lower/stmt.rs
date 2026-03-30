@@ -801,29 +801,6 @@ impl<'a> Lowerer<'a> {
             _ => None,
         };
 
-        // Infer element class type from the iterable for field access resolution
-        if let Some(var_name) = loop_var_name {
-            // Check if iterable is a variable with known array element class type
-            if let ast::Expression::Identifier(iter_ident) = &for_of.right {
-                if let Some(&elem_nominal_type_id) =
-                    self.array_element_class_map.get(&iter_ident.name)
-                {
-                    self.variable_class_map
-                        .insert(var_name, elem_nominal_type_id);
-                }
-            }
-            // Also check if the for-of variable has a type annotation
-            if let ast::ForOfLeft::VariableDecl(decl) = &for_of.left {
-                if let Some(type_ann) = &decl.type_annotation {
-                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
-                        if let Some(&nominal_type_id) = self.class_map.get(&type_ref.name.name) {
-                            self.variable_class_map.insert(var_name, nominal_type_id);
-                        }
-                    }
-                }
-            }
-        }
-
         // Bind the loop variable (supports destructuring patterns)
 
         match &for_of.left {
@@ -2138,16 +2115,16 @@ impl<'a> Lowerer<'a> {
         type_ann: &ast::TypeAnnotation,
     ) {
         if self.try_extract_class_from_type(type_ann).is_some() {
-            self.variable_structural_projection_fields.remove(&name);
+            self.projection_layout_cache.remove(&name);
             return;
         }
 
         let ty = self.resolve_structural_slot_type_from_annotation(type_ann);
         if let Some(layout) = self.structural_projection_layout_from_type_id(ty) {
-            self.variable_structural_projection_fields
+            self.projection_layout_cache
                 .insert(name, layout);
         } else {
-            self.variable_structural_projection_fields.remove(&name);
+            self.projection_layout_cache.remove(&name);
         }
     }
 
@@ -2240,7 +2217,7 @@ impl<'a> Lowerer<'a> {
         };
 
         if let Some(layout) = projected_layout {
-            self.variable_structural_projection_fields
+            self.projection_layout_cache
                 .insert(name, layout);
         }
     }
@@ -2282,12 +2259,7 @@ impl<'a> Lowerer<'a> {
                     self.type_alias_object_fields.contains_key(*name)
                         || self.nominal_type_id_from_type_name(name).is_some()
                 })
-                .cloned()
-                .or_else(|| {
-                    self.function_return_class_map
-                        .get(&ident.name)
-                        .and_then(|cid| class_name_from_id(*cid))
-                }),
+                .cloned(),
             ast::Expression::Member(member) => {
                 let nominal_type_id = self.infer_nominal_type_id(&member.object);
                 nominal_type_id.and_then(|cid| {
@@ -2298,11 +2270,6 @@ impl<'a> Lowerer<'a> {
                                 || self.nominal_type_id_from_type_name(name).is_some()
                         })
                         .cloned()
-                        .or_else(|| {
-                            self.method_return_class_map
-                                .get(&(cid, member.property.name))
-                                .and_then(|ret_cid| class_name_from_id(*ret_cid))
-                        })
                 })
             }
             _ => None,
@@ -2369,13 +2336,12 @@ impl<'a> Lowerer<'a> {
         };
 
         // Reset stale per-name inference from other scopes before rebinding this declaration.
-        self.variable_class_map.remove(&name);
-        self.array_element_class_map.remove(&name);
-        self.bound_method_vars.remove(&name);
+        self.nominal_binding_cache.remove(&name);
+        self.array_element_nominal_cache.remove(&name);
         self.variable_object_fields.remove(&name);
         self.variable_nested_object_fields.remove(&name);
         self.variable_object_type_aliases.remove(&name);
-        self.variable_structural_projection_fields.remove(&name);
+        self.projection_layout_cache.remove(&name);
         self.task_result_type_aliases.remove(&name);
         self.callable_symbol_hints.remove(&name);
         self.clear_late_bound_object_binding(name);
@@ -2594,23 +2560,23 @@ impl<'a> Lowerer<'a> {
                     // Track class type from type annotation (same as local path)
                     if let Some(type_ann) = &decl.type_annotation {
                         if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
-                            self.variable_class_map.insert(name, nominal_type_id);
+                            self.nominal_binding_cache.insert(name, nominal_type_id);
                             self.clear_late_bound_object_binding(name);
                         }
                         self.track_variable_object_alias_from_annotation(name, type_ann);
                         self.track_variable_structural_projection_from_annotation(name, type_ann);
                         if self
-                            .variable_structural_projection_fields
+                            .projection_layout_cache
                             .contains_key(&name)
                         {
-                            self.variable_class_map.remove(&name);
+                            self.nominal_binding_cache.remove(&name);
                         }
                         if let ast::Type::Array(arr_ty) = &type_ann.ty {
                             if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
                                 if let Some(&nominal_type_id) =
                                     self.class_map.get(&elem_ref.name.name)
                                 {
-                                    self.array_element_class_map.insert(name, nominal_type_id);
+                                    self.array_element_nominal_cache.insert(name, nominal_type_id);
                                 }
                             }
                         }
@@ -2646,7 +2612,7 @@ impl<'a> Lowerer<'a> {
                                     .then(|| self.get_expr_type(init)),
                             );
                             if let Some(nominal_type_id) = nominal_type_id {
-                                self.variable_class_map.insert(name, nominal_type_id);
+                                self.nominal_binding_cache.insert(name, nominal_type_id);
                                 self.clear_late_bound_object_binding(name);
                             } else if self.import_bindings.contains(&ident.name)
                                 || self
@@ -2686,37 +2652,21 @@ impl<'a> Lowerer<'a> {
                         .infer_nominal_type_id(init)
                         .or_else(|| self.nominal_type_id_for_class_expression(init))
                     {
-                        self.variable_class_map.insert(name, nominal_type_id);
+                        self.nominal_binding_cache.insert(name, nominal_type_id);
                         self.clear_late_bound_object_binding(name);
                     }
                     if explicit_dynamic_any_annotation {
-                        self.variable_class_map.remove(&name);
+                        self.nominal_binding_cache.remove(&name);
                         self.clear_late_bound_object_binding(name);
                     }
                     self.track_task_result_alias_from_initializer(name, init);
                     self.track_variable_object_alias_from_initializer(name, init);
                     self.track_variable_structural_projection_from_initializer(name, init);
                     if self
-                        .variable_structural_projection_fields
+                        .projection_layout_cache
                         .contains_key(&name)
                     {
-                        self.variable_class_map.remove(&name);
-                    }
-
-                    // Track bound method variables (e.g., `let f = obj.method`)
-                    if !self.js_this_binding_compat && matches!(init, ast::Expression::Member(_)) {
-                        let ast::Expression::Member(member) = init else {
-                            unreachable!()
-                        };
-                        if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
-                            if self
-                                .find_method_slot(nominal_type_id, member.property.name)
-                                .is_some()
-                            {
-                                self.bound_method_vars
-                                    .insert(name, (nominal_type_id, member.property.name));
-                            }
-                        }
+                        self.nominal_binding_cache.remove(&name);
                     }
 
                     // Track if this is an async arrow function assigned to a global
@@ -2756,11 +2706,9 @@ impl<'a> Lowerer<'a> {
                     // This is critical for imported/default-exported factories where
                     // pre-lowering AST inference may miss the concrete class, but
                     // the checker/lowered register type is already precise.
-                    if !self.variable_class_map.contains_key(&name) {
-                        if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
-                            self.variable_class_map.insert(name, nominal_type_id);
-                            self.clear_late_bound_object_binding(name);
-                        }
+                    if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
+                        self.nominal_binding_cache.insert(name, nominal_type_id);
+                        self.clear_late_bound_object_binding(name);
                     }
                     if self.type_uses_runtime_handle_dispatch(value.ty) {
                         self.clear_late_bound_object_binding(name);
@@ -2779,21 +2727,17 @@ impl<'a> Lowerer<'a> {
                     {
                         self.clear_late_bound_object_binding(name);
                     }
-                    if !self
-                        .variable_structural_projection_fields
-                        .contains_key(&name)
-                        && !keep_late_bound_builtin_dispatch
-                    {
+                    if !keep_late_bound_builtin_dispatch {
                         if let Some(layout) =
                             self.structural_projection_layout_from_type_id(value.ty)
                         {
-                            self.variable_structural_projection_fields
+                            self.projection_layout_cache
                                 .insert(name, layout);
-                            self.variable_class_map.remove(&name);
+                            self.nominal_binding_cache.remove(&name);
                         }
                     }
                     if explicit_dynamic_any_annotation {
-                        self.variable_class_map.remove(&name);
+                        self.nominal_binding_cache.remove(&name);
                         self.clear_late_bound_object_binding(name);
                     }
 
@@ -2848,7 +2792,7 @@ impl<'a> Lowerer<'a> {
                         self.resolve_structural_slot_type_from_annotation(type_ann),
                     ) {
                         self.dynamic_any_vars.insert(name);
-                        self.variable_class_map.remove(&name);
+                        self.nominal_binding_cache.remove(&name);
                         self.clear_late_bound_object_binding(name);
                     } else {
                         self.dynamic_any_vars.remove(&name);
@@ -2927,25 +2871,25 @@ impl<'a> Lowerer<'a> {
             }
             // Track class type from explicit type annotation FIRST (highest priority).
             // This must come before other inference to override stale entries from other scopes
-            // (variable_class_map is a flat map without scope tracking).
+            // (nominal_binding_cache is a flat map without scope tracking).
             if let Some(type_ann) = &decl.type_annotation {
                 if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
-                    self.variable_class_map.insert(name, nominal_type_id);
+                    self.nominal_binding_cache.insert(name, nominal_type_id);
                     self.clear_late_bound_object_binding(name);
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
                 self.track_variable_structural_projection_from_annotation(name, type_ann);
                 if self
-                    .variable_structural_projection_fields
+                    .projection_layout_cache
                     .contains_key(&name)
                 {
-                    self.variable_class_map.remove(&name);
+                    self.nominal_binding_cache.remove(&name);
                 }
                 // Track array element class type (e.g., `let items: Item[] = [...]`)
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
                     if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
                         if let Some(&nominal_type_id) = self.class_map.get(&elem_ref.name.name) {
-                            self.array_element_class_map.insert(name, nominal_type_id);
+                            self.array_element_nominal_cache.insert(name, nominal_type_id);
                         }
                     }
                 }
@@ -2982,7 +2926,7 @@ impl<'a> Lowerer<'a> {
                             .then(|| self.get_expr_type(init)),
                     );
                     if let Some(nominal_type_id) = nominal_type_id {
-                        self.variable_class_map.insert(name, nominal_type_id);
+                        self.nominal_binding_cache.insert(name, nominal_type_id);
                         self.clear_late_bound_object_binding(name);
                     } else if self.import_bindings.contains(&ident.name)
                         || self
@@ -3022,37 +2966,21 @@ impl<'a> Lowerer<'a> {
                 .infer_nominal_type_id(init)
                 .or_else(|| self.nominal_type_id_for_class_expression(init))
             {
-                self.variable_class_map.insert(name, nominal_type_id);
+                self.nominal_binding_cache.insert(name, nominal_type_id);
                 self.clear_late_bound_object_binding(name);
             }
             if explicit_dynamic_any_annotation {
-                self.variable_class_map.remove(&name);
+                self.nominal_binding_cache.remove(&name);
                 self.clear_late_bound_object_binding(name);
             }
             self.track_task_result_alias_from_initializer(name, init);
             self.track_variable_object_alias_from_initializer(name, init);
             self.track_variable_structural_projection_from_initializer(name, init);
             if self
-                .variable_structural_projection_fields
+                .projection_layout_cache
                 .contains_key(&name)
             {
-                self.variable_class_map.remove(&name);
-            }
-
-            // Track bound method variables (e.g., `let f = obj.method`)
-            if !self.js_this_binding_compat && matches!(init, ast::Expression::Member(_)) {
-                let ast::Expression::Member(member) = init else {
-                    unreachable!()
-                };
-                if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
-                    if self
-                        .find_method_slot(nominal_type_id, member.property.name)
-                        .is_some()
-                    {
-                        self.bound_method_vars
-                            .insert(name, (nominal_type_id, member.property.name));
-                    }
-                }
+                self.nominal_binding_cache.remove(&name);
             }
 
             // Track if this is an arrow function for async closure detection
@@ -3082,11 +3010,9 @@ impl<'a> Lowerer<'a> {
             // Fallback class capture from lowered value type.
             // Helps preserve receiver typing for chained calls on values returned
             // from imports/factories when AST-only inference was inconclusive.
-            if !self.variable_class_map.contains_key(&name) {
-                if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
-                    self.variable_class_map.insert(name, nominal_type_id);
-                    self.clear_late_bound_object_binding(name);
-                }
+            if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
+                self.nominal_binding_cache.insert(name, nominal_type_id);
+                self.clear_late_bound_object_binding(name);
             }
             if self.type_uses_runtime_handle_dispatch(value.ty) {
                 self.clear_late_bound_object_binding(name);
@@ -3105,19 +3031,15 @@ impl<'a> Lowerer<'a> {
             {
                 self.clear_late_bound_object_binding(name);
             }
-            if !self
-                .variable_structural_projection_fields
-                .contains_key(&name)
-                && !keep_late_bound_builtin_dispatch
-            {
+            if !keep_late_bound_builtin_dispatch {
                 if let Some(layout) = self.structural_projection_layout_from_type_id(value.ty) {
-                    self.variable_structural_projection_fields
+                    self.projection_layout_cache
                         .insert(name, layout);
-                    self.variable_class_map.remove(&name);
+                    self.nominal_binding_cache.remove(&name);
                 }
             }
             if explicit_dynamic_any_annotation {
-                self.variable_class_map.remove(&name);
+                self.nominal_binding_cache.remove(&name);
                 self.clear_late_bound_object_binding(name);
             }
 
@@ -3260,20 +3182,20 @@ impl<'a> Lowerer<'a> {
                     self.dynamic_any_vars.remove(&name);
                 }
                 if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
-                    self.variable_class_map.insert(name, nominal_type_id);
+                    self.nominal_binding_cache.insert(name, nominal_type_id);
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
                 self.track_variable_structural_projection_from_annotation(name, type_ann);
                 if self
-                    .variable_structural_projection_fields
+                    .projection_layout_cache
                     .contains_key(&name)
                 {
-                    self.variable_class_map.remove(&name);
+                    self.nominal_binding_cache.remove(&name);
                 }
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
                     if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
                         if let Some(&nominal_type_id) = self.class_map.get(&elem_ref.name.name) {
-                            self.array_element_class_map.insert(name, nominal_type_id);
+                            self.array_element_nominal_cache.insert(name, nominal_type_id);
                         }
                     }
                 }
@@ -3284,7 +3206,7 @@ impl<'a> Lowerer<'a> {
                 if self.type_is_dynamic_any_like(
                     self.resolve_structural_slot_type_from_annotation(type_ann),
                 ) {
-                    self.variable_class_map.remove(&name);
+                    self.nominal_binding_cache.remove(&name);
                     self.clear_late_bound_object_binding(name);
                 }
             } else {
@@ -3628,63 +3550,6 @@ impl<'a> Lowerer<'a> {
             else_block: else_target,
         });
 
-        // If condition is `a instanceof T`, temporarily update the narrowed runtime
-        // view for `a` in the then-branch. Nominal targets use variable_class_map;
-        // structural targets use variable_structural_projection_fields.
-        let instanceof_nominal_save = if let ast::Expression::InstanceOf(inst) = &if_stmt.condition
-        {
-            if let ast::Expression::Identifier(ident) = &*inst.object {
-                if let ast::types::Type::Reference(type_ref) = &inst.type_name.ty {
-                    if let Some(&nominal_type_id) = self.class_map.get(&type_ref.name.name) {
-                        let old = self.variable_class_map.insert(ident.name, nominal_type_id);
-                        Some((ident.name, old))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let instanceof_shape_save = if let ast::Expression::InstanceOf(inst) = &if_stmt.condition {
-            if let ast::Expression::Identifier(ident) = &*inst.object {
-                let target_ty = self.resolve_structural_slot_type_from_annotation(&inst.type_name);
-                let layout = self
-                    .structural_projection_layout_from_type_id(target_ty)
-                    .or_else(|| {
-                        self.try_extract_object_alias_name_from_type(&inst.type_name)
-                            .and_then(|alias_name| {
-                                self.projected_structural_layout_from_alias_name(&alias_name)
-                                    .map(|layout| {
-                                        layout
-                                            .into_iter()
-                                            .map(|(field_name, field_idx)| {
-                                                (field_name, field_idx as usize)
-                                            })
-                                            .collect::<Vec<(String, usize)>>()
-                                    })
-                            })
-                    });
-                if let Some(layout) = layout {
-                    let old = self
-                        .variable_structural_projection_fields
-                        .insert(ident.name, layout);
-                    Some((ident.name, old))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
         // Lower then branch
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::new(then_block));
@@ -3692,22 +3557,6 @@ impl<'a> Lowerer<'a> {
         self.lower_stmt(&if_stmt.then_branch);
         if !self.current_block_is_terminated() {
             self.set_terminator(Terminator::Jump(merge_block));
-        }
-
-        // Restore variable_class_map after then-branch
-        if let Some((name, old_class)) = instanceof_nominal_save {
-            if let Some(old) = old_class {
-                self.variable_class_map.insert(name, old);
-            } else {
-                self.variable_class_map.remove(&name);
-            }
-        }
-        if let Some((name, old_projection)) = instanceof_shape_save {
-            if let Some(old) = old_projection {
-                self.variable_structural_projection_fields.insert(name, old);
-            } else {
-                self.variable_structural_projection_fields.remove(&name);
-            }
         }
 
         // Lower else branch if exists
@@ -4098,7 +3947,6 @@ impl<'a> Lowerer<'a> {
 
         if let Some(catch_clause) = &try_stmt.catch_clause {
             let saved_local_map = self.local_map.clone();
-            let saved_variable_class_map = self.variable_class_map.clone();
             let saved_constant_map = self.constant_map.clone();
             self.block_depth += 1;
 
@@ -4114,13 +3962,6 @@ impl<'a> Lowerer<'a> {
                         let exc_reg = self.alloc_register(exc_ty);
                         self.local_registers.insert(local_idx, exc_reg);
 
-                        // Add catch parameter to variable_class_map for method resolution
-                        for (&symbol, &nominal_type_id) in &self.class_map {
-                            if self.interner.resolve(symbol) == "Error" {
-                                self.variable_class_map.insert(ident.name, nominal_type_id);
-                                break;
-                            }
-                        }
                     }
                     _ => {
                         // Destructuring pattern: pop exception into temp local, load into register, then bind pattern
@@ -4155,7 +3996,6 @@ impl<'a> Lowerer<'a> {
             }
 
             self.local_map = saved_local_map;
-            self.variable_class_map = saved_variable_class_map;
             self.constant_map = saved_constant_map;
             self.block_depth = self.block_depth.saturating_sub(1);
         }

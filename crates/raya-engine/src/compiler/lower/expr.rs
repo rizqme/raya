@@ -430,20 +430,17 @@ impl<'a> Lowerer<'a> {
     ) {
         let method_name_symbol = member.property.name;
 
-        if let Expression::Identifier(ident) = &*member.object {
-            if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-                if let Some(&func_id) = self
-                    .static_method_map
-                    .get(&(nominal_type_id, method_name_symbol))
+        if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
+            if let Some(&func_id) = self.static_method_map.get(&(nominal_type_id, method_name_symbol))
+            {
+                if !self.js_this_binding_compat && self.object_expr_is_class_constructor_ref(&member.object)
                 {
-                    if !self.js_this_binding_compat {
-                        self.emit(IrInstr::Spawn {
-                            dest,
-                            func: func_id,
-                            args,
-                        });
-                        return;
-                    }
+                    self.emit(IrInstr::Spawn {
+                        dest,
+                        func: func_id,
+                        args,
+                    });
+                    return;
                 }
             }
         }
@@ -500,7 +497,7 @@ impl<'a> Lowerer<'a> {
         };
 
         let class_name = self.interner.resolve(ident.name);
-        let is_constructor_value_ident = self.class_map.contains_key(&ident.name)
+        let is_constructor_value_ident = self.object_expr_is_class_constructor_ref(&member.object)
             || self.import_bindings.contains(&ident.name)
             || self.ambient_builtin_globals.contains(class_name)
             || self.constructor_value_type_map.contains_key(&ident.name);
@@ -559,7 +556,7 @@ impl<'a> Lowerer<'a> {
             return Some(dest);
         }
 
-        if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
+        if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
             if let Some(&func_id) = self
                 .static_method_map
                 .get(&(nominal_type_id, method_name_symbol))
@@ -606,7 +603,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        let prefers_dynamic_constructor_member_call = !self.class_map.contains_key(&ident.name)
+        let prefers_dynamic_constructor_member_call = !self.object_expr_is_class_constructor_ref(&member.object)
             && (self.ambient_builtin_globals.contains(class_name)
                 || self.constructor_value_type_map.contains_key(&ident.name));
         if prefers_dynamic_constructor_member_call {
@@ -1415,7 +1412,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn object_expr_is_class_constructor_ref(&self, expr: &Expression) -> bool {
-        matches!(expr, Expression::Identifier(ident) if self.class_map.contains_key(&ident.name))
+        matches!(
+            self.semantic_object_shape_kind(expr.span().start),
+            Some(crate::semantics::ObjectShapeKind::ClassValue)
+        )
     }
 
     fn nominal_type_uses_runtime_instance_publication(
@@ -1502,30 +1502,35 @@ impl<'a> Lowerer<'a> {
     ) -> Option<Vec<(String, u16)>> {
         match object_expr {
             Expression::Identifier(ident) => {
-                if self.variable_class_map.contains_key(&ident.name)
-                    || self.late_bound_object_vars.contains(&ident.name)
+                let shape_kind = self.semantic_object_shape_kind(ident.span.start);
+                if matches!(
+                    shape_kind,
+                    Some(
+                        crate::semantics::ObjectShapeKind::ClassValue
+                            | crate::semantics::ObjectShapeKind::NominalInstance
+                            | crate::semantics::ObjectShapeKind::BuiltinValue
+                    )
+                ) || self.late_bound_object_vars.contains(&ident.name)
                     || self.constructor_value_ctor_map.contains_key(&ident.name)
                 {
                     return None;
                 }
-                self.variable_structural_projection_fields
+                self.variable_object_type_aliases
                     .get(&ident.name)
-                    .map(|layout| {
-                        layout
-                            .iter()
-                            .filter_map(|(field_name, field_idx)| {
-                                u16::try_from(*field_idx)
-                                    .ok()
-                                    .map(|slot| (field_name.clone(), slot))
-                            })
-                            .collect()
-                    })
+                    .and_then(|alias| self.projected_structural_layout_from_alias_name(alias))
                     .or_else(|| {
-                        self.variable_object_type_aliases
-                            .get(&ident.name)
-                            .and_then(|alias| {
-                                self.projected_structural_layout_from_alias_name(alias)
+                        self.constructor_value_type_map.get(&ident.name).and_then(|ty| {
+                            self.structural_static_slot_layout_from_type(*ty).map(|layout| {
+                                layout
+                                    .into_iter()
+                                    .filter_map(|(field_name, field_idx)| {
+                                        u16::try_from(field_idx)
+                                            .ok()
+                                            .map(|slot| (field_name, slot))
+                                    })
+                                    .collect()
                             })
+                        })
                     })
                     .or_else(|| {
                         self.projection_layout_u16_from_type_id(self.get_expr_type(object_expr))
@@ -1554,10 +1559,29 @@ impl<'a> Lowerer<'a> {
         var_name: crate::parser::Symbol,
         dest: &Register,
     ) {
+        if let Some(fields) = self.variable_object_type_aliases.get(&var_name).and_then(|alias| {
+            self.projected_structural_layout_from_alias_name(alias).map(|layout| {
+                layout
+                    .into_iter()
+                    .map(|(field_name, field_idx)| (field_name, usize::from(field_idx)))
+                    .collect::<Vec<_>>()
+            })
+        }) {
+            self.register_structural_projection_fields
+                .insert(dest.id, fields);
+            return;
+        }
+
         if let Some(fields) = self
-            .variable_structural_projection_fields
+            .constructor_value_type_map
             .get(&var_name)
-            .cloned()
+            .and_then(|ty| self.structural_static_slot_layout_from_type(*ty))
+            .map(|layout| {
+                layout
+                    .into_iter()
+                    .map(|(field_name, field_idx)| (field_name, field_idx as usize))
+                    .collect::<Vec<_>>()
+            })
         {
             self.register_structural_projection_fields
                 .insert(dest.id, fields);
@@ -1800,6 +1824,46 @@ impl<'a> Lowerer<'a> {
         self.semantic_plan
             .resolved_identifier_at_span(span_start)
             .is_some_and(|resolved| resolved.in_tdz)
+    }
+
+    fn semantic_object_shape(
+        &self,
+        span_start: usize,
+    ) -> Option<&crate::semantics::SemanticObjectShape> {
+        self.semantic_plan.object_shape_at_span(span_start)
+    }
+
+    fn semantic_member_target(
+        &self,
+        span_start: usize,
+    ) -> Option<&crate::semantics::SemanticMemberTarget> {
+        self.semantic_plan.member_target_at_span(span_start)
+    }
+
+    fn semantic_call_target(
+        &self,
+        span_start: usize,
+    ) -> Option<&crate::semantics::SemanticCallTarget> {
+        self.semantic_plan.call_target_at_span(span_start)
+    }
+
+    fn semantic_constructor_target(
+        &self,
+        span_start: usize,
+    ) -> Option<&crate::semantics::SemanticConstructorTarget> {
+        self.semantic_plan.constructor_target_at_span(span_start)
+    }
+
+    fn semantic_object_shape_kind(
+        &self,
+        span_start: usize,
+    ) -> Option<crate::semantics::ObjectShapeKind> {
+        self.semantic_object_shape(span_start).map(|shape| shape.kind)
+    }
+
+    fn semantic_object_shape_type_id(&self, span_start: usize) -> Option<TypeId> {
+        self.semantic_object_shape(span_start)
+            .and_then(|shape| shape.type_id)
     }
 
     fn semantic_identifier_is_delete_localish(
@@ -2353,7 +2417,16 @@ impl<'a> Lowerer<'a> {
             Expression::Parenthesized(paren) => {
                 self.static_member_owner_nominal_type(&paren.expression)
             }
-            Expression::Identifier(ident) => self.class_map.get(&ident.name).copied(),
+            Expression::Identifier(ident) => self
+                .semantic_object_shape_type_id(ident.span.start)
+                .and_then(|ty| self.nominal_type_id_from_type_id(ty))
+                .or_else(|| {
+                    self.object_expr_is_class_constructor_ref(object_expr)
+                        .then(|| {
+                            self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
+                        })
+                        .flatten()
+                }),
             Expression::This(_)
                 if self.current_method_is_static
                     && (self.this_register.is_some()
@@ -3931,7 +4004,9 @@ impl<'a> Lowerer<'a> {
                     global_idx,
                     self.function_depth,
                     self.block_depth,
-                    self.class_map.contains_key(&ident.name)
+                    self.object_expr_is_class_constructor_ref(&Expression::Identifier(
+                        ident.clone(),
+                    ))
                 );
             }
             let global_ty = self
@@ -3965,23 +4040,28 @@ impl<'a> Lowerer<'a> {
         }
 
         if !self.js_this_binding_compat {
-            if let Some(nominal_type_id) = self
-                .nominal_type_id_from_type_name(name)
-                .or_else(|| self.class_map.get(&ident.name).copied())
-            {
-            if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
-                eprintln!(
-                    "[lower-class-ident] name={} via=nominal_lookup nominal={} fn_depth={} block_depth={} shared_slot={:?} parameter_scope_eval_mode={}",
-                    name,
-                    nominal_type_id.as_u32(),
-                    self.function_depth,
-                    self.block_depth,
-                    self.shared_script_binding_slot(ident.name),
-                    self.parameter_scope_eval_mode
-                );
+            let class_value_nominal_type_id = self
+                .semantic_object_shape_type_id(ident.span.start)
+                .and_then(|ty| self.nominal_type_id_from_type_id(ty))
+                .or_else(|| {
+                    self.object_expr_is_class_constructor_ref(&Expression::Identifier(ident.clone()))
+                        .then(|| self.nominal_type_id_from_type_name(name))
+                        .flatten()
+                });
+            if let Some(nominal_type_id) = class_value_nominal_type_id {
+                if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
+                    eprintln!(
+                        "[lower-class-ident] name={} via=nominal_lookup nominal={} fn_depth={} block_depth={} shared_slot={:?} parameter_scope_eval_mode={}",
+                        name,
+                        nominal_type_id.as_u32(),
+                        self.function_depth,
+                        self.block_depth,
+                        self.shared_script_binding_slot(ident.name),
+                        self.parameter_scope_eval_mode
+                    );
+                }
+                return self.load_class_value_for_nominal_type(nominal_type_id);
             }
-            return self.load_class_value_for_nominal_type(nominal_type_id);
-        }
         }
 
         if name == "arguments"
@@ -4147,7 +4227,9 @@ impl<'a> Lowerer<'a> {
                 has_ancestor,
                 has_module_global,
                 has_function,
-                self.class_map.contains_key(&ident.name)
+                self.object_expr_is_class_constructor_ref(&Expression::Identifier(
+                    ident.clone(),
+                ))
             );
         }
         self.errors
@@ -4155,7 +4237,9 @@ impl<'a> Lowerer<'a> {
                 message: format!(
                     "unresolved identifier '{}': no local, captured, module-global, or function binding (class_map_contains={})",
                     self.interner.resolve(ident.name),
-                    self.class_map.contains_key(&ident.name)
+                    self.object_expr_is_class_constructor_ref(&Expression::Identifier(
+                        ident.clone(),
+                    ))
                 ),
             });
         self.lower_unresolved_poison()
@@ -4564,6 +4648,8 @@ impl<'a> Lowerer<'a> {
             .semantic_plan
             .call_op_at_span(call.span.start)
             .map(|op| op.kind);
+        let semantic_call_target = self.semantic_call_target(call.span.start).cloned();
+        let semantic_call_target_kind = semantic_call_target.as_ref().map(|target| target.kind);
 
         // Prefer checker return type; if absent, derive from callee call signature.
         let mut call_ty = self.get_expr_type(full_expr);
@@ -4776,7 +4862,9 @@ impl<'a> Lowerer<'a> {
                 self.local_map.contains_key(&ident.name)
                     || self.constant_map.contains_key(&ident.name)
                     || self.function_map.contains_key(&ident.name)
-                    || self.class_map.contains_key(&ident.name)
+                    || self.object_expr_is_class_constructor_ref(&Expression::Identifier(
+                        ident.clone(),
+                    ))
                     || self
                         .captures
                         .iter()
@@ -5223,7 +5311,15 @@ impl<'a> Lowerer<'a> {
                     let known_callable = self.closure_locals.contains_key(&local_idx)
                         || self.callable_local_hints.contains(&local_idx)
                         || self.callable_symbol_hints.contains(&ident.name)
-                        || self.bound_method_vars.contains_key(&ident.name);
+                        || matches!(
+                            semantic_call_target_kind,
+                            Some(
+                                crate::semantics::CallTargetKind::PlainFunction
+                                    | crate::semantics::CallTargetKind::NominalMethod
+                                    | crate::semantics::CallTargetKind::StaticMethod
+                                    | crate::semantics::CallTargetKind::ConstructorLikeValue
+                            )
+                        );
                     if !known_callable
                         && !self.type_is_callable(callee_ty)
                         && !self.runtime_call_may_be_callable(callee_ty)
@@ -5281,18 +5377,6 @@ impl<'a> Lowerer<'a> {
                     );
                     self.emit_invoke_plan(dest.clone(), plan);
 
-                    if let Some(&(nominal_type_id, method_name)) =
-                        self.bound_method_vars.get(&ident.name)
-                    {
-                        if let Some(&ret_ty) = self
-                            .method_return_type_map
-                            .get(&(nominal_type_id, method_name))
-                        {
-                            if ret_ty != UNRESOLVED {
-                                dest.ty = ret_ty;
-                            }
-                        }
-                    }
                     self.propagate_type_projection_to_register(dest.ty, &dest);
                     return dest;
                 }
@@ -5373,7 +5457,15 @@ impl<'a> Lowerer<'a> {
                 let closure_ty_raw = closure_ty.as_u32();
                 let known_callable = self.closure_globals.contains_key(&global_idx)
                     || self.callable_symbol_hints.contains(&ident.name)
-                    || self.bound_method_vars.contains_key(&ident.name);
+                    || matches!(
+                        semantic_call_target_kind,
+                        Some(
+                            crate::semantics::CallTargetKind::PlainFunction
+                                | crate::semantics::CallTargetKind::NominalMethod
+                                | crate::semantics::CallTargetKind::StaticMethod
+                                | crate::semantics::CallTargetKind::ConstructorLikeValue
+                        )
+                    );
                 if !known_callable
                     && !self.type_is_callable(closure_ty)
                     && !self.runtime_call_may_be_callable(closure_ty)
@@ -5443,18 +5535,6 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Propagate return type for bound method calls (global variable path)
-                if let Some(&(nominal_type_id, method_name)) =
-                    self.bound_method_vars.get(&ident.name)
-                {
-                    if let Some(&ret_ty) = self
-                        .method_return_type_map
-                        .get(&(nominal_type_id, method_name))
-                    {
-                        if ret_ty != UNRESOLVED {
-                            dest.ty = ret_ty;
-                        }
-                    }
-                }
                 self.propagate_type_projection_to_register(dest.ty, &dest);
 
                 return dest;
@@ -5473,7 +5553,15 @@ impl<'a> Lowerer<'a> {
                 let closure_ty_raw = closure_ty.as_u32();
                 let known_callable = self.closure_globals.contains_key(&binding.global_idx)
                     || self.callable_symbol_hints.contains(&ident.name)
-                    || self.bound_method_vars.contains_key(&ident.name)
+                    || matches!(
+                        semantic_call_target_kind,
+                        Some(
+                            crate::semantics::CallTargetKind::PlainFunction
+                                | crate::semantics::CallTargetKind::NominalMethod
+                                | crate::semantics::CallTargetKind::StaticMethod
+                                | crate::semantics::CallTargetKind::ConstructorLikeValue
+                        )
+                    )
                     || self.function_map.contains_key(&ident.name);
                 if !known_callable
                     && !self.type_is_callable(closure_ty)
@@ -5527,8 +5615,16 @@ impl<'a> Lowerer<'a> {
                 let closure = self.lower_identifier(ident);
                 let callee_ty = self.get_expr_type(&call.callee);
                 let callee_ty_raw = callee_ty.as_u32();
-                let known_callable = self.bound_method_vars.contains_key(&ident.name)
-                    || self.callable_symbol_hints.contains(&ident.name)
+                let known_callable = self.callable_symbol_hints.contains(&ident.name)
+                    || matches!(
+                        semantic_call_target_kind,
+                        Some(
+                            crate::semantics::CallTargetKind::PlainFunction
+                                | crate::semantics::CallTargetKind::NominalMethod
+                                | crate::semantics::CallTargetKind::StaticMethod
+                                | crate::semantics::CallTargetKind::ConstructorLikeValue
+                        )
+                    )
                     || self.function_map.contains_key(&ident.name);
                 if !known_callable
                     && !self.type_is_callable(callee_ty)
@@ -5585,6 +5681,11 @@ impl<'a> Lowerer<'a> {
 
         // For member calls, resolve method to builtin ID or user-defined method
         if let Expression::Member(member) = &*call.callee {
+            let semantic_member_target_kind = self
+                .semantic_member_target(member.span.start)
+                .map(|target| target.kind);
+            let semantic_call_target_kind =
+                self.semantic_call_target(call.span.start).map(|target| target.kind);
             let method_name_symbol = member.property.name;
             let method_name = self.interner.resolve(method_name_symbol);
 
@@ -5709,12 +5810,14 @@ impl<'a> Lowerer<'a> {
                     false
                 };
 
-            if !self.js_this_binding_compat
+            if semantic_call_target_kind
+                == Some(crate::semantics::CallTargetKind::StructuralCall)
+                || (!self.js_this_binding_compat
                 && !member_object_is_late_bound_identifier
                 && self.prefers_structural_member_projection(&member.object)
                 && self
                     .structural_shape_slot_from_expr(&member.object, method_name)
-                    .is_some()
+                    .is_some())
             {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                     if let Expression::Identifier(obj_ident) = &*member.object {
@@ -5793,12 +5896,21 @@ impl<'a> Lowerer<'a> {
 
             // Try to determine the class type of the object for method resolution
             let member_field_metadata = self.resolve_member_field_metadata(&member.object);
-            let mut nominal_type_id = self
-                .infer_nominal_type_id(&member.object)
-                .or_else(|| member_field_metadata.and_then(|(_, nominal_type_id)| nominal_type_id));
+            let mut nominal_type_id = if matches!(
+                semantic_member_target_kind,
+                Some(
+                    crate::semantics::MemberTargetKind::StructuralSlot
+                        | crate::semantics::MemberTargetKind::DynamicProperty
+                )
+            ) {
+                None
+            } else {
+                self.infer_nominal_type_id(&member.object)
+                    .or_else(|| member_field_metadata.and_then(|(_, nominal_type_id)| nominal_type_id))
+            };
 
             // If nominal_type_id is not found, check if this is a Channel type parameter
-            // Parameters with Channel<T> type annotation aren't in variable_class_map
+            // Parameters with Channel<T> type annotation aren't in nominal_binding_cache
             if nominal_type_id.is_none() {
                 if let Expression::Identifier(ident) = &*member.object {
                     // Check if this identifier is a local variable with Channel type
@@ -5866,11 +5978,13 @@ impl<'a> Lowerer<'a> {
                     return result;
                 }
             }
-            let use_js_runtime_member_semantics = self.js_mode_uses_runtime_member_semantics(
-                &member.object,
-                self.get_expr_type(&member.object),
-                nominal_type_id,
-            );
+            let use_js_runtime_member_semantics = semantic_call_target_kind
+                == Some(crate::semantics::CallTargetKind::DynamicCall)
+                || self.js_mode_uses_runtime_member_semantics(
+                    &member.object,
+                    self.get_expr_type(&member.object),
+                    nominal_type_id,
+                );
 
             // Skip class dispatch for builtin primitive types — their methods
             // are dispatched via the type registry (native calls / class methods)
@@ -5925,13 +6039,11 @@ impl<'a> Lowerer<'a> {
                     let obj_type = self.get_expr_type(&member.object);
                     let obj_type_str = format!("{:?}", obj_type);
                     if let Expression::Identifier(obj_ident) = &*member.object {
-                        let in_vcm = self.variable_class_map.contains_key(&obj_ident.name);
                         eprintln!(
-                            "[lower] structural member call '{}.{}(...)' — obj type_id={} in_variable_class_map={} (WILL USE LoadFieldExact+CallClosure)",
+                            "[lower] structural member call '{}.{}(...)' — obj type_id={} (WILL USE LoadFieldExact+CallClosure)",
                             self.interner.resolve(obj_ident.name),
                             method_name,
-                            obj_type_str,
-                            in_vcm
+                            obj_type_str
                         );
                     } else {
                         eprintln!(
@@ -6157,7 +6269,9 @@ impl<'a> Lowerer<'a> {
                 if self
                     .ambient_builtin_globals
                     .contains(self.interner.resolve(ident.name))
-                    && !self.class_map.contains_key(&ident.name)
+                    && !self.object_expr_is_class_constructor_ref(&Expression::Identifier(
+                        ident.clone(),
+                    ))
         );
         if std::env::var("RAYA_DEBUG_CALL_FALLBACK").is_ok() {
             let callee_desc = match &*call.callee {
@@ -6466,6 +6580,9 @@ impl<'a> Lowerer<'a> {
 
     fn lower_member(&mut self, member: &ast::MemberExpression) -> Register {
         let prop_name = self.interner.resolve(member.property.name);
+        let semantic_member_target_kind = self
+            .semantic_member_target(member.span.start)
+            .map(|target| target.kind);
 
         if matches!(member.object.as_ref(), Expression::Super(_)) {
             let dest = self.alloc_register(UNRESOLVED);
@@ -6509,10 +6626,7 @@ impl<'a> Lowerer<'a> {
                     }
                 };
                 let dest = self.alloc_register(member_ty);
-                let class_value = if matches!(
-                    member.object.as_ref(),
-                    Expression::Identifier(ident) if self.class_map.contains_key(&ident.name)
-                ) {
+                let class_value = if self.object_expr_is_class_constructor_ref(&member.object) {
                     self.load_class_value_for_nominal_type(nominal_type_id)
                 } else {
                     self.lower_expr(&member.object)
@@ -6639,7 +6753,11 @@ impl<'a> Lowerer<'a> {
 
         // Try to determine the class type of the object for field resolution.
         // Explicit structural alias projections must not reuse provider field indices.
-        let nominal_type_id = if self.prefers_structural_member_projection(&member.object) {
+        let nominal_type_id = if matches!(
+            semantic_member_target_kind,
+            Some(crate::semantics::MemberTargetKind::StructuralSlot)
+        ) || self.prefers_structural_member_projection(&member.object)
+        {
             None
         } else {
             self.infer_nominal_type_id(&member.object)
@@ -6653,7 +6771,10 @@ impl<'a> Lowerer<'a> {
             !self.object_expr_is_class_constructor_ref(&member.object)
                 && self.nominal_type_uses_runtime_instance_publication(id)
         });
-        let use_js_runtime_member_semantics = use_runtime_published_instance_member_semantics
+        let use_js_runtime_member_semantics = matches!(
+            semantic_member_target_kind,
+            Some(crate::semantics::MemberTargetKind::DynamicProperty)
+        ) || use_runtime_published_instance_member_semantics
             || self.js_mode_uses_runtime_member_semantics(
                 &member.object,
                 object.ty,
@@ -9688,7 +9809,6 @@ impl<'a> Lowerer<'a> {
                     // If RHS isn't callable, drop callable/bound-method hints.
                     if assigned_symbol && !self.expression_is_callable_hint(&assign.right) {
                         self.callable_symbol_hints.remove(&ident.name);
-                        self.bound_method_vars.remove(&ident.name);
                         if let Some(local_idx) = assigned_local_idx {
                             self.callable_local_hints.remove(&local_idx);
                         }
@@ -9928,7 +10048,6 @@ impl<'a> Lowerer<'a> {
                             self.callable_symbol_hints.insert(ident.name);
                         } else {
                             self.callable_symbol_hints.remove(&ident.name);
-                            self.bound_method_vars.remove(&ident.name);
                         }
                         if let Some(&local_idx) = self.local_map.get(&ident.name) {
                             if callable_assign_hint {
@@ -10002,7 +10121,6 @@ impl<'a> Lowerer<'a> {
                             self.callable_symbol_hints.insert(ident.name);
                         } else {
                             self.callable_symbol_hints.remove(&ident.name);
-                            self.bound_method_vars.remove(&ident.name);
                         }
                         if let Some(local_idx) = assigned_local_idx {
                             if callable_assign_hint {
@@ -10013,7 +10131,6 @@ impl<'a> Lowerer<'a> {
                         }
                     } else {
                         self.callable_symbol_hints.remove(&ident.name);
-                        self.bound_method_vars.remove(&ident.name);
                         if let Some(local_idx) = assigned_local_idx {
                             self.callable_local_hints.remove(&local_idx);
                         }
@@ -10025,7 +10142,19 @@ impl<'a> Lowerer<'a> {
 
                 // Check for static field write: ClassName.staticField = value
                 if let Expression::Identifier(ident) = &*member.object {
-                    if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
+                    if let Some(nominal_type_id) = self
+                        .semantic_object_shape_type_id(ident.span.start)
+                        .and_then(|ty| self.nominal_type_id_from_type_id(ty))
+                        .or_else(|| {
+                            self.object_expr_is_class_constructor_ref(&member.object)
+                                .then(|| {
+                                    self.nominal_type_id_from_type_name(
+                                        self.interner.resolve(ident.name),
+                                    )
+                                })
+                                .flatten()
+                        })
+                    {
                         let global_index =
                             self.class_info_map.get(&nominal_type_id).and_then(|info| {
                                 info.static_fields
@@ -10315,7 +10444,6 @@ impl<'a> Lowerer<'a> {
         let saved_local_registers = self.local_registers.clone();
         let saved_callable_local_hints = self.callable_local_hints.clone();
         let saved_callable_symbol_hints = self.callable_symbol_hints.clone();
-        let saved_bound_method_vars = self.bound_method_vars.clone();
         let saved_refcell_vars = self.refcell_vars.clone();
         let saved_immutable_bindings = self.immutable_bindings.clone();
         let saved_refcell_registers = self.refcell_registers.clone();
@@ -10473,7 +10601,7 @@ impl<'a> Lowerer<'a> {
 
                 if let Some(type_ann) = &param.type_annotation {
                     if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
-                        self.variable_class_map.insert(ident.name, nominal_type_id);
+                        self.nominal_binding_cache.insert(ident.name, nominal_type_id);
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
@@ -10663,7 +10791,6 @@ impl<'a> Lowerer<'a> {
         self.local_registers = saved_local_registers;
         self.callable_local_hints = saved_callable_local_hints;
         self.callable_symbol_hints = saved_callable_symbol_hints;
-        self.bound_method_vars = saved_bound_method_vars;
         self.refcell_vars = saved_refcell_vars;
         self.immutable_bindings = saved_immutable_bindings;
         self.refcell_registers = saved_refcell_registers;
@@ -10692,7 +10819,6 @@ impl<'a> Lowerer<'a> {
 
         for sym in propagate_callable_invalidations {
             self.callable_symbol_hints.remove(&sym);
-            self.bound_method_vars.remove(&sym);
             if let Some(&local_idx) = self.local_map.get(&sym) {
                 self.callable_local_hints.remove(&local_idx);
             }
@@ -10881,7 +11007,6 @@ impl<'a> Lowerer<'a> {
         let saved_local_registers = self.local_registers.clone();
         let saved_callable_local_hints = self.callable_local_hints.clone();
         let saved_callable_symbol_hints = self.callable_symbol_hints.clone();
-        let saved_bound_method_vars = self.bound_method_vars.clone();
         let saved_refcell_vars = self.refcell_vars.clone();
         let saved_immutable_bindings = self.immutable_bindings.clone();
         let saved_refcell_registers = self.refcell_registers.clone();
@@ -11072,24 +11197,24 @@ impl<'a> Lowerer<'a> {
                         if let Some(layout) =
                             self.structural_projection_layout_from_type_id(expected_ty)
                         {
-                            self.variable_structural_projection_fields
+                            self.projection_layout_cache
                                 .insert(ident.name, layout);
-                            self.variable_class_map.remove(&ident.name);
+                            self.nominal_binding_cache.remove(&ident.name);
                         } else {
-                            self.variable_structural_projection_fields
+                            self.projection_layout_cache
                                 .remove(&ident.name);
-                            self.variable_class_map.remove(&ident.name);
+                            self.nominal_binding_cache.remove(&ident.name);
                         }
                     } else {
-                        self.variable_structural_projection_fields
+                        self.projection_layout_cache
                             .remove(&ident.name);
                     }
                     if let Some(nominal_type_id) = nominal_type_id {
-                        self.variable_class_map.insert(ident.name, nominal_type_id);
+                        self.nominal_binding_cache.insert(ident.name, nominal_type_id);
                         self.clear_late_bound_object_binding(ident.name);
                     } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
-                        self.variable_class_map.remove(&ident.name);
-                        self.variable_structural_projection_fields
+                        self.nominal_binding_cache.remove(&ident.name);
+                        self.projection_layout_cache
                             .remove(&ident.name);
                         self.mark_late_bound_object_binding(ident.name, ctor_symbol, ctor_type);
                     } else {
@@ -11282,7 +11407,6 @@ impl<'a> Lowerer<'a> {
         self.local_registers = saved_local_registers;
         self.callable_local_hints = saved_callable_local_hints;
         self.callable_symbol_hints = saved_callable_symbol_hints;
-        self.bound_method_vars = saved_bound_method_vars;
         self.refcell_vars = saved_refcell_vars;
         self.immutable_bindings = saved_immutable_bindings;
         self.refcell_registers = saved_refcell_registers;
@@ -11312,7 +11436,6 @@ impl<'a> Lowerer<'a> {
 
         for sym in propagate_callable_invalidations {
             self.callable_symbol_hints.remove(&sym);
-            self.bound_method_vars.remove(&sym);
             if let Some(&local_idx) = self.local_map.get(&sym) {
                 self.callable_local_hints.remove(&local_idx);
             }
@@ -11521,7 +11644,9 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
             if !self.js_this_binding_compat
-                && self.class_map.contains_key(&ident.name)
+                && self.object_expr_is_class_constructor_ref(&Expression::Identifier(
+                    ident.clone(),
+                ))
                 && self.shared_script_binding_slot(ident.name).is_none()
             {
                 let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
@@ -11632,15 +11757,25 @@ impl<'a> Lowerer<'a> {
         // Constructor results are object-like by default. Keep unresolved until a
         // concrete class/type path assigns a precise type.
         let dest = self.alloc_register(UNRESOLVED);
+        let semantic_constructor = self.semantic_constructor_target(new_expr.span.start);
+        let semantic_constructor_kind = semantic_constructor.map(|target| target.kind);
+        let semantic_callee_nominal_type_id = semantic_constructor
+            .and_then(|target| target.callee_type_id)
+            .and_then(|ty| self.nominal_type_id_from_type_id(ty));
 
         if new_expr.has_spread_arguments() {
             let ctor_value = if let Expression::Identifier(ident) = &*new_expr.callee {
-                if let Some(&nominal_type_id) = self
-                    .class_map
-                    .get(&ident.name)
-                    .or_else(|| self.variable_class_map.get(&ident.name))
-                {
-                    self.load_class_value_for_nominal_type(nominal_type_id)
+                if matches!(
+                    semantic_constructor_kind,
+                    Some(crate::semantics::ConstructorTargetKind::NominalClass)
+                ) {
+                    if let Some(nominal_type_id) =
+                        semantic_callee_nominal_type_id.or_else(|| self.infer_nominal_type_id(&new_expr.callee))
+                    {
+                        self.load_class_value_for_nominal_type(nominal_type_id)
+                    } else {
+                        self.lower_expr(&new_expr.callee)
+                    }
                 } else {
                     self.lower_expr(&new_expr.callee)
                 }
@@ -11704,8 +11839,10 @@ impl<'a> Lowerer<'a> {
                 // When the Channel class definition is unavailable, lower directly to opcode IR.
                 // If the Channel class exists in this module, use normal class
                 // construction so methods dispatch through wrapper methods (`channelId` field).
-                let has_channel_class = self.class_map.contains_key(&ident.name)
-                    || self.variable_class_map.contains_key(&ident.name);
+                let has_channel_class = matches!(
+                    semantic_constructor_kind,
+                    Some(crate::semantics::ConstructorTargetKind::NominalClass)
+                );
                 if !has_channel_class {
                     let channel_dest = self.alloc_register(TypeId::new(CHANNEL_TYPE_ID));
                     let capacity = if let Some(first_arg) = new_expr.argument_expression(0) {
@@ -11725,8 +11862,10 @@ impl<'a> Lowerer<'a> {
                 // Ambient builtin path: mutex values are handle-backed and constructed via opcode.
                 // If a concrete Mutex class is present in this module, regular class
                 // construction should take precedence.
-                let has_mutex_class = self.class_map.contains_key(&ident.name)
-                    || self.variable_class_map.contains_key(&ident.name);
+                let has_mutex_class = matches!(
+                    semantic_constructor_kind,
+                    Some(crate::semantics::ConstructorTargetKind::NominalClass)
+                );
                 if !has_mutex_class {
                     let mutex_dest = self.alloc_register(TypeId::new(MUTEX_TYPE_ID));
                     self.emit(IrInstr::NewMutex {
@@ -11775,7 +11914,7 @@ impl<'a> Lowerer<'a> {
                 .class_map
                 .get(&ident.name)
                 .copied()
-                .or_else(|| self.variable_class_map.get(&ident.name).copied());
+                .or(semantic_callee_nominal_type_id);
             if let Some(nominal_type_id) = nominal_type_id_opt {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                     eprintln!(
@@ -11866,8 +12005,10 @@ impl<'a> Lowerer<'a> {
             let runtime_bound_constructor = self.import_bindings.contains(&ident.name)
                 || self.constructor_value_ctor_map.contains_key(&ident.name)
                 || (self.ambient_builtin_globals.contains(name)
-                    && !self.class_map.contains_key(&ident.name)
-                    && !self.variable_class_map.contains_key(&ident.name)
+                    && !matches!(
+                        semantic_constructor_kind,
+                        Some(crate::semantics::ConstructorTargetKind::NominalClass)
+                    )
                     && self.type_has_construct_signature(callee_ty));
             if runtime_bound_constructor {
                 let return_ty = self
@@ -13417,90 +13558,57 @@ impl<'a> Lowerer<'a> {
 
     /// Infer the class ID of an expression (for method call resolution)
     pub(super) fn infer_nominal_type_id(&self, expr: &Expression) -> Option<NominalTypeId> {
-        match expr {
-            // 'this' uses current class context
-            Expression::This(_) => {
-                let resolved = self.current_class.or_else(|| {
-                    self.this_register
-                        .as_ref()
-                        .and_then(|reg| self.nominal_type_id_from_type_id(reg.ty))
-                });
-                if resolved.is_none() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    let this_ty = self
-                        .this_register
-                        .as_ref()
-                        .map(|reg| reg.ty.as_u32())
-                        .unwrap_or(u32::MAX);
-                    eprintln!(
-                        "[lower] infer_nominal_type_id(this)=None current_class={:?} this_ty={}",
-                        self.current_class.map(|id| id.as_u32()),
-                        this_ty
-                    );
-                }
-                resolved
-            }
-            // Variable lookup
-            Expression::Identifier(ident) => {
-                if self.interner.resolve(ident.name) == "this" {
-                    return self.current_class.or_else(|| {
-                        self.this_register
-                            .as_ref()
-                            .and_then(|reg| self.nominal_type_id_from_type_id(reg.ty))
-                    });
-                }
-                if let Some(nominal_type_id) = self.variable_class_map.get(&ident.name).copied() {
-                    return Some(nominal_type_id);
-                }
-                if self
-                    .variable_structural_projection_fields
-                    .contains_key(&ident.name)
-                {
-                    return None;
-                }
-                if self.dynamic_any_vars.contains(&ident.name) {
-                    return None;
-                }
-                if self.type_is_dynamic_any_like(self.get_expr_type(expr)) {
-                    return None;
-                }
-                if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                    if let Some(local_reg) = self.local_registers.get(&local_idx) {
-                        if self.type_is_dynamic_any_like(local_reg.ty) {
-                            return None;
+        if let Some(shape) = self.semantic_object_shape(expr.span().start) {
+            match shape.kind {
+                crate::semantics::ObjectShapeKind::StructuralObject
+                | crate::semantics::ObjectShapeKind::Dynamic => return None,
+                crate::semantics::ObjectShapeKind::ClassValue
+                | crate::semantics::ObjectShapeKind::NominalInstance
+                | crate::semantics::ObjectShapeKind::BuiltinValue => {
+                    if let Some(type_id) = shape.type_id {
+                        if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(type_id) {
+                            return Some(nominal_type_id);
+                        }
+                    }
+                    if let Some(type_name) = shape.type_name.as_deref() {
+                        if let Some(nominal_type_id) = self.nominal_type_id_from_type_name(type_name)
+                        {
+                            return Some(nominal_type_id);
                         }
                     }
                 }
-                // Prefer explicit variable/class maps, then local register typing.
-                // Local register type is often more precise than checker fallback
-                // (e.g. primitive parameters should not degrade to Object class).
-                if let Some(nominal_type_id) =
-                    self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
-                {
-                    return Some(nominal_type_id);
-                }
-                if let Some(nominal_type_id) = self
-                    .variable_object_type_aliases
-                    .get(&ident.name)
-                    .and_then(|alias| self.nominal_type_id_from_type_name(alias))
-                {
-                    return Some(nominal_type_id);
-                }
-                if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                    if let Some(local_reg) = self.local_registers.get(&local_idx) {
-                        return self.nominal_type_id_from_type_id(local_reg.ty);
-                    }
-                }
-                self.nominal_type_id_from_type_id(self.get_expr_type(expr))
             }
+        }
+
+        match expr {
+            Expression::This(_) => self.current_class.or_else(|| {
+                self.this_register
+                    .as_ref()
+                    .and_then(|reg| self.nominal_type_id_from_type_id(reg.ty))
+            }),
+            Expression::Identifier(ident) if self.interner.resolve(ident.name) == "this" => {
+                self.current_class.or_else(|| {
+                    self.this_register
+                        .as_ref()
+                        .and_then(|reg| self.nominal_type_id_from_type_id(reg.ty))
+                })
+            }
+            Expression::Identifier(ident) => self
+                .semantic_object_shape_type_id(ident.span.start)
+                .and_then(|ty| self.nominal_type_id_from_type_id(ty))
+                .or_else(|| {
+                    self.object_expr_is_class_constructor_ref(expr)
+                        .then(|| {
+                            self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
+                        })
+                        .flatten()
+                })
+                .or_else(|| self.nominal_type_id_from_type_id(self.get_expr_type(expr))),
             Expression::TypeCast(cast) => {
-                if self.type_is_dynamic_any_like(self.get_expr_type(expr)) {
-                    return None;
-                }
                 if self
-                    .structural_projection_layout_from_type_id(
-                        self.resolve_structural_slot_type_from_annotation(&cast.target_type),
-                    )
-                    .is_some()
+                    .semantic_object_shape_kind(expr.span().start)
+                    .is_some_and(|kind| kind == crate::semantics::ObjectShapeKind::StructuralObject)
+                    || self.type_is_dynamic_any_like(self.get_expr_type(expr))
                 {
                     None
                 } else {
@@ -13520,146 +13628,6 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expression::Parenthesized(inner) => self.infer_nominal_type_id(&inner.expression),
-            // Field access: look up the field's type in the class definition
-            Expression::Member(member) => {
-                // Get the class of the object
-                let obj_nominal_type_id = self.infer_nominal_type_id(&member.object)?;
-                // Look up the field type
-                let field_name = self.interner.resolve(member.property.name);
-                let all_fields = self.get_all_fields(obj_nominal_type_id);
-                for field in all_fields.into_iter().rev() {
-                    let fname = self.interner.resolve(field.name);
-                    if fname == field_name {
-                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                            eprintln!(
-                                "[lower] infer member '{}.{}' field_ty={} class_type={:?} type_name={:?}",
-                                "<member>",
-                                field_name,
-                                field.ty.as_u32(),
-                                field.class_type.map(|id| id.as_u32()),
-                                field.type_name,
-                            );
-                        }
-                        // Check if the field has a known class type
-                        if let Some(field_nominal_type_id) = field.class_type {
-                            return Some(field_nominal_type_id);
-                        }
-                        // Generic and substituted field types often have the correct
-                        // concrete nominal type even when `class_type`/`type_name`
-                        // were not preserved during lowering metadata construction.
-                        if let Some(field_nominal_type_id) =
-                            self.nominal_type_id_from_type_id(field.ty)
-                        {
-                            return Some(field_nominal_type_id);
-                        }
-                        // Otherwise, check if we have a type name we can look up
-                        if let Some(ref type_name) = field.type_name {
-                            if let Some(cid) = self.nominal_type_id_from_type_name(type_name) {
-                                return Some(cid);
-                            }
-                        }
-                        break;
-                    }
-                }
-                self.nominal_type_id_from_type_id(self.get_expr_type(expr))
-            }
-            // Method/function call: check if the call has a known return class type
-            Expression::Call(call) => {
-                if let Expression::Function(function_expr) = &*call.callee {
-                    if function_expr.params.is_empty() && call.arguments.is_empty() {
-                        if let [ast::Statement::ClassDecl(class_decl), ast::Statement::Return(ret)] =
-                            function_expr.body.statements.as_slice()
-                        {
-                            if let Some(ast::Expression::Identifier(ret_ident)) = &ret.value {
-                                if ret_ident.name == class_decl.name.name {
-                                    if let Some(nominal_type_id) =
-                                        self.nominal_type_id_for_decl(class_decl).or_else(|| {
-                                            self.class_map.get(&class_decl.name.name).copied()
-                                        })
-                                    {
-                                        return Some(nominal_type_id);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if let Expression::Member(member) = &*call.callee {
-                    let obj_nominal_type_id = self.infer_nominal_type_id(&member.object)?;
-                    let method_name = member.property.name;
-                    // Only return a class if there's an explicit return class mapping.
-                    // Don't assume methods return the same class (e.g., Map.get() returns
-                    // the value type, not Map).
-                    if let Some(&ret_nominal_type_id) = self
-                        .method_return_class_map
-                        .get(&(obj_nominal_type_id, method_name))
-                    {
-                        return Some(ret_nominal_type_id);
-                    }
-                    if let Some(ret_class_name) = self
-                        .method_return_type_alias_map
-                        .get(&(obj_nominal_type_id, method_name))
-                    {
-                        if let Some(ret_nominal_type_id) =
-                            self.nominal_type_id_from_type_name(ret_class_name)
-                        {
-                            return Some(ret_nominal_type_id);
-                        }
-                    }
-                }
-                // Standalone function/bound method call: check return class
-                if let Expression::Identifier(ident) = &*call.callee {
-                    // Check __NATIVE_CALL<Type> type arguments
-                    let name = self.interner.resolve(ident.name);
-                    if name == "__NATIVE_CALL" {
-                        if let Some(type_args) = &call.type_args {
-                            if let Some(first_ty) = type_args.first() {
-                                return self.try_extract_class_from_type(first_ty);
-                            }
-                        }
-                    }
-                    // Check if callee is a bound method variable
-                    if let Some(&(nominal_type_id, method_name)) =
-                        self.bound_method_vars.get(&ident.name)
-                    {
-                        if let Some(&ret_nominal_type_id) = self
-                            .method_return_class_map
-                            .get(&(nominal_type_id, method_name))
-                        {
-                            return Some(ret_nominal_type_id);
-                        }
-                    }
-                    // Check function return class
-                    if let Some(&ret_nominal_type_id) =
-                        self.function_return_class_map.get(&ident.name)
-                    {
-                        return Some(ret_nominal_type_id);
-                    }
-                }
-                self.nominal_type_id_from_type_id(self.get_expr_type(expr))
-            }
-            // New expression: return the class being instantiated
-            Expression::New(new_expr) => {
-                if let Expression::Identifier(ident) = &*new_expr.callee {
-                    return self
-                        .class_map
-                        .get(&ident.name)
-                        .copied()
-                        .or_else(|| self.variable_class_map.get(&ident.name).copied())
-                        .or_else(|| {
-                            self.constructor_value_ctor_map
-                                .get(&ident.name)
-                                .and_then(|symbol| self.class_map.get(symbol).copied())
-                        })
-                        .or_else(|| {
-                            self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
-                        });
-                }
-                self.nominal_type_id_from_type_id(self.get_expr_type(expr))
-            }
-            // Index access over array/tuple containers can preserve the element class.
-            // Important: do NOT return container class ID directly (e.g. Array), because
-            // that misroutes primitive element calls to object/vtable dispatch.
             Expression::Index(index) => {
                 let object_ty = self.get_expr_type(&index.object);
                 if let Some(ty) = self.type_ctx.get(object_ty) {
@@ -13668,8 +13636,6 @@ impl<'a> Lowerer<'a> {
                             return self.nominal_type_id_from_type_id(arr.element);
                         }
                         crate::parser::types::ty::Type::Tuple(tuple) => {
-                            // Conservative: if all tuple members that are class-typed agree
-                            // on one class, use it; otherwise keep unresolved.
                             let mut found: Option<NominalTypeId> = None;
                             for member_ty in &tuple.elements {
                                 if let Some(cid) = self.nominal_type_id_from_type_id(*member_ty) {
@@ -13688,14 +13654,11 @@ impl<'a> Lowerer<'a> {
                             }
                             return None;
                         }
-                        _ => {
-                            // Non-array indexed containers (or custom indexable classes):
-                            // fall back to the container class inference behavior.
-                            return self.infer_nominal_type_id(&index.object);
-                        }
+                        _ => self.infer_nominal_type_id(&index.object),
                     }
+                } else {
+                    self.infer_nominal_type_id(&index.object)
                 }
-                self.infer_nominal_type_id(&index.object)
             }
             _ => self.nominal_type_id_from_type_id(self.get_expr_type(expr)),
         }
