@@ -18,7 +18,7 @@ use crate::compiler::ir::value::{IrConstant, IrValue};
 use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
 
-use super::analysis::{SuspensionAnalysis, SuspensionKind, SuspensionPoint};
+use super::analysis::{ExecutionSuspendKind, SuspensionAnalysis, SuspensionPoint};
 use super::statemachine::*;
 use super::traits::AotCompilable;
 
@@ -1520,20 +1520,20 @@ impl<'a> IrFunctionAdapter<'a> {
     }
 
     /// Analyze a single IR instruction for suspension classification.
-    fn classify_instr(instr: &IrInstr) -> Option<SuspensionKind> {
+    fn classify_instr(instr: &IrInstr) -> Option<ExecutionSuspendKind> {
         match instr {
-            IrInstr::Await { .. } => Some(SuspensionKind::Await),
-            IrInstr::AwaitAll { .. } => Some(SuspensionKind::Await),
-            IrInstr::Yield => Some(SuspensionKind::Yield),
-            IrInstr::GeneratorInitSuspend => Some(SuspensionKind::Yield),
-            IrInstr::GeneratorYield { .. } => Some(SuspensionKind::Yield),
-            IrInstr::Sleep { .. } => Some(SuspensionKind::Sleep),
-            IrInstr::KernelCall { .. } => Some(SuspensionKind::NativeCall),
-            IrInstr::Call { .. } => Some(SuspensionKind::AotCall),
+            IrInstr::Await { .. } => Some(ExecutionSuspendKind::AwaitTask),
+            IrInstr::AwaitAll { .. } => Some(ExecutionSuspendKind::AwaitTask),
+            IrInstr::Yield => Some(ExecutionSuspendKind::YieldNow),
+            IrInstr::GeneratorInitSuspend => Some(ExecutionSuspendKind::GeneratorInit),
+            IrInstr::GeneratorYield { .. } => Some(ExecutionSuspendKind::GeneratorYield),
+            IrInstr::Sleep { .. } => Some(ExecutionSuspendKind::Sleep),
+            IrInstr::KernelCall { .. } => Some(ExecutionSuspendKind::KernelBoundary),
+            IrInstr::Call { .. } => Some(ExecutionSuspendKind::AotCall),
             IrInstr::CallMethodExact { .. } | IrInstr::CallMethodShape { .. } => {
-                Some(SuspensionKind::NativeCall)
+                Some(ExecutionSuspendKind::KernelBoundary)
             }
-            IrInstr::CallClosure { .. } => Some(SuspensionKind::AotCall),
+            IrInstr::CallClosure { .. } => Some(ExecutionSuspendKind::AotCall),
             _ => None,
         }
     }
@@ -1569,7 +1569,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
                         index,
                         block_id: block.id.as_u32(),
                         instr_index: block.instructions.len() as u32,
-                        kind: SuspensionKind::PreemptionCheck,
+                        kind: ExecutionSuspendKind::Preemption,
                         live_locals: HashSet::new(),
                     });
                     index += 1;
@@ -1806,7 +1806,7 @@ mod tests {
         let await_points: Vec<_> = analysis
             .points
             .iter()
-            .filter(|p| p.kind == SuspensionKind::Await)
+            .filter(|p| p.kind == ExecutionSuspendKind::AwaitTask)
             .collect();
         assert!(!await_points.is_empty());
     }

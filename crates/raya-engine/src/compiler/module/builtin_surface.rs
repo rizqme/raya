@@ -319,7 +319,14 @@ fn build_builtin_surface_manifest(mode: BuiltinSurfaceMode) -> BuiltinSurfaceMan
         let constants = extract_constants(source);
         let mut functions = FxHashMap::<String, ParsedFunctionBinding>::default();
 
-        collect_top_level_bindings(&module.statements, &interner, &mut locals, &mut functions);
+        collect_top_level_bindings(
+            &module.statements,
+            source,
+            &interner,
+            &constants,
+            &mut locals,
+            &mut functions,
+        );
         collect_export_names(&module.statements, &interner, &mut exported_names);
         collect_class_surfaces(&module.statements, source, &interner, &constants, &mut classes);
         collect_static_surface_patches(
@@ -465,7 +472,9 @@ fn collect_export_names(
 
 fn collect_top_level_bindings(
     statements: &[Statement],
+    source: &str,
     interner: &Interner,
+    constants: &FxHashMap<String, u16>,
     locals: &mut FxHashMap<String, LocalBuiltinBindingKind>,
     functions: &mut FxHashMap<String, ParsedFunctionBinding>,
 ) {
@@ -479,11 +488,19 @@ fn collect_top_level_bindings(
             }
             Statement::FunctionDecl(function) => {
                 let name = interner.resolve(function.name.name).to_string();
+                let binding = direct_wrapper_binding_from_block(
+                    &function.body,
+                    function.return_type.as_ref(),
+                    source,
+                    interner,
+                    constants,
+                    functions,
+                );
                 locals.insert(name.clone(), LocalBuiltinBindingKind::Function);
                 functions.insert(
                     name,
                     ParsedFunctionBinding {
-                        binding: BuiltinDispatchBinding::SourceDefined,
+                        binding,
                         callable: true,
                     },
                 );
@@ -499,7 +516,14 @@ fn collect_top_level_bindings(
                 }
             }
             Statement::ExportDecl(ExportDecl::Declaration(inner)) => {
-                collect_top_level_bindings(std::slice::from_ref(inner.as_ref()), interner, locals, functions);
+                collect_top_level_bindings(
+                    std::slice::from_ref(inner.as_ref()),
+                    source,
+                    interner,
+                    constants,
+                    locals,
+                    functions,
+                );
             }
             _ => {}
         }
@@ -605,9 +629,19 @@ fn collect_class_surfaces(
                             target.insert(name, binding);
                         }
                         ClassMember::Constructor(ctor) => {
-                            let body = span_slice(source, ctor.body.span.start, ctor.body.span.end);
-                            surface.constructor_native_id =
-                                extract_native_call_id(body, constants);
+                            surface.constructor_native_id = match direct_wrapper_binding_from_block(
+                                &ctor.body,
+                                None,
+                                source,
+                                interner,
+                                constants,
+                                &FxHashMap::default(),
+                            ) {
+                                BuiltinDispatchBinding::VmNative { native_id, .. } => {
+                                    Some(native_id)
+                                }
+                                _ => None,
+                            };
                         }
                         ClassMember::StaticBlock(_) => {}
                     }
@@ -792,18 +826,25 @@ fn binding_from_expression(
             .map(|parsed| (parsed.binding.clone(), parsed.callable))
             .unwrap_or((BuiltinDispatchBinding::SourceDefined, false)),
         Expression::Function(function) => (
-            function_binding(function.body.span.start, function.body.span.end, function.return_type.as_ref(), source, interner, constants),
+            function_binding(
+                &function.body,
+                function.return_type.as_ref(),
+                source,
+                interner,
+                constants,
+                functions,
+            ),
             true,
         ),
         Expression::Arrow(arrow) => match &arrow.body {
             ast::ArrowBody::Block(block) => (
                 function_binding(
-                    block.span.start,
-                    block.span.end,
+                    block,
                     arrow.return_type.as_ref(),
                     source,
                     interner,
                     constants,
+                    functions,
                 ),
                 true,
             ),
@@ -814,20 +855,14 @@ fn binding_from_expression(
 }
 
 fn function_binding(
-    span_start: usize,
-    span_end: usize,
+    body: &ast::BlockStatement,
     return_type: Option<&TypeAnnotation>,
     source: &str,
     interner: &Interner,
     constants: &FxHashMap<String, u16>,
+    functions: &FxHashMap<String, ParsedFunctionBinding>,
 ) -> BuiltinDispatchBinding {
-    let body = span_slice(source, span_start, span_end);
-    extract_native_call_id(body, constants)
-        .map(|native_id| BuiltinDispatchBinding::VmNative {
-            native_id,
-            return_type_name: type_name_from_annotation(return_type, interner),
-        })
-        .unwrap_or(BuiltinDispatchBinding::SourceDefined)
+    direct_wrapper_binding_from_block(body, return_type, source, interner, constants, functions)
 }
 
 fn method_binding_from_decl(
@@ -853,13 +888,103 @@ fn method_binding_from_decl(
         return BuiltinDispatchBinding::SourceDefined;
     };
     function_binding(
-        body.span.start,
-        body.span.end,
+        body,
         method.return_type.as_ref(),
         source,
         interner,
         constants,
+        &FxHashMap::default(),
     )
+}
+
+fn direct_wrapper_binding_from_block(
+    body: &ast::BlockStatement,
+    return_type: Option<&TypeAnnotation>,
+    source: &str,
+    interner: &Interner,
+    constants: &FxHashMap<String, u16>,
+    functions: &FxHashMap<String, ParsedFunctionBinding>,
+) -> BuiltinDispatchBinding {
+    let [stmt] = body.statements.as_slice() else {
+        return BuiltinDispatchBinding::SourceDefined;
+    };
+    let expr = match stmt {
+        Statement::Return(ret) => ret.value.as_ref(),
+        Statement::Expression(expr_stmt) => Some(&expr_stmt.expression),
+        _ => None,
+    };
+    let Some(expr) = expr else {
+        return BuiltinDispatchBinding::SourceDefined;
+    };
+    direct_wrapper_binding_from_expression(
+        expr,
+        return_type,
+        source,
+        interner,
+        constants,
+        functions,
+    )
+}
+
+fn direct_wrapper_binding_from_expression(
+    expr: &Expression,
+    return_type: Option<&TypeAnnotation>,
+    source: &str,
+    interner: &Interner,
+    constants: &FxHashMap<String, u16>,
+    functions: &FxHashMap<String, ParsedFunctionBinding>,
+) -> BuiltinDispatchBinding {
+    match expr {
+        Expression::Parenthesized(paren) => direct_wrapper_binding_from_expression(
+            &paren.expression,
+            return_type,
+            source,
+            interner,
+            constants,
+            functions,
+        ),
+        Expression::TypeCast(cast) => direct_wrapper_binding_from_expression(
+            &cast.object,
+            return_type,
+            source,
+            interner,
+            constants,
+            functions,
+        ),
+        Expression::Call(call) => {
+            let Expression::Identifier(callee) = &*call.callee else {
+                return BuiltinDispatchBinding::SourceDefined;
+            };
+            let callee_name = interner.resolve(callee.name);
+            if callee_name == "__NATIVE_CALL" {
+                return span_native_binding(expr, return_type, source, interner, constants)
+                    .unwrap_or(BuiltinDispatchBinding::SourceDefined);
+            }
+            functions
+                .get(callee_name)
+                .map(|parsed| parsed.binding.clone())
+                .unwrap_or(BuiltinDispatchBinding::SourceDefined)
+        }
+        Expression::Identifier(ident) => functions
+            .get(interner.resolve(ident.name))
+            .map(|parsed| parsed.binding.clone())
+            .unwrap_or(BuiltinDispatchBinding::SourceDefined),
+        _ => BuiltinDispatchBinding::SourceDefined,
+    }
+}
+
+fn span_native_binding(
+    expr: &Expression,
+    return_type: Option<&TypeAnnotation>,
+    source: &str,
+    interner: &Interner,
+    constants: &FxHashMap<String, u16>,
+) -> Option<BuiltinDispatchBinding> {
+    let body = span_slice(source, expr.span().start, expr.span().end);
+    extract_native_call_id(body, constants).map(|native_id| BuiltinDispatchBinding::VmNative {
+        native_id,
+        return_type_name: type_name_from_annotation(return_type, interner),
+    })
 }
 
 fn property_key_name(key: &PropertyKey, interner: &Interner) -> Option<String> {

@@ -4,6 +4,8 @@
 //! JIT code calls back into the runtime through function pointers in
 //! `RuntimeHelperTable` for GC, allocation, kernel calls, etc.
 
+use crate::vm::suspend::SuspendTag;
+
 /// Entry point signature for JIT-compiled functions
 ///
 /// JIT code receives arguments as NaN-boxed Value array, a locals buffer,
@@ -27,16 +29,6 @@ pub enum JitExitKind {
     Failed = 3,
 }
 
-/// Suspension reasons written into `JitExitInfo.suspend_reason`.
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JitSuspendReason {
-    None = 0,
-    Preemption = 1,
-    NativeCallBoundary = 2,
-    InterpreterBoundary = 3,
-}
-
 /// Minimal native-frame snapshot to support resume/deopt plumbing.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -58,8 +50,8 @@ pub const JIT_EXIT_MAX_NATIVE_ARGS: usize = 32;
 pub struct JitExitInfo {
     /// How execution exited.
     pub kind: u32,
-    /// Suspension reason discriminator (VM-specific; 0 = none).
-    pub suspend_reason: u32,
+    /// Suspension tag discriminator (VM-specific; 0 = none).
+    pub suspend_tag: u32,
     /// Bytecode offset for deopt/resume (if relevant).
     pub bytecode_offset: u32,
     /// Reserved for alignment/extension.
@@ -78,7 +70,7 @@ impl Default for JitExitInfo {
     fn default() -> Self {
         Self {
             kind: JitExitKind::Completed as u32,
-            suspend_reason: JitSuspendReason::None as u32,
+            suspend_tag: SuspendTag::None as u32,
             bytecode_offset: 0,
             _reserved: 0,
             frame: JitMachineFrameSnapshot::default(),

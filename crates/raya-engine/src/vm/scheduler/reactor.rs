@@ -6,11 +6,13 @@
 //! preemption.
 
 use crate::vm::abi::native_to_value;
+#[cfg(feature = "aot")]
+use crate::aot::run_scheduled_aot_task;
 use crate::vm::interpreter::{
     ExecutionResult, Interpreter, PromiseHandle, PromiseMicrotask, SharedVmState,
 };
 use crate::vm::object::{Buffer, ChannelObject, Class, Object, RayaString};
-use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
+use crate::vm::scheduler::{ResumePolicy, SuspendReason, Task, TaskId, TaskState};
 use crate::vm::value::Value;
 use crossbeam::channel::{self, Receiver, Sender, TryRecvError, TrySendError};
 use raya_sdk::{IoCompletion, IoRequest};
@@ -345,82 +347,157 @@ impl Reactor {
             }
             task.set_start_time(Instant::now());
 
-            let mut interpreter = Interpreter::new(
-                &state.gc,
-                &state.classes,
-                &state.layouts,
-                &state.mutex_registry,
-                &state.semaphore_registry,
-                &state.safepoint,
-                &state.globals_by_index,
-                &state.builtin_global_slots,
-                &state.js_global_bindings,
-                &state.js_global_binding_slots,
-                &state.constant_string_cache,
-                &state.ephemeral_gc_roots,
-                &state.pinned_handles,
-                &state.tasks,
-                &state.injector,
-                &state.promise_microtasks,
-                &state.test262_async_state,
-                &state.test262_async_failure,
-                &state.metadata,
-                &state.class_metadata,
-                &state.native_handler,
-                &state.module_layouts,
-                &state.module_registry,
-                &state.structural_shape_adapters,
-                &state.structural_shape_names,
-                &state.structural_layout_shapes,
-                &state.type_handles,
-                &state.class_value_slots,
-                &state.prop_keys,
-                &state.aot_profile,
-                Some(&io_submit_tx),
-                state.max_preemptions,
-                &state.stack_pool,
-            );
+            #[cfg(feature = "aot")]
+            let result = if task.aot_entry().is_some() {
+                run_scheduled_aot_task(&task, &state, state.max_preemptions).result
+            } else {
+                let mut interpreter = Interpreter::new(
+                    &state.gc,
+                    &state.classes,
+                    &state.layouts,
+                    &state.mutex_registry,
+                    &state.semaphore_registry,
+                    &state.safepoint,
+                    &state.globals_by_index,
+                    &state.builtin_global_slots,
+                    &state.js_global_bindings,
+                    &state.js_global_binding_slots,
+                    &state.constant_string_cache,
+                    &state.ephemeral_gc_roots,
+                    &state.pinned_handles,
+                    &state.tasks,
+                    &state.injector,
+                    &state.promise_microtasks,
+                    &state.test262_async_state,
+                    &state.test262_async_failure,
+                    &state.metadata,
+                    &state.class_metadata,
+                    &state.native_handler,
+                    &state.module_layouts,
+                    &state.module_registry,
+                    &state.structural_shape_adapters,
+                    &state.structural_shape_names,
+                    &state.structural_layout_shapes,
+                    &state.type_handles,
+                    &state.class_value_slots,
+                    &state.prop_keys,
+                    &state.aot_profile,
+                    Some(&io_submit_tx),
+                    state.max_preemptions,
+                    &state.stack_pool,
+                );
 
-            // Wire JIT code cache and profiling for native dispatch
-            #[cfg(feature = "jit")]
-            {
-                let cache = state.code_cache.lock().clone();
-                interpreter.set_code_cache(cache);
+                #[cfg(feature = "jit")]
+                {
+                    let cache = state.code_cache.lock().clone();
+                    interpreter.set_code_cache(cache);
 
-                // Wire profiling for on-the-fly compilation
-                let module = task.module();
-                let profiles = state.module_profiles.read();
-                if let Some(profile) = profiles.get(&module.checksum) {
-                    interpreter.set_module_profile(Some(profile.clone()));
+                    let module = task.module();
+                    let profiles = state.module_profiles.read();
+                    if let Some(profile) = profiles.get(&module.checksum) {
+                        interpreter.set_module_profile(Some(profile.clone()));
+                    }
+                    drop(profiles);
+                    interpreter.set_module_profiles_map(Some(&state.module_profiles));
+
+                    let compiler = state.background_compiler.lock().clone();
+                    if let Some(ref c) = compiler {
+                        interpreter.set_background_compiler(Some(c.clone()));
+                    }
+
+                    let policy = state.jit_compilation_policy.lock().clone();
+                    interpreter.set_compilation_policy(policy);
+
+                    interpreter.set_jit_telemetry(Some(state.jit_telemetry.clone()));
                 }
-                drop(profiles);
-                interpreter.set_module_profiles_map(Some(&state.module_profiles));
 
-                let compiler = state.background_compiler.lock().clone();
-                if let Some(ref c) = compiler {
-                    interpreter.set_background_compiler(Some(c.clone()));
+                if let Some(ref profiler) = *state.profiler.lock() {
+                    interpreter.set_profiler(Some(profiler.clone()));
                 }
 
-                let policy = state.jit_compilation_policy.lock().clone();
-                interpreter.set_compilation_policy(policy);
+                if let Some(ref ds) = *state.debug_state.lock() {
+                    interpreter.set_debug_state(Some(ds.clone()));
+                }
 
-                interpreter.set_jit_telemetry(Some(state.jit_telemetry.clone()));
-            }
+                let result = interpreter.run(&task);
+                interpreter.signal_debug_result(&result);
+                result
+            };
 
-            // Wire profiler for CPU/wall-clock sampling
-            if let Some(ref profiler) = *state.profiler.lock() {
-                interpreter.set_profiler(Some(profiler.clone()));
-            }
+            #[cfg(not(feature = "aot"))]
+            let result = {
+                let mut interpreter = Interpreter::new(
+                    &state.gc,
+                    &state.classes,
+                    &state.layouts,
+                    &state.mutex_registry,
+                    &state.semaphore_registry,
+                    &state.safepoint,
+                    &state.globals_by_index,
+                    &state.builtin_global_slots,
+                    &state.js_global_bindings,
+                    &state.js_global_binding_slots,
+                    &state.constant_string_cache,
+                    &state.ephemeral_gc_roots,
+                    &state.pinned_handles,
+                    &state.tasks,
+                    &state.injector,
+                    &state.promise_microtasks,
+                    &state.test262_async_state,
+                    &state.test262_async_failure,
+                    &state.metadata,
+                    &state.class_metadata,
+                    &state.native_handler,
+                    &state.module_layouts,
+                    &state.module_registry,
+                    &state.structural_shape_adapters,
+                    &state.structural_shape_names,
+                    &state.structural_layout_shapes,
+                    &state.type_handles,
+                    &state.class_value_slots,
+                    &state.prop_keys,
+                    &state.aot_profile,
+                    Some(&io_submit_tx),
+                    state.max_preemptions,
+                    &state.stack_pool,
+                );
 
-            // Wire debug state for debugger coordination
-            if let Some(ref ds) = *state.debug_state.lock() {
-                interpreter.set_debug_state(Some(ds.clone()));
-            }
+                #[cfg(feature = "jit")]
+                {
+                    let cache = state.code_cache.lock().clone();
+                    interpreter.set_code_cache(cache);
 
-            let result = interpreter.run(&task);
+                    let module = task.module();
+                    let profiles = state.module_profiles.read();
+                    if let Some(profile) = profiles.get(&module.checksum) {
+                        interpreter.set_module_profile(Some(profile.clone()));
+                    }
+                    drop(profiles);
+                    interpreter.set_module_profiles_map(Some(&state.module_profiles));
 
-            // Signal debug state for terminal results (completion/failure)
-            interpreter.signal_debug_result(&result);
+                    let compiler = state.background_compiler.lock().clone();
+                    if let Some(ref c) = compiler {
+                        interpreter.set_background_compiler(Some(c.clone()));
+                    }
+
+                    let policy = state.jit_compilation_policy.lock().clone();
+                    interpreter.set_compilation_policy(policy);
+
+                    interpreter.set_jit_telemetry(Some(state.jit_telemetry.clone()));
+                }
+
+                if let Some(ref profiler) = *state.profiler.lock() {
+                    interpreter.set_profiler(Some(profiler.clone()));
+                }
+
+                if let Some(ref ds) = *state.debug_state.lock() {
+                    interpreter.set_debug_state(Some(ds.clone()));
+                }
+
+                let result = interpreter.run(&task);
+                interpreter.signal_debug_result(&result);
+                result
+            };
 
             task.clear_start_time();
 
@@ -823,8 +900,7 @@ impl Reactor {
             ExecutionResult::Suspended(reason) => {
                 if matches!(
                     reason,
-                    SuspendReason::MutexLock { .. }
-                        | SuspendReason::MutexLockCall { .. }
+                    SuspendReason::MutexAcquire { .. }
                         | SuspendReason::SemaphoreAcquire { .. }
                         | SuspendReason::AwaitTask(_)
                 ) {
@@ -835,20 +911,16 @@ impl Reactor {
                     let parked = vr.task.try_suspend(reason.clone());
                     if parked {
                         match reason {
-                            SuspendReason::MutexLock { mutex_id } => {
+                            SuspendReason::MutexAcquire {
+                                mutex_id,
+                                resume_policy,
+                            } => {
                                 if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
                                     if mutex.owner() == Some(vr.task.id()) && vr.task.try_resume() {
                                         vr.task.add_held_mutex(mutex_id);
-                                        vr.task.clear_suspend_reason();
-                                        ready_queue.push_back(vr.task);
-                                    }
-                                }
-                            }
-                            SuspendReason::MutexLockCall { mutex_id } => {
-                                if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
-                                    if mutex.owner() == Some(vr.task.id()) && vr.task.try_resume() {
-                                        vr.task.add_held_mutex(mutex_id);
-                                        vr.task.set_resume_value(Value::null());
+                                        if matches!(resume_policy, ResumePolicy::ReturnNull) {
+                                            vr.task.set_resume_value(Value::null());
+                                        }
                                         vr.task.clear_suspend_reason();
                                         ready_queue.push_back(vr.task);
                                     }
@@ -860,6 +932,17 @@ impl Reactor {
                         }
                     }
                 } else {
+                    if matches!(
+                        reason,
+                        SuspendReason::YieldNow
+                            | SuspendReason::Preemption
+                            | SuspendReason::KernelBoundary
+                    ) {
+                        vr.task.set_state(TaskState::Resumed);
+                        vr.task.clear_suspend_reason();
+                        ready_queue.push_back(vr.task);
+                        return;
+                    }
                     vr.task.suspend(reason.clone());
                     match reason {
                         SuspendReason::AwaitTask(_) => {
@@ -871,9 +954,11 @@ impl Reactor {
                                 task: vr.task,
                             });
                         }
-                        SuspendReason::MutexLock { .. } => unreachable!(),
-                        SuspendReason::MutexLockCall { .. } => unreachable!(),
+                        SuspendReason::MutexAcquire { .. } => unreachable!(),
                         SuspendReason::SemaphoreAcquire { .. } => unreachable!(),
+                        SuspendReason::YieldNow
+                        | SuspendReason::Preemption
+                        | SuspendReason::KernelBoundary => unreachable!(),
                         SuspendReason::ChannelSend { channel_id, value } => {
                             channel_waiters.push(ChannelWaiter {
                                 task_id: vr.task.id(),

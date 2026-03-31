@@ -2341,40 +2341,16 @@ impl Runtime {
         ));
 
         let main_task = Arc::new(Task::new(entry_main_fn_id, runtime_module.clone(), None));
-        main_task.set_state(TaskState::Running);
-        vm.shared_state()
-            .tasks
-            .write()
-            .insert(main_task.id(), main_task.clone());
-
-        let mut ctx = build_task_context(
-            main_task.preempt_flag_ptr(),
-            raya_engine::aot::helpers::create_default_helper_table(),
-            None,
-        );
-        ctx.shared_state = vm.shared_state() as *const _ as *mut ();
-        ctx.current_task = Arc::as_ptr(&main_task) as *mut ();
-        ctx.module = Arc::as_ptr(&runtime_module) as *const ();
-
-        let frame = unsafe {
-            allocate_initial_frame(
-                global_func_id,
-                loaded_entry.local_count,
-                entry_ptr,
-                &[],
-                &ctx.helpers,
-            )
-        };
-        if frame.is_null() {
-            vm.shared_state().tasks.write().remove(&main_task.id());
+        main_task.set_aot_entry(loaded_entry.local_count, entry_ptr);
+        if vm.scheduler().spawn(main_task.clone()).is_none() {
             return Err(RuntimeError::Vm(VmError::RuntimeError(
-                "AOT bundle entry frame allocation failed".to_string(),
+                "Failed to spawn AOT bundle main task".to_string(),
             )));
         }
 
-        let run_result = unsafe { run_aot_function(frame, &mut ctx, 100) };
-        let result = self.finish_bundle_aot_result(vm, &main_task, run_result);
-        vm.shared_state().tasks.write().remove(&main_task.id());
+        let final_state = main_task.wait_completion();
+        let result = self.finish_bundle_aot_result(&main_task, final_state);
+        let _ = vm.scheduler().remove_task(main_task.id());
         vm.shared_state().mark_module_initialized(&runtime_module);
         result
     }
@@ -2382,32 +2358,26 @@ impl Runtime {
     #[cfg(feature = "aot")]
     fn finish_bundle_aot_result(
         &self,
-        _vm: &mut raya_engine::vm::Vm,
         task: &Arc<Task>,
-        run_result: AotRunResult,
+        final_state: TaskState,
     ) -> Result<Value, RuntimeError> {
-        match run_result.result {
-            raya_engine::vm::interpreter::ExecutionResult::Completed(value) => {
+        match final_state {
+            TaskState::Completed => {
+                let value = task.result().unwrap_or_default();
                 if task.has_exception() {
-                    task.fail();
                     return Err(RuntimeError::Vm(VmError::RuntimeError(
                         Self::task_exception_message(task),
                     )));
                 }
-                task.complete(value);
                 Ok(value)
             }
-            raya_engine::vm::interpreter::ExecutionResult::Failed(error) => {
-                task.fail();
-                Err(RuntimeError::Vm(error))
-            }
-            raya_engine::vm::interpreter::ExecutionResult::Suspended(reason) => {
-                task.set_state(TaskState::Suspended);
-                Err(RuntimeError::Vm(VmError::RuntimeError(format!(
-                    "AOT bundle execution suspended with {:?}; scheduler-backed native bundle resume is not implemented yet",
-                    reason
-                ))))
-            }
+            TaskState::Failed => Err(RuntimeError::Vm(VmError::RuntimeError(
+                Self::task_exception_message(task),
+            ))),
+            other => Err(RuntimeError::Vm(VmError::RuntimeError(format!(
+                "AOT bundle main task ended in unexpected state: {:?}",
+                other
+            )))),
         }
     }
 

@@ -20,7 +20,8 @@ use crate::jit::runtime::helpers::{
     JIT_NATIVE_SUSPEND_SENTINEL, JIT_SHAPE_FIELD_FALLBACK_SENTINEL,
     JIT_STRING_LEN_FALLBACK_SENTINEL,
 };
-use crate::jit::runtime::trampoline::{JitExitKind, JitSuspendReason, JIT_EXIT_MAX_NATIVE_ARGS};
+use crate::jit::runtime::trampoline::{JitExitKind, JIT_EXIT_MAX_NATIVE_ARGS};
+use crate::vm::suspend::SuspendTag;
 
 /// State maintained during lowering of a single function
 pub struct LoweringContext<'a> {
@@ -285,7 +286,7 @@ impl<'a> LoweringContext<'a> {
         self.emit_exit_return(
             builder,
             JitExitKind::Suspended as i64,
-            JitSuspendReason::InterpreterBoundary as i64,
+            SuspendTag::InterpreterBoundary as i64,
             bytecode_offset as i64,
         );
     }
@@ -1814,7 +1815,7 @@ impl<'a> LoweringContext<'a> {
             JitInstr::CheckPreemption { bytecode_offset } => {
                 // if (ctx != null && helpers.check_preemption(current_task)) {
                 //   exit.kind = Suspended
-                //   exit.suspend_reason = 1 (preemption)
+                //   exit.suspend_tag = Preemption
                 //   return null
                 // }
                 let ctx = self.params.ctx_ptr;
@@ -1839,7 +1840,7 @@ impl<'a> LoweringContext<'a> {
                 self.emit_exit_return(
                     builder,
                     JitExitKind::Suspended as i64,
-                    JitSuspendReason::Preemption as i64,
+                    SuspendTag::Preemption as i64,
                     *bytecode_offset as i64,
                 );
                 builder.switch_to_block(cont);
@@ -1935,7 +1936,7 @@ impl<'a> LoweringContext<'a> {
                     self.emit_exit_return(
                         builder,
                         JitExitKind::Suspended as i64,
-                        JitSuspendReason::NativeCallBoundary as i64,
+                        SuspendTag::KernelBoundary as i64,
                         *bytecode_offset as i64,
                     );
 
@@ -2077,7 +2078,7 @@ impl<'a> LoweringContext<'a> {
                     self.emit_exit_return(
                         builder,
                         JitExitKind::Suspended as i64,
-                        JitSuspendReason::NativeCallBoundary as i64,
+                        SuspendTag::KernelBoundary as i64,
                         *bytecode_offset as i64,
                     );
 
@@ -2110,14 +2111,14 @@ impl<'a> LoweringContext<'a> {
         &self,
         builder: &mut FunctionBuilder<'_>,
         kind: i64,
-        suspend_reason: i64,
+        suspend_tag: i64,
         bytecode_offset: i64,
     ) {
         let kind_val = builder.ins().iconst(types::I32, kind);
         builder
             .ins()
             .store(MemFlags::trusted(), kind_val, self.params.exit_info_ptr, 0);
-        let reason_val = builder.ins().iconst(types::I32, suspend_reason);
+        let reason_val = builder.ins().iconst(types::I32, suspend_tag);
         builder.ins().store(
             MemFlags::trusted(),
             reason_val,

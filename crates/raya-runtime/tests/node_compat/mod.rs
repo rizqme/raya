@@ -233,6 +233,26 @@ fn test_node_compat_get_own_property_descriptor_roundtrip() {
 }
 
 #[test]
+fn test_node_compat_object_create_with_proto_only_uses_source_defined_surface() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let proto = { marker: 1 };
+            let obj = Object.create(proto);
+            return Object.getPrototypeOf(obj) == proto && obj["marker"] == 1;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
 fn test_node_events_emit_function_payload_cast_path() {
     let runtime = Runtime::with_options(RuntimeOptions {
         builtin_mode: BuiltinMode::NodeCompat,

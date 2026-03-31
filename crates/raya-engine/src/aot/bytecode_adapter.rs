@@ -12,7 +12,7 @@ use crate::compiler::bytecode::module::Module;
 use crate::compiler::bytecode::opcode::Opcode;
 use rustc_hash::FxHashMap;
 
-use super::analysis::{SuspensionAnalysis, SuspensionKind, SuspensionPoint};
+use super::analysis::{ExecutionSuspendKind, SuspensionAnalysis, SuspensionPoint};
 use super::profile::{AotFunctionProfile, AotSiteKind};
 use super::statemachine::{
     HelperCall, SmBlock, SmBlockId, SmBlockKind, SmCmpOp, SmF64BinOp, SmI32BinOp, SmInstr,
@@ -377,27 +377,16 @@ pub struct LiftedFunction {
     pub profile_assumptions: FxHashMap<(u32, AotSiteKind), u32>,
 }
 
-/// Helper function to map JitInstr to SuspensionKind (when JIT feature is enabled)
+/// Helper function to map JIT IR to the shared execution suspend kind.
 #[cfg(all(feature = "aot", feature = "jit"))]
-fn classify_suspension(instr: &JitInstr) -> Option<SuspensionKind> {
+fn classify_suspension(instr: &JitInstr) -> Option<ExecutionSuspendKind> {
     match instr {
-        // Always suspends
-        JitInstr::Await { .. } => Some(SuspensionKind::Await),
-        JitInstr::Yield => Some(SuspensionKind::Yield),
-        JitInstr::Sleep { .. } => Some(SuspensionKind::Sleep),
-
-        // May suspend - native call
-        JitInstr::CallKernel { .. } => Some(SuspensionKind::NativeCall),
-
-        // May suspend - AOT function call
-        JitInstr::Call { .. } => Some(SuspensionKind::AotCall),
-
-        // Preemption check
-        JitInstr::CheckPreemption { .. } => Some(SuspensionKind::PreemptionCheck),
-
-        // Channel operations (if implemented)
-        // JitInstr::ChannelRecv { .. } => Some(SuspensionKind::ChannelRecv),
-        // JitInstr::ChannelSend { .. } => Some(SuspensionKind::ChannelSend),
+        JitInstr::Await { .. } => Some(ExecutionSuspendKind::AwaitTask),
+        JitInstr::Yield => Some(ExecutionSuspendKind::YieldNow),
+        JitInstr::Sleep { .. } => Some(ExecutionSuspendKind::Sleep),
+        JitInstr::CallKernel { .. } => Some(ExecutionSuspendKind::KernelBoundary),
+        JitInstr::Call { .. } => Some(ExecutionSuspendKind::AotCall),
+        JitInstr::CheckPreemption { .. } => Some(ExecutionSuspendKind::Preemption),
         _ => None,
     }
 }
@@ -1400,14 +1389,14 @@ impl AotCompilable for LiftedFunction {
 }
 
 #[cfg(all(feature = "aot", feature = "jit"))]
-fn classify_sm_suspension(instr: &SmInstr) -> Option<SuspensionKind> {
+fn classify_sm_suspension(instr: &SmInstr) -> Option<ExecutionSuspendKind> {
     match instr {
-        SmInstr::CallAot { .. } => Some(SuspensionKind::AotCall),
+        SmInstr::CallAot { .. } => Some(ExecutionSuspendKind::AotCall),
         SmInstr::CallHelper { helper, .. } => match helper {
-            HelperCall::KernelCall => Some(SuspensionKind::NativeCall),
-            HelperCall::AwaitTask | HelperCall::AwaitAll => Some(SuspensionKind::Await),
-            HelperCall::YieldTask => Some(SuspensionKind::Yield),
-            HelperCall::SleepTask => Some(SuspensionKind::Sleep),
+            HelperCall::KernelCall => Some(ExecutionSuspendKind::KernelBoundary),
+            HelperCall::AwaitTask | HelperCall::AwaitAll => Some(ExecutionSuspendKind::AwaitTask),
+            HelperCall::YieldTask => Some(ExecutionSuspendKind::YieldNow),
+            HelperCall::SleepTask => Some(ExecutionSuspendKind::Sleep),
             _ => None,
         },
         _ => None,

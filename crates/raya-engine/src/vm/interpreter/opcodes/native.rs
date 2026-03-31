@@ -16741,8 +16741,9 @@ impl<'a> Interpreter<'a> {
                                     Err(_) => {
                                         task.set_resume_value(Value::null());
                                         OpcodeResult::Suspend(
-                                            crate::vm::scheduler::SuspendReason::MutexLockCall {
+                                            crate::vm::scheduler::SuspendReason::MutexAcquire {
                                                 mutex_id,
+                                                resume_policy: crate::vm::scheduler::ResumePolicy::ReturnNull,
                                             },
                                         )
                                     }
@@ -16773,9 +16774,10 @@ impl<'a> Interpreter<'a> {
                                                     waiter_task.add_held_mutex(mutex_id);
                                                     if matches!(
                                                         waiter_task.suspend_reason(),
-                                                        Some(
-                                                            crate::vm::scheduler::SuspendReason::MutexLockCall { .. }
-                                                        )
+                                                        Some(crate::vm::scheduler::SuspendReason::MutexAcquire {
+                                                            resume_policy: crate::vm::scheduler::ResumePolicy::ReturnNull,
+                                                            ..
+                                                        })
                                                     ) {
                                                         waiter_task.set_resume_value(Value::null());
                                                     }

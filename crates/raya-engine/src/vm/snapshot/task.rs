@@ -1,6 +1,6 @@
 //! Task state serialization for snapshots
 
-use crate::vm::scheduler::{TaskId, TaskState};
+use crate::vm::scheduler::{ResumePolicy, TaskId, TaskState};
 use crate::vm::snapshot::value::SerializedValue;
 use crate::vm::value::Value;
 use std::io::{Read, Write};
@@ -318,7 +318,10 @@ pub enum BlockedReason {
     AwaitingTask(TaskId),
 
     /// Waiting on a mutex
-    AwaitingMutex(u64), // Mutex ID
+    AwaitingMutex {
+        mutex_id: u64,
+        resume_policy: ResumePolicy,
+    },
 
     /// Waiting on a semaphore
     AwaitingSemaphore(u64), // Semaphore ID
@@ -335,9 +338,13 @@ impl BlockedReason {
                 writer.write_all(&[0])?;
                 writer.write_all(&task_id.as_u64().to_le_bytes())?;
             }
-            BlockedReason::AwaitingMutex(mutex_id) => {
+            BlockedReason::AwaitingMutex {
+                mutex_id,
+                resume_policy,
+            } => {
                 writer.write_all(&[1])?;
                 writer.write_all(&mutex_id.to_le_bytes())?;
+                writer.write_all(&[*resume_policy as u8])?;
             }
             BlockedReason::AwaitingSemaphore(semaphore_id) => {
                 writer.write_all(&[2])?;
@@ -372,7 +379,16 @@ impl BlockedReason {
                 let mut buf = [0u8; 8];
                 reader.read_exact(&mut buf)?;
                 let mutex_id = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap);
-                Ok(BlockedReason::AwaitingMutex(mutex_id))
+                let mut policy_buf = [0u8; 1];
+                reader.read_exact(&mut policy_buf)?;
+                Ok(BlockedReason::AwaitingMutex {
+                    mutex_id,
+                    resume_policy: match policy_buf[0] {
+                        1 => ResumePolicy::ReturnNull,
+                        2 => ResumePolicy::UseResumeValue,
+                        _ => ResumePolicy::Reexecute,
+                    },
+                })
             }
             2 => {
                 let mut buf = [0u8; 8];
@@ -459,12 +475,21 @@ mod tests {
         }
 
         // Test AwaitingMutex
-        let reason = BlockedReason::AwaitingMutex(456);
+        let reason = BlockedReason::AwaitingMutex {
+            mutex_id: 456,
+            resume_policy: ResumePolicy::UseResumeValue,
+        };
         let mut buf = Vec::new();
         reason.encode(&mut buf).unwrap();
         let decoded = BlockedReason::decode(&mut &buf[..], false).unwrap();
         match decoded {
-            BlockedReason::AwaitingMutex(id) => assert_eq!(id, 456),
+            BlockedReason::AwaitingMutex {
+                mutex_id,
+                resume_policy,
+            } => {
+                assert_eq!(mutex_id, 456);
+                assert_eq!(resume_policy, ResumePolicy::UseResumeValue);
+            }
             _ => panic!("Wrong variant"),
         }
 

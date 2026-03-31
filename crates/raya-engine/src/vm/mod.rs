@@ -25,6 +25,7 @@ pub mod reflect;
 pub mod scheduler;
 pub mod snapshot;
 pub mod stack;
+pub mod suspend;
 pub mod sync;
 pub mod types;
 pub mod value;
@@ -69,6 +70,7 @@ pub use object::{Array, CallableData, CallableKind, Class, Object, RayaString, V
 pub use scheduler::Scheduler;
 pub use snapshot::{SnapshotReader, SnapshotWriter};
 pub use stack::{CallFrame, Stack, StackStats};
+pub use suspend::{ExecutionSuspendKind, ResumePolicy, SuspendReason, SuspendRecord, SuspendTag, TaskId};
 pub use sync::{
     Mutex, MutexError, MutexId, MutexRegistry, Semaphore, SemaphoreError, SemaphoreId,
     SemaphoreRegistry,

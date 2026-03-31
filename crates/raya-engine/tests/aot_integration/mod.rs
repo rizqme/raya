@@ -1,12 +1,13 @@
 use raya_engine::aot::executor::{allocate_initial_frame, build_task_context, prepare_resume};
 use raya_engine::aot::helpers::create_default_helper_table;
-use raya_engine::aot::{
-    run_aot_function, AotFrame, AotTaskContext, SuspendReason as AotSuspendReason, AOT_SUSPEND,
-};
+use raya_engine::aot::{run_aot_function, AotFrame, AotTaskContext, AOT_SUSPEND};
+use raya_engine::compiler::{Function, Module};
 use raya_engine::vm::interpreter::ExecutionResult;
-use raya_engine::vm::scheduler::SuspendReason as SchedulerSuspendReason;
+use raya_engine::vm::scheduler::{Scheduler, SuspendReason as SchedulerSuspendReason, Task, TaskId, TaskState};
+use raya_engine::vm::suspend::SuspendTag;
 use raya_engine::vm::value::Value;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 const NAN_BOX_BASE: u64 = 0xFFF8_0000_0000_0000;
 const TAG_SHIFT: u64 = 48;
@@ -64,8 +65,7 @@ unsafe extern "C" fn aot_native_suspend_boundary(
     ctx: *mut AotTaskContext,
 ) -> u64 {
     unsafe {
-        (*ctx).suspend_reason = AotSuspendReason::NativeCallBoundary;
-        (*ctx).suspend_payload = 0;
+        (*ctx).suspend_record.set_tag(SuspendTag::KernelBoundary);
         ((*ctx).helpers.native_call)(ctx, 0, std::ptr::null(), 0)
     }
 }
@@ -77,11 +77,29 @@ unsafe extern "C" fn aot_suspend_then_resume(
     unsafe {
         if (*frame).resume_point == 0 {
             (*frame).resume_point = 1;
-            (*ctx).suspend_reason = AotSuspendReason::AwaitTask;
-            (*ctx).suspend_payload = 1;
+            (*ctx)
+                .suspend_record
+                .set_reason(&SchedulerSuspendReason::AwaitTask(TaskId::from_u64(1)));
             AOT_SUSPEND
         } else {
             (*ctx).resume_value
+        }
+    }
+}
+
+unsafe extern "C" fn aot_yield_then_complete(
+    frame: *mut AotFrame,
+    ctx: *mut AotTaskContext,
+) -> u64 {
+    unsafe {
+        if (*frame).resume_point == 0 {
+            (*frame).resume_point = 1;
+            (*ctx)
+                .suspend_record
+                .set_reason(&SchedulerSuspendReason::YieldNow);
+            AOT_SUSPEND
+        } else {
+            Value::i32(77).raw()
         }
     }
 }
@@ -131,7 +149,7 @@ fn aot_e2e_native_boundary_suspend_handoffs() {
         let frame = allocate_initial_frame(0, 0, aot_native_suspend_boundary, &[], &helpers);
         let result = run_aot_function(frame, &mut ctx, 100);
         match result.result {
-            ExecutionResult::Suspended(SchedulerSuspendReason::Sleep { .. }) => {}
+            ExecutionResult::Suspended(SchedulerSuspendReason::KernelBoundary) => {}
             other => panic!("expected native-boundary suspend handoff, got {:?}", other),
         }
         // Cleanup: run_aot_function preserves frame on suspension.
@@ -160,4 +178,28 @@ fn aot_e2e_suspend_resume_roundtrip() {
             other => panic!("expected completion after resume, got {:?}", other),
         }
     }
+}
+
+#[test]
+fn aot_e2e_scheduler_runs_compiled_task_through_resume_loop() {
+    let mut scheduler = Scheduler::new(1);
+    scheduler.start();
+
+    let mut module = Module::new("aot-scheduler".to_string());
+    module.functions.push(Function {
+        name: "main".to_string(),
+        ..Default::default()
+    });
+
+    let task = Arc::new(Task::new(0, Arc::new(module), None));
+    task.set_aot_entry(0, aot_yield_then_complete);
+
+    scheduler
+        .spawn(task.clone())
+        .expect("failed to spawn scheduled AOT task");
+
+    assert_eq!(task.wait_completion(), TaskState::Completed);
+    assert_eq!(task.result().and_then(|value| value.as_i32()), Some(77));
+
+    scheduler.shutdown();
 }

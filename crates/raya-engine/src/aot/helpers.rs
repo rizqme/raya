@@ -20,9 +20,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use super::abi;
-use super::frame::{
-    AotEntryFn, AotFrame, AotHelperTable, AotTaskContext, SuspendReason, AOT_SUSPEND,
-};
+use super::frame::{AotEntryFn, AotFrame, AotHelperTable, AotTaskContext, AOT_SUSPEND};
 use crate::compiler::ir::{decode_kernel_op_id, KernelOp};
 use crate::compiler::Opcode;
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
@@ -30,7 +28,8 @@ use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::SharedVmState;
 use crate::vm::json::view::{js_classify, JSView};
 use crate::vm::object::{Array, DynProp, Object, RayaString};
-use crate::vm::scheduler::{IoSubmission, Task};
+use crate::vm::scheduler::{IoSubmission, ResumePolicy, SuspendReason, Task};
+use crate::vm::suspend::{SuspendRecord, SuspendTag};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use parking_lot::RwLock;
@@ -178,7 +177,6 @@ unsafe extern "C" fn helper_alloc_frame(
     (*ptr).param_count = 0; // Set by caller
     (*ptr).child_frame = ptr::null_mut();
     (*ptr).function_ptr = func_ptr;
-    (*ptr).suspend_payload = 0;
 
     // Zero-initialize locals (already done by alloc_zeroed, but explicit for clarity)
     for i in 0..local_count as usize {
@@ -186,6 +184,14 @@ unsafe extern "C" fn helper_alloc_frame(
     }
 
     ptr
+}
+
+unsafe fn set_ctx_suspend_reason(ctx: *mut AotTaskContext, reason: &SuspendReason) {
+    (*ctx).suspend_record.set_reason(reason);
+}
+
+unsafe fn set_ctx_suspend_tag(ctx: *mut AotTaskContext, tag: SuspendTag) {
+    (*ctx).suspend_record.set_tag(tag);
 }
 
 fn aot_build_interpreter<'a>(shared: &'a SharedVmState) -> Interpreter<'a> {
@@ -1266,8 +1272,7 @@ unsafe extern "C" fn helper_native_call(
                             request: io_request,
                         });
                     }
-                    (*ctx).suspend_reason = SuspendReason::IoWait;
-                    (*ctx).suspend_payload = 0;
+                    set_ctx_suspend_reason(ctx, &SuspendReason::IoWait);
                     return AOT_SUSPEND;
                 }
                 NativeCallResult::Unhandled | NativeCallResult::Error(_) => return abi::NULL_VALUE,
@@ -1315,22 +1320,21 @@ unsafe extern "C" fn helper_native_call(
                 }
                 crate::vm::interpreter::OpcodeResult::Return(value) => value.raw(),
                 crate::vm::interpreter::OpcodeResult::Suspend(reason) => {
-                    (*ctx).suspend_reason = match reason {
-                        crate::vm::scheduler::SuspendReason::IoWait => SuspendReason::IoWait,
-                        crate::vm::scheduler::SuspendReason::MutexLock { .. }
-                        | crate::vm::scheduler::SuspendReason::MutexLockCall { .. } => {
-                            SuspendReason::MutexLock
-                        }
-                        crate::vm::scheduler::SuspendReason::ChannelReceive { .. } => {
-                            SuspendReason::ChannelRecv
-                        }
-                        crate::vm::scheduler::SuspendReason::ChannelSend { .. } => {
-                            SuspendReason::ChannelSend
-                        }
-                        crate::vm::scheduler::SuspendReason::Sleep { .. } => SuspendReason::Sleep,
-                        _ => SuspendReason::NativeCallBoundary,
-                    };
-                    (*ctx).suspend_payload = 0;
+                    set_ctx_suspend_reason(
+                        ctx,
+                        &match reason {
+                            crate::vm::scheduler::SuspendReason::YieldNow => {
+                                crate::vm::scheduler::SuspendReason::YieldNow
+                            }
+                            crate::vm::scheduler::SuspendReason::Preemption => {
+                                crate::vm::scheduler::SuspendReason::Preemption
+                            }
+                            crate::vm::scheduler::SuspendReason::KernelBoundary => {
+                                crate::vm::scheduler::SuspendReason::KernelBoundary
+                            }
+                            other => other,
+                        },
+                    );
                     AOT_SUSPEND
                 }
                 crate::vm::interpreter::OpcodeResult::Error(_) => abi::NULL_VALUE,
@@ -1408,8 +1412,7 @@ unsafe extern "C" fn helper_native_call(
                         request: io_request,
                     });
                 }
-                (*ctx).suspend_reason = SuspendReason::IoWait;
-                (*ctx).suspend_payload = 0;
+                set_ctx_suspend_reason(ctx, &SuspendReason::IoWait);
                 return AOT_SUSPEND;
             }
             NativeCallResult::Unhandled => {}
@@ -1427,8 +1430,7 @@ unsafe extern "C" fn helper_native_call(
                             request: io_request,
                         });
                     }
-                    (*ctx).suspend_reason = SuspendReason::IoWait;
-                    (*ctx).suspend_payload = 0;
+                    set_ctx_suspend_reason(ctx, &SuspendReason::IoWait);
                     return AOT_SUSPEND;
                 }
                 NativeCallResult::Unhandled => {}
@@ -1443,8 +1445,7 @@ unsafe extern "C" fn helper_native_call(
     if matches!(kernel_op, KernelOp::VmNative(native_id) if native_id == STUB_NATIVE_SUSPEND_ID)
     {
         if !ctx.is_null() {
-            (*ctx).suspend_reason = SuspendReason::NativeCallBoundary;
-            (*ctx).suspend_payload = 0;
+            set_ctx_suspend_tag(ctx, SuspendTag::KernelBoundary);
         }
         AOT_SUSPEND
     } else {
@@ -1849,8 +1850,7 @@ mod tests {
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
             resume_value: abi::NULL_VALUE,
-            suspend_reason: SuspendReason::None,
-            suspend_payload: 99,
+            suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: ptr::null_mut(),
             current_task: ptr::null_mut(),
@@ -1859,8 +1859,8 @@ mod tests {
         let result =
             unsafe { helper_native_call(&mut ctx, STUB_NATIVE_SUSPEND_ID, ptr::null(), 0) };
         assert_eq!(result, AOT_SUSPEND);
-        assert_eq!(ctx.suspend_reason, SuspendReason::NativeCallBoundary);
-        assert_eq!(ctx.suspend_payload, 0);
+        assert_eq!(ctx.suspend_record.tag, SuspendTag::KernelBoundary);
+        assert_eq!(ctx.suspend_record.word0, 0);
         assert_eq!(unsafe { helper_is_native_suspend(result) }, 1);
     }
 
@@ -1870,8 +1870,7 @@ mod tests {
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
             resume_value: abi::NULL_VALUE,
-            suspend_reason: SuspendReason::None,
-            suspend_payload: 123,
+            suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: ptr::null_mut(),
             current_task: ptr::null_mut(),
@@ -1880,8 +1879,7 @@ mod tests {
         let result = unsafe { helper_native_call(&mut ctx, 42, ptr::null(), 0) };
         assert_eq!(result, abi::NULL_VALUE);
         assert_eq!(unsafe { helper_is_native_suspend(result) }, 0);
-        assert_eq!(ctx.suspend_reason, SuspendReason::None);
-        assert_eq!(ctx.suspend_payload, 123);
+        assert_eq!(ctx.suspend_record, SuspendRecord::none());
     }
 
     #[test]
@@ -1890,8 +1888,7 @@ mod tests {
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
             resume_value: abi::NULL_VALUE,
-            suspend_reason: SuspendReason::None,
-            suspend_payload: 0,
+            suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: ptr::null_mut(),
             current_task: ptr::null_mut(),
@@ -1921,8 +1918,7 @@ mod tests {
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
             resume_value: abi::NULL_VALUE,
-            suspend_reason: SuspendReason::None,
-            suspend_payload: 0,
+            suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: Arc::as_ptr(&shared) as *mut (),
             current_task: ptr::null_mut(),
@@ -1931,7 +1927,7 @@ mod tests {
 
         let raw = unsafe { helper_native_call(&mut ctx, 0, ptr::null(), 0) };
         assert_eq!(raw, Value::i32(77).raw());
-        assert_eq!(ctx.suspend_reason, SuspendReason::None);
+        assert_eq!(ctx.suspend_record, SuspendRecord::none());
     }
 
     #[test]
@@ -1957,8 +1953,7 @@ mod tests {
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
             resume_value: abi::NULL_VALUE,
-            suspend_reason: SuspendReason::None,
-            suspend_payload: 0,
+            suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: Arc::as_ptr(&shared) as *mut (),
             current_task: ptr::null_mut(),
@@ -1968,7 +1963,7 @@ mod tests {
         let args = [Value::i32(7).raw(), Value::i32(11).raw()];
         let raw = unsafe { helper_native_call(&mut ctx, 0, args.as_ptr(), args.len() as u8) };
         assert_eq!(raw, Value::i32(18).raw());
-        assert_eq!(ctx.suspend_reason, SuspendReason::None);
+        assert_eq!(ctx.suspend_record, SuspendRecord::none());
     }
 
     #[test]
@@ -1994,8 +1989,7 @@ mod tests {
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
             resume_value: abi::NULL_VALUE,
-            suspend_reason: SuspendReason::None,
-            suspend_payload: 0,
+            suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: Arc::as_ptr(&shared) as *mut (),
             current_task: ptr::null_mut(),
@@ -2004,7 +1998,7 @@ mod tests {
 
         let raw = unsafe { helper_native_call(&mut ctx, 0, ptr::null(), 0) };
         assert_eq!(raw, AOT_SUSPEND);
-        assert_eq!(ctx.suspend_reason, SuspendReason::IoWait);
+        assert_eq!(ctx.suspend_record.tag, SuspendTag::IoWait);
         let submission = rx.try_recv().expect("io submission should be sent");
         assert_eq!(submission.task_id.as_u64(), 0);
         assert!(matches!(
@@ -2063,8 +2057,7 @@ mod tests {
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
             resume_value: abi::NULL_VALUE,
-            suspend_reason: SuspendReason::None,
-            suspend_payload: 0,
+            suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: Arc::as_ptr(&shared) as *mut (),
             current_task: ptr::null_mut(),

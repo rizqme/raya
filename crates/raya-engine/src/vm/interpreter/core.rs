@@ -15,6 +15,7 @@ use crate::vm::native_handler::NativeHandler;
 use crate::vm::object::{CallableKind, Class, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
+use crate::vm::suspend::SuspendTag;
 use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -123,7 +124,7 @@ mod tests {
         code.push(Opcode::Return as u8);
         let func = make_function(code);
         assert_eq!(
-            Interpreter::native_resume_boundary_arg_count(&func, 0),
+            Interpreter::kernel_resume_boundary_arg_count(&func, 0),
             Some(0)
         );
     }
@@ -139,7 +140,7 @@ mod tests {
         code.push(Opcode::Return as u8);
         let func = make_function(code);
         assert_eq!(
-            Interpreter::native_resume_boundary_arg_count(&func, 2),
+            Interpreter::kernel_resume_boundary_arg_count(&func, 2),
             Some(0)
         );
     }
@@ -152,7 +153,7 @@ mod tests {
         code.push(1u8);
         let func = make_function(code);
         assert_eq!(
-            Interpreter::native_resume_boundary_arg_count(&func, 0),
+            Interpreter::kernel_resume_boundary_arg_count(&func, 0),
             Some(1)
         );
     }
@@ -166,7 +167,7 @@ mod tests {
         code.push(0u8);
         let func = make_function(code);
         assert_eq!(
-            Interpreter::native_resume_boundary_arg_count(&func, 1),
+            Interpreter::kernel_resume_boundary_arg_count(&func, 1),
             None
         );
     }
@@ -181,7 +182,7 @@ mod tests {
         code.push(2u8);
         let func = make_function(code);
         assert_eq!(
-            Interpreter::native_resume_boundary_arg_count(&func, 2),
+            Interpreter::kernel_resume_boundary_arg_count(&func, 2),
             Some(2)
         );
     }
@@ -238,7 +239,7 @@ mod tests {
         exit.native_args[0] = Value::i32(7).raw();
         exit.native_args[1] = Value::i32(11).raw();
 
-        let vals = Interpreter::materialize_native_resume_operands(&func, &exit)
+        let vals = Interpreter::materialize_kernel_resume_operands(&func, &exit)
             .expect("expected materialized operand values");
         assert_eq!(vals.len(), 2);
         assert_eq!(vals[0].as_i32(), Some(7));
@@ -258,7 +259,7 @@ mod tests {
             native_arg_count: 2,
             ..Default::default()
         };
-        assert!(Interpreter::materialize_native_resume_operands(&func, &exit).is_none());
+        assert!(Interpreter::materialize_kernel_resume_operands(&func, &exit).is_none());
     }
 
     #[test]
@@ -1615,12 +1616,12 @@ impl<'a> Interpreter<'a> {
 
     #[cfg(feature = "jit")]
     #[inline]
-    fn materialize_native_resume_operands(
+    fn materialize_kernel_resume_operands(
         func: &crate::compiler::Function,
         exit_info: &crate::jit::runtime::trampoline::JitExitInfo,
     ) -> Option<Vec<Value>> {
         let expected_arg_count =
-            Self::native_resume_boundary_arg_count(func, exit_info.bytecode_offset)?;
+            Self::kernel_resume_boundary_arg_count(func, exit_info.bytecode_offset)?;
         let mat_count = exit_info.native_arg_count as usize;
         let max_native_args = crate::jit::runtime::trampoline::JIT_EXIT_MAX_NATIVE_ARGS;
         if mat_count != expected_arg_count as usize || mat_count > max_native_args {
@@ -2121,22 +2122,18 @@ impl<'a> Interpreter<'a> {
                     if exit_info.kind
                         == crate::jit::runtime::trampoline::JitExitKind::Suspended as u32
                     {
-                        match exit_info.suspend_reason {
-                            x if x
-                                == crate::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary
-                                    as u32 =>
+                        match exit_info.suspend_tag {
+                            x if x == SuspendTag::KernelBoundary as u32 =>
                             {
                                 if let Some(vals) =
-                                    Self::materialize_native_resume_operands(func, &exit_info)
+                                    Self::materialize_kernel_resume_operands(func, &exit_info)
                                 {
                                     resume_ip = Some(exit_info.bytecode_offset as usize);
                                     operand_values = Some(vals);
                                     can_resume = true;
                                 }
                             }
-                            x if x
-                                == crate::jit::runtime::trampoline::JitSuspendReason::Preemption
-                                    as u32 =>
+                            x if x == SuspendTag::Preemption as u32 =>
                             {
                                 if Self::can_resume_at_preemption_boundary(
                                     func,
@@ -2146,9 +2143,7 @@ impl<'a> Interpreter<'a> {
                                     can_resume = true;
                                 }
                             }
-                            x if x
-                                == crate::jit::runtime::trampoline::JitSuspendReason::InterpreterBoundary
-                                    as u32 =>
+                            x if x == SuspendTag::InterpreterBoundary as u32 =>
                             {
                                 if let Some(vals) =
                                     Self::materialize_interpreter_resume_stack(&exit_info)
@@ -2349,9 +2344,7 @@ impl<'a> Interpreter<'a> {
                 }
                 save_frame_state!();
                 drop(stack_guard);
-                return ExecutionResult::Suspended(SuspendReason::Sleep {
-                    wake_at: Instant::now(),
-                });
+                return ExecutionResult::Suspended(SuspendReason::Preemption);
             }
 
             // Check for cancellation
@@ -2674,13 +2667,11 @@ impl<'a> Interpreter<'a> {
                                         == crate::jit::runtime::trampoline::JitExitKind::Suspended
                                             as u32
                                     {
-                                        match exit_info.suspend_reason {
-                                            x if x
-                                                == crate::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary
-                                                    as u32 =>
+                                        match exit_info.suspend_tag {
+                                            x if x == SuspendTag::KernelBoundary as u32 =>
                                             {
                                                 let resumed = if let Some(vals) =
-                                                    Self::materialize_native_resume_operands(
+                                                    Self::materialize_kernel_resume_operands(
                                                         func, &exit_info,
                                                     )
                                                 {
@@ -2698,9 +2689,7 @@ impl<'a> Interpreter<'a> {
                                                     resumed,
                                                 );
                                             }
-                                            x if x
-                                                == crate::jit::runtime::trampoline::JitSuspendReason::Preemption
-                                                    as u32 =>
+                                            x if x == SuspendTag::Preemption as u32 =>
                                             {
                                                 let resumed =
                                                     if Self::can_resume_at_preemption_boundary(
@@ -2720,9 +2709,7 @@ impl<'a> Interpreter<'a> {
                                                     resumed,
                                                 );
                                             }
-                                            x if x
-                                                == crate::jit::runtime::trampoline::JitSuspendReason::InterpreterBoundary
-                                                    as u32 =>
+                                            x if x == SuspendTag::InterpreterBoundary as u32 =>
                                             {
                                                 if let Some(vals) =
                                                     Self::materialize_interpreter_resume_stack(
@@ -3526,7 +3513,7 @@ impl<'a> Interpreter<'a> {
     /// Safe only for zero-arg KernelCall and when the
     /// bytecode prefix guarantees an empty operand stack at resume point.
     #[cfg(feature = "jit")]
-    fn native_resume_boundary_arg_count(
+    fn kernel_resume_boundary_arg_count(
         func: &crate::compiler::Function,
         bytecode_offset: u32,
     ) -> Option<u8> {

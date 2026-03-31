@@ -12,7 +12,8 @@
 //!    - For each suspension point: save-to-frame + resume-from-frame blocks
 //! 4. Output: transformed function with explicit frame loads/stores and state dispatch
 
-use super::analysis::SuspensionAnalysis;
+use super::analysis::{ExecutionSuspendKind, SuspensionAnalysis};
+use crate::vm::suspend::SuspendTag;
 
 /// A transformed function ready for Cranelift lowering.
 ///
@@ -118,11 +119,8 @@ pub enum SmInstr {
     /// Store the child_frame pointer to the frame.
     StoreChildFrame { src: u32 },
 
-    /// Store the suspend_reason on the task context.
-    StoreSuspendReason { reason: u32 },
-
-    /// Store the suspend_payload on the task context.
-    StoreSuspendPayload { src: u32 },
+    /// Store the suspend tag on the task context.
+    StoreSuspendTag { tag: u32 },
 
     /// Load the resume_value from the task context.
     LoadResumeValue { dest: u32 },
@@ -545,6 +543,7 @@ struct StateMachineTransformer<'a> {
     child_reentry_block_ids: std::collections::HashMap<usize, SmBlockId>,
     propagate_suspend_block_ids: std::collections::HashMap<usize, SmBlockId>,
     aot_call_metadata: std::collections::HashMap<(u32, u32), (u32, u32)>,
+    await_resume_dest_metadata: std::collections::HashMap<(u32, u32), u32>,
     /// Temporary register allocator (starts after local_count * 2 to avoid collisions).
     next_temp_reg: u32,
 }
@@ -562,10 +561,22 @@ impl<'a> StateMachineTransformer<'a> {
         let max_reg = max_sm_reg(&blocks);
 
         let mut aot_call_metadata = std::collections::HashMap::new();
+        let mut await_resume_dest_metadata = std::collections::HashMap::new();
         for block in &blocks {
             for (instr_index, instr) in block.instructions.iter().enumerate() {
-                if let SmInstr::CallAot { dest, func_id, .. } = instr {
-                    aot_call_metadata.insert((block.id.0, instr_index as u32), (*dest, *func_id));
+                match instr {
+                    SmInstr::CallAot { dest, func_id, .. } => {
+                        aot_call_metadata
+                            .insert((block.id.0, instr_index as u32), (*dest, *func_id));
+                    }
+                    SmInstr::CallHelper {
+                        dest: Some(dest),
+                        helper: HelperCall::AwaitTask | HelperCall::AwaitAll,
+                        ..
+                    } => {
+                        await_resume_dest_metadata.insert((block.id.0, instr_index as u32), *dest);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -582,6 +593,7 @@ impl<'a> StateMachineTransformer<'a> {
             child_reentry_block_ids: std::collections::HashMap::new(),
             propagate_suspend_block_ids: std::collections::HashMap::new(),
             aot_call_metadata,
+            await_resume_dest_metadata,
             next_temp_reg: max_reg.saturating_add(1),
         }
     }
@@ -686,12 +698,16 @@ impl<'a> StateMachineTransformer<'a> {
             }
 
             // Load resume value if this suspension produces a result
-            if matches!(point.kind, super::analysis::SuspensionKind::Await) {
-                let resume_val = self.alloc_temp();
-                restore_instrs.push(SmInstr::LoadResumeValue { dest: resume_val });
+            if matches!(point.kind, ExecutionSuspendKind::AwaitTask) {
+                let resume_dest = self
+                    .await_resume_dest_metadata
+                    .get(&(point.block_id, point.instr_index))
+                    .copied()
+                    .unwrap_or_else(|| self.alloc_temp());
+                restore_instrs.push(SmInstr::LoadResumeValue { dest: resume_dest });
             }
 
-            let terminator = if matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
+            let terminator = if matches!(point.kind, ExecutionSuspendKind::AotCall) {
                 if let Some((call_dest, _)) =
                     self.aot_call_metadata(point.block_id, point.instr_index)
                 {
@@ -728,7 +744,7 @@ impl<'a> StateMachineTransformer<'a> {
                 terminator,
             });
 
-            if matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
+            if matches!(point.kind, ExecutionSuspendKind::AotCall) {
                 let Some((call_dest, func_id)) =
                     self.aot_call_metadata(point.block_id, point.instr_index)
                 else {
@@ -846,8 +862,7 @@ impl<'a> StateMachineTransformer<'a> {
             // For may-suspend points, emit runtime condition checks.
             let point = &self.analysis.points[suspend_idx];
             let terminator = match point.kind {
-                super::analysis::SuspensionKind::AotCall
-                | super::analysis::SuspensionKind::NativeCall => {
+                ExecutionSuspendKind::AotCall | ExecutionSuspendKind::KernelBoundary => {
                     let check_reg = self.alloc_temp();
                     // The last instruction's dest should be the call result.
                     let call_result = all_pre_instrs.last().and_then(|i| match i {
@@ -857,13 +872,13 @@ impl<'a> StateMachineTransformer<'a> {
                     });
                     if let Some(call_result) = call_result {
                         match point.kind {
-                            super::analysis::SuspensionKind::AotCall => {
+                            ExecutionSuspendKind::AotCall => {
                                 all_pre_instrs.push(SmInstr::IsSuspend {
                                     dest: check_reg,
                                     value: call_result,
                                 });
                             }
-                            super::analysis::SuspensionKind::NativeCall => {
+                            ExecutionSuspendKind::KernelBoundary => {
                                 // Native suspension token can be helper-specific; query helper table.
                                 all_pre_instrs.push(SmInstr::CallHelper {
                                     dest: Some(check_reg),
@@ -878,7 +893,7 @@ impl<'a> StateMachineTransformer<'a> {
                             then_block: save_block_id,
                             else_block: if matches!(
                                 point.kind,
-                                super::analysis::SuspensionKind::AotCall
+                                ExecutionSuspendKind::AotCall
                             ) {
                                 initial_complete_id
                             } else {
@@ -890,7 +905,7 @@ impl<'a> StateMachineTransformer<'a> {
                         SmTerminator::Jump(save_block_id)
                     }
                 }
-                super::analysis::SuspensionKind::PreemptionCheck => {
+                ExecutionSuspendKind::Preemption => {
                     let should_suspend = self.alloc_temp();
                     all_pre_instrs.push(SmInstr::CallHelper {
                         dest: Some(should_suspend),
@@ -913,7 +928,7 @@ impl<'a> StateMachineTransformer<'a> {
                 terminator,
             });
 
-            if matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
+            if matches!(point.kind, ExecutionSuspendKind::AotCall) {
                 let initial_child_frame = match block.instructions.get(instr_idx as usize) {
                     Some(SmInstr::CallAot { callee_frame, .. }) => Some(*callee_frame),
                     _ => None,
@@ -961,41 +976,27 @@ impl<'a> StateMachineTransformer<'a> {
             // Set suspend reason
             let reason_const = self.alloc_temp();
             let reason_value = match point.kind {
-                super::analysis::SuspensionKind::Await => {
-                    super::frame::SuspendReason::AwaitTask as i32
-                }
-                super::analysis::SuspensionKind::Yield => {
-                    super::frame::SuspendReason::Yielded as i32
-                }
-                super::analysis::SuspensionKind::Sleep => super::frame::SuspendReason::Sleep as i32,
-                // Native calls should round-trip through the VM thread loop before resuming AOT code.
-                super::analysis::SuspensionKind::NativeCall => {
-                    super::frame::SuspendReason::NativeCallBoundary as i32
-                }
-                super::analysis::SuspensionKind::AotCall => {
-                    super::frame::SuspendReason::None as i32
-                }
-                super::analysis::SuspensionKind::PreemptionCheck => {
-                    super::frame::SuspendReason::Preempted as i32
-                }
-                super::analysis::SuspensionKind::MutexLock => {
-                    super::frame::SuspendReason::MutexLock as i32
-                }
-                super::analysis::SuspensionKind::ChannelRecv => {
-                    super::frame::SuspendReason::ChannelRecv as i32
-                }
-                super::analysis::SuspensionKind::ChannelSend => {
-                    super::frame::SuspendReason::ChannelSend as i32
-                }
+                ExecutionSuspendKind::AwaitTask => SuspendTag::AwaitTask as i32,
+                ExecutionSuspendKind::YieldNow => SuspendTag::YieldNow as i32,
+                ExecutionSuspendKind::Sleep => SuspendTag::Sleep as i32,
+                ExecutionSuspendKind::KernelBoundary => SuspendTag::KernelBoundary as i32,
+                ExecutionSuspendKind::AotCall => SuspendTag::None as i32,
+                ExecutionSuspendKind::Preemption => SuspendTag::Preemption as i32,
+                ExecutionSuspendKind::MutexAcquire => SuspendTag::MutexAcquire as i32,
+                ExecutionSuspendKind::ChannelReceive => SuspendTag::ChannelReceive as i32,
+                ExecutionSuspendKind::ChannelSend => SuspendTag::ChannelSend as i32,
+                ExecutionSuspendKind::SemaphoreAcquire => SuspendTag::SemaphoreAcquire as i32,
+                ExecutionSuspendKind::IoWait => SuspendTag::IoWait as i32,
+                ExecutionSuspendKind::GeneratorYield => SuspendTag::JsGeneratorYield as i32,
+                ExecutionSuspendKind::GeneratorInit => SuspendTag::JsGeneratorInit as i32,
+                ExecutionSuspendKind::InterpreterBoundary => SuspendTag::InterpreterBoundary as i32,
             };
             save_instrs.push(SmInstr::ConstI32 {
                 dest: reason_const,
                 value: reason_value,
             });
-            if !matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
-                save_instrs.push(SmInstr::StoreSuspendReason {
-                    reason: reason_const,
-                });
+            if !matches!(point.kind, ExecutionSuspendKind::AotCall) {
+                save_instrs.push(SmInstr::StoreSuspendTag { tag: reason_const });
             }
 
             // Return AOT_SUSPEND
@@ -1047,8 +1048,7 @@ fn max_sm_reg(blocks: &[SmBlock]) -> u32 {
                 | SmInstr::StoreResumePoint { value: dest }
                 | SmInstr::LoadChildFrame { dest }
                 | SmInstr::StoreChildFrame { src: dest }
-                | SmInstr::StoreSuspendReason { reason: dest }
-                | SmInstr::StoreSuspendPayload { src: dest }
+                | SmInstr::StoreSuspendTag { tag: dest }
                 | SmInstr::LoadResumeValue { dest }
                 | SmInstr::ConstNull { dest }
                 | SmInstr::ConstPtrNull { dest }
@@ -1247,7 +1247,7 @@ mod tests {
 
     #[test]
     fn test_transform_with_await() {
-        use super::super::analysis::{SuspensionKind, SuspensionPoint};
+        use super::super::analysis::{ExecutionSuspendKind, SuspensionPoint};
         use std::collections::HashSet;
 
         // Simulate a function that spawns a task and awaits it:
@@ -1278,7 +1278,7 @@ mod tests {
                 index: 0,
                 block_id: 0,
                 instr_index: 1, // await is at index 1
-                kind: SuspensionKind::Await,
+                kind: ExecutionSuspendKind::AwaitTask,
                 live_locals: HashSet::new(),
             }],
             has_suspensions: true,
@@ -1320,6 +1320,14 @@ mod tests {
             .iter()
             .find(|b| matches!(b.kind, SmBlockKind::RestoreState { .. }));
         assert!(restore.is_some(), "Should have a restore block");
+        let restore_block = restore.unwrap();
+        assert!(
+            restore_block.instructions.iter().any(|instr| matches!(
+                instr,
+                SmInstr::LoadResumeValue { dest: 1 }
+            )),
+            "await restore block should load the resume value into the await destination register"
+        );
 
         // Save block should return AOT_SUSPEND
         let save_block = save.unwrap();
@@ -1328,7 +1336,7 @@ mod tests {
 
     #[test]
     fn test_transform_with_preemption_check_is_conditional() {
-        use super::super::analysis::{SuspensionKind, SuspensionPoint};
+        use super::super::analysis::{ExecutionSuspendKind, SuspensionPoint};
         use std::collections::HashSet;
 
         // Simulate a block end/back-edge preemption checkpoint.
@@ -1344,7 +1352,7 @@ mod tests {
                 index: 0,
                 block_id: 0,
                 instr_index: 1, // synthetic point at end-of-block
-                kind: SuspensionKind::PreemptionCheck,
+                kind: ExecutionSuspendKind::Preemption,
                 live_locals: HashSet::new(),
             }],
             has_suspensions: true,
@@ -1376,7 +1384,7 @@ mod tests {
 
     #[test]
     fn test_transform_with_native_call_is_conditional() {
-        use super::super::analysis::{SuspensionKind, SuspensionPoint};
+        use super::super::analysis::{ExecutionSuspendKind, SuspensionPoint};
         use std::collections::HashSet;
 
         let blocks = vec![SmBlock {
@@ -1398,7 +1406,7 @@ mod tests {
                 index: 0,
                 block_id: 0,
                 instr_index: 0,
-                kind: SuspensionKind::NativeCall,
+                kind: ExecutionSuspendKind::KernelBoundary,
                 live_locals: HashSet::new(),
             }],
             has_suspensions: true,
@@ -1430,7 +1438,7 @@ mod tests {
 
     #[test]
     fn test_transform_malformed_native_suspend_point_falls_back_conservative_jump() {
-        use super::super::analysis::{SuspensionKind, SuspensionPoint};
+        use super::super::analysis::{ExecutionSuspendKind, SuspensionPoint};
         use std::collections::HashSet;
 
         // Suspension analysis says "NativeCall", but instruction stream has no call-result dest.
@@ -1447,7 +1455,7 @@ mod tests {
                 index: 0,
                 block_id: 0,
                 instr_index: 0,
-                kind: SuspensionKind::NativeCall,
+                kind: ExecutionSuspendKind::KernelBoundary,
                 live_locals: HashSet::new(),
             }],
             has_suspensions: true,

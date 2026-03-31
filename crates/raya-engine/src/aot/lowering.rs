@@ -321,8 +321,7 @@ fn determine_reg_types(blocks: &[SmBlock]) -> HashMap<u32, ir::types::Type> {
                 SmInstr::StoreLocal { .. }
                 | SmInstr::StoreResumePoint { .. }
                 | SmInstr::StoreChildFrame { .. }
-                | SmInstr::StoreSuspendReason { .. }
-                | SmInstr::StoreSuspendPayload { .. }
+                | SmInstr::StoreSuspendTag { .. }
                 | SmInstr::StoreGlobal { .. }
                 | SmInstr::CallHelper { dest: None, .. }
                 | SmInstr::ReturnValue { .. } => {}
@@ -537,13 +536,9 @@ impl LoweringCtx {
                 let val = self.use_reg(builder, *src);
                 self.store_frame_field(builder, frame_offsets::CHILD_FRAME, val);
             }
-            SmInstr::StoreSuspendReason { reason } => {
+            SmInstr::StoreSuspendTag { tag: reason } => {
                 let val = self.use_reg(builder, *reason);
-                self.store_ctx_field(builder, ctx_offsets::SUSPEND_REASON, val);
-            }
-            SmInstr::StoreSuspendPayload { src } => {
-                let val = self.use_reg(builder, *src);
-                self.store_ctx_field(builder, ctx_offsets::SUSPEND_PAYLOAD, val);
+                self.store_ctx_field(builder, ctx_offsets::SUSPEND_TAG, val);
             }
             SmInstr::LoadResumeValue { dest } => {
                 self.ensure_reg(builder, *dest, types::I64);
@@ -1793,8 +1788,6 @@ pub mod frame_offsets {
     pub const CHILD_FRAME: i32 = 24;
     /// Offset of `function_ptr` field (AotEntryFn)
     pub const FUNCTION_PTR: i32 = 32;
-    /// Offset of `suspend_payload` field (u64)
-    pub const SUSPEND_PAYLOAD: i32 = 40;
 }
 
 /// Field offsets within AotTaskContext for Cranelift code generation.
@@ -1805,12 +1798,14 @@ pub mod ctx_offsets {
     pub const PREEMPT_REQUESTED: i32 = 0;
     /// Offset of `resume_value` field
     pub const RESUME_VALUE: i32 = 8;
-    /// Offset of `suspend_reason` field (SuspendReason is 4 bytes, #[repr(C)] enum)
-    pub const SUSPEND_REASON: i32 = 16;
-    /// Offset of `suspend_payload` field (u64, after 4 bytes padding)
-    pub const SUSPEND_PAYLOAD: i32 = 24;
+    /// Offset of `suspend_record.tag` field
+    pub const SUSPEND_TAG: i32 = 16;
+    /// Offset of `suspend_record.word0` field
+    pub const SUSPEND_WORD0: i32 = 24;
+    /// Offset of `suspend_record.word1` field
+    pub const SUSPEND_WORD1: i32 = 32;
     /// Offset of `helpers` field (start of AotHelperTable)
-    pub const HELPERS: i32 = 32;
+    pub const HELPERS: i32 = 40;
     /// Offset of `shared_state` pointer field
     pub const SHARED_STATE: i32 = HELPERS + super::helper_table_size() as i32;
 }
@@ -2086,8 +2081,9 @@ mod tests {
 
     #[test]
     fn test_lower_state_machine_dispatch() {
-        use super::super::analysis::{SuspensionAnalysis, SuspensionKind, SuspensionPoint};
+        use super::super::analysis::{SuspensionAnalysis, SuspensionPoint};
         use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
+        use crate::vm::suspend::ExecutionSuspendKind;
         use std::collections::HashSet;
 
         // Simulate a function with a dispatch block and body
@@ -2101,7 +2097,7 @@ mod tests {
                     index: 0,
                     block_id: 0,
                     instr_index: 0,
-                    kind: SuspensionKind::Await,
+                    kind: ExecutionSuspendKind::AwaitTask,
                     live_locals: HashSet::new(),
                 }],
                 has_suspensions: true,

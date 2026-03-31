@@ -581,10 +581,7 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Yield => {
-                // Voluntary yield - suspend with immediate wake
-                OpcodeResult::Suspend(SuspendReason::Sleep {
-                    wake_at: Instant::now(),
-                })
+                OpcodeResult::Suspend(SuspendReason::YieldNow)
             }
 
             _ => OpcodeResult::Error(VmError::RuntimeError(format!(

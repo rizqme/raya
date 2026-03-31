@@ -11,6 +11,8 @@
 
 use std::collections::HashSet;
 
+pub use crate::vm::suspend::ExecutionSuspendKind;
+
 /// A suspension point within a function.
 #[derive(Debug, Clone)]
 pub struct SuspensionPoint {
@@ -24,43 +26,11 @@ pub struct SuspensionPoint {
     pub instr_index: u32,
 
     /// What kind of suspension this is.
-    pub kind: SuspensionKind,
+    pub kind: ExecutionSuspendKind,
 
     /// Set of local variable indices that are live across this suspension point.
     /// These must be saved to the frame before suspending and restored on resume.
     pub live_locals: HashSet<u32>,
-}
-
-/// Classification of suspension points.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SuspensionKind {
-    /// `await expr` — suspends until a spawned task completes
-    Await,
-
-    /// `yield` — voluntarily yields to the scheduler
-    Yield,
-
-    /// `sleep(ms)` — suspends for a duration
-    Sleep,
-
-    /// Call to another AOT function that may itself suspend.
-    /// The callee's frame is linked as a child.
-    AotCall,
-
-    /// Native function call that may return Suspend (blocking I/O).
-    NativeCall,
-
-    /// Preemption check at a loop back-edge.
-    PreemptionCheck,
-
-    /// Channel receive that may block.
-    ChannelRecv,
-
-    /// Channel send that may block (backpressure).
-    ChannelSend,
-
-    /// Mutex lock that may block.
-    MutexLock,
 }
 
 /// Result of analyzing a function for suspension points.
@@ -93,21 +63,6 @@ impl SuspensionAnalysis {
     }
 }
 
-impl SuspensionKind {
-    /// Whether this kind of suspension always suspends (vs. may suspend).
-    pub fn always_suspends(&self) -> bool {
-        matches!(
-            self,
-            SuspensionKind::Await | SuspensionKind::Yield | SuspensionKind::Sleep
-        )
-    }
-
-    /// Whether this suspension involves a child frame (callee that suspended).
-    pub fn has_child_frame(&self) -> bool {
-        matches!(self, SuspensionKind::AotCall)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,13 +76,13 @@ mod tests {
 
     #[test]
     fn test_suspension_kind_properties() {
-        assert!(SuspensionKind::Await.always_suspends());
-        assert!(SuspensionKind::Yield.always_suspends());
-        assert!(!SuspensionKind::AotCall.always_suspends());
-        assert!(!SuspensionKind::NativeCall.always_suspends());
-        assert!(!SuspensionKind::PreemptionCheck.always_suspends());
+        assert!(ExecutionSuspendKind::AwaitTask.always_suspends());
+        assert!(ExecutionSuspendKind::YieldNow.always_suspends());
+        assert!(!ExecutionSuspendKind::AotCall.always_suspends());
+        assert!(!ExecutionSuspendKind::KernelBoundary.always_suspends());
+        assert!(!ExecutionSuspendKind::Preemption.always_suspends());
 
-        assert!(SuspensionKind::AotCall.has_child_frame());
-        assert!(!SuspensionKind::Await.has_child_frame());
+        assert!(ExecutionSuspendKind::AotCall.has_child_frame());
+        assert!(!ExecutionSuspendKind::AwaitTask.has_child_frame());
     }
 }

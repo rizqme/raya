@@ -8,21 +8,20 @@
 //! - First call: allocate frame, load arguments, call compiled function
 //! - Resume: restore frame, set resume value, re-enter at saved resume point
 //! - Completion: convert NaN-boxed result to Value, free frame chain
-//! - Suspension: convert AOT SuspendReason to scheduler SuspendReason
+//! - Suspension: decode AOT suspend transport into the shared runtime reason
 
 use std::time::{Duration, Instant};
+use std::sync::Arc;
 
-use crate::vm::interpreter::ExecutionResult;
-use crate::vm::scheduler::{SuspendReason as SchedulerSuspendReason, TaskId};
-use crate::vm::sync::MutexId;
+use crate::vm::interpreter::{ExecutionResult, SharedVmState};
+use crate::vm::scheduler::{SuspendReason as SchedulerSuspendReason, Task};
+use crate::vm::suspend::{ResumePolicy, SuspendRecord, SuspendTag, TaskId};
 use crate::vm::value::Value;
 use crate::vm::VmError;
 
 use super::abi;
-use super::frame::{
-    AotEntryFn, AotFrame, AotHelperTable, AotTaskContext, SuspendReason as AotSuspendReason,
-    AOT_SUSPEND,
-};
+use super::frame::{AotEntryFn, AotFrame, AotHelperTable, AotTaskContext, AOT_SUSPEND};
+use super::helpers::create_default_helper_table;
 
 // =============================================================================
 // Executor result
@@ -79,47 +78,29 @@ pub unsafe fn run_aot_function(
     let result = func_ptr(frame, ctx);
 
     if result == AOT_SUSPEND {
-        let reason = (*ctx).suspend_reason;
-        let payload = (*ctx).suspend_payload;
-
-        match reason {
-            AotSuspendReason::Preempted => {
-                // Check preemption count — kill on infinite loop
-                // The caller should track this on the Task, but we provide
-                // a fallback here using the frame's resume_point as a proxy.
-                AotRunResult {
-                    result: ExecutionResult::Suspended(SchedulerSuspendReason::Sleep {
-                        wake_at: Instant::now(),
-                    }),
-                    frame,
-                }
+        let record = (*ctx).suspend_record;
+        if record.tag == SuspendTag::None {
+            free_frame_chain(frame, &(*ctx).helpers);
+            AotRunResult {
+                result: ExecutionResult::Failed(VmError::RuntimeError(
+                    "AOT function returned AOT_SUSPEND with no suspend reason".to_string(),
+                )),
+                frame: std::ptr::null_mut(),
             }
-            AotSuspendReason::None => {
-                // AOT_SUSPEND returned but no reason set — this is a bug
-                free_frame_chain(frame, &(*ctx).helpers);
-                AotRunResult {
-                    result: ExecutionResult::Failed(VmError::RuntimeError(
-                        "AOT function returned AOT_SUSPEND with no suspend reason".to_string(),
-                    )),
-                    frame: std::ptr::null_mut(),
-                }
+        } else if let Some(reason) = record.to_runtime_reason() {
+            AotRunResult {
+                result: ExecutionResult::Suspended(reason),
+                frame,
             }
-            _ => match convert_suspend_reason(reason, payload) {
-                Some(scheduler_reason) => AotRunResult {
-                    result: ExecutionResult::Suspended(scheduler_reason),
-                    frame,
-                },
-                None => {
-                    free_frame_chain(frame, &(*ctx).helpers);
-                    AotRunResult {
-                        result: ExecutionResult::Failed(VmError::RuntimeError(format!(
-                            "AOT: unhandled suspend reason {:?}",
-                            reason
-                        ))),
-                        frame: std::ptr::null_mut(),
-                    }
-                }
-            },
+        } else {
+            free_frame_chain(frame, &(*ctx).helpers);
+            AotRunResult {
+                result: ExecutionResult::Failed(VmError::RuntimeError(format!(
+                    "AOT: unhandled suspend tag {:?}",
+                    record.tag
+                ))),
+                frame: std::ptr::null_mut(),
+            }
         }
     } else {
         // Completed — convert NaN-boxed result to Value
@@ -130,6 +111,89 @@ pub unsafe fn run_aot_function(
             frame: std::ptr::null_mut(),
         }
     }
+}
+
+/// Run a scheduler-owned AOT task using the shared suspend/resume contract.
+///
+/// The task carries its compiled entry metadata and any preserved root frame.
+/// The scheduler/worker provides the shared VM state; this helper builds a
+/// fresh `AotTaskContext`, restores resume values when needed, and persists the
+/// root frame back onto the task on suspension.
+pub fn run_scheduled_aot_task(
+    task: &Arc<Task>,
+    shared_state: &SharedVmState,
+    max_preemptions: u32,
+) -> AotRunResult {
+    let Some((local_count, entry_fn)) = task.aot_entry() else {
+        return AotRunResult {
+            result: ExecutionResult::Failed(VmError::RuntimeError(
+                "Scheduled AOT task is missing compiled entry metadata".to_string(),
+            )),
+            frame: std::ptr::null_mut(),
+        };
+    };
+
+    let current_module = task.current_module();
+    let mut ctx = build_task_context(
+        task.preempt_flag_ptr(),
+        create_default_helper_table(),
+        None,
+    );
+    ctx.shared_state = shared_state as *const _ as *mut ();
+    ctx.current_task = Arc::as_ptr(task) as *mut ();
+    ctx.module = Arc::as_ptr(&current_module) as *const ();
+
+    let frame = match task.take_aot_frame().filter(|frame| !frame.is_null()) {
+        Some(saved_frame) => {
+            if task.has_exception() {
+                unsafe {
+                    free_frame_chain(saved_frame, &ctx.helpers);
+                }
+                task.store_aot_frame(std::ptr::null_mut());
+                return AotRunResult {
+                    result: ExecutionResult::Failed(VmError::RuntimeError(
+                        "AOT task resumed with a pending exception; AOT exception resume is not implemented yet"
+                            .to_string(),
+                    )),
+                    frame: std::ptr::null_mut(),
+                };
+            }
+
+            unsafe {
+                prepare_resume(&mut ctx, task.take_resume_value());
+            }
+            saved_frame
+        }
+        None => {
+            let initial_args = task.take_initial_args();
+            let frame = unsafe {
+                allocate_initial_frame(
+                    task.function_id() as u32,
+                    local_count,
+                    entry_fn,
+                    &initial_args,
+                    &ctx.helpers,
+                )
+            };
+            if frame.is_null() {
+                return AotRunResult {
+                    result: ExecutionResult::Failed(VmError::RuntimeError(
+                        "AOT task entry frame allocation failed".to_string(),
+                    )),
+                    frame: std::ptr::null_mut(),
+                };
+            }
+            frame
+        }
+    };
+
+    let result = unsafe { run_aot_function(frame, &mut ctx, max_preemptions) };
+    if matches!(result.result, ExecutionResult::Suspended(_)) {
+        task.store_aot_frame(result.frame);
+    } else {
+        task.store_aot_frame(std::ptr::null_mut());
+    }
+    result
 }
 
 // =============================================================================
@@ -180,8 +244,7 @@ pub unsafe fn allocate_initial_frame(
 /// Caller must ensure `ctx` is a valid, non-null pointer to an initialized `AotTaskContext`.
 pub unsafe fn prepare_resume(ctx: *mut AotTaskContext, resume_value: Option<Value>) {
     (*ctx).resume_value = resume_value.map_or(abi::NULL_VALUE, |v| v.raw());
-    (*ctx).suspend_reason = AotSuspendReason::None;
-    (*ctx).suspend_payload = 0;
+    (*ctx).suspend_record.clear();
 }
 
 /// Build an `AotTaskContext` for a task execution.
@@ -196,8 +259,7 @@ pub fn build_task_context(
     AotTaskContext {
         preempt_requested: preempt_flag,
         resume_value: resume_value.map_or(abi::NULL_VALUE, |v| v.raw()),
-        suspend_reason: AotSuspendReason::None,
-        suspend_payload: 0,
+        suspend_record: SuspendRecord::none(),
         helpers,
         shared_state: std::ptr::null_mut(),
         current_task: std::ptr::null_mut(),
@@ -226,68 +288,6 @@ pub unsafe fn free_frame_chain(frame: *mut AotFrame, helpers: &AotHelperTable) {
 }
 
 // =============================================================================
-// Suspend reason conversion
-// =============================================================================
-
-/// Convert an AOT suspend reason + payload to a scheduler SuspendReason.
-fn convert_suspend_reason(
-    reason: AotSuspendReason,
-    payload: u64,
-) -> Option<SchedulerSuspendReason> {
-    match reason {
-        AotSuspendReason::None => None,
-
-        AotSuspendReason::AwaitTask => {
-            let task_id = TaskId::from_u64(payload);
-            Some(SchedulerSuspendReason::AwaitTask(task_id))
-        }
-
-        AotSuspendReason::IoWait => Some(SchedulerSuspendReason::IoWait),
-
-        AotSuspendReason::Preempted | AotSuspendReason::Yielded => {
-            // Re-schedule immediately
-            Some(SchedulerSuspendReason::Sleep {
-                wake_at: Instant::now(),
-            })
-        }
-
-        AotSuspendReason::NativeCallBoundary => {
-            // Mirror JIT behavior: hand control back to the VM thread loop so native
-            // dispatch can run there, then resume compiled code on the next turn.
-            Some(SchedulerSuspendReason::Sleep {
-                wake_at: Instant::now(),
-            })
-        }
-
-        AotSuspendReason::Sleep => {
-            let millis = payload;
-            Some(SchedulerSuspendReason::Sleep {
-                wake_at: Instant::now() + Duration::from_millis(millis),
-            })
-        }
-
-        AotSuspendReason::ChannelRecv => Some(SchedulerSuspendReason::ChannelReceive {
-            channel_id: payload,
-        }),
-
-        AotSuspendReason::ChannelSend => {
-            // payload = channel_id
-            // The value to send is stored in frame.suspend_payload by the AOT code.
-            // The caller must extract it before passing to the scheduler.
-            // For now, use null as placeholder — the worker loop will read from the frame.
-            Some(SchedulerSuspendReason::ChannelSend {
-                channel_id: payload,
-                value: Value::null(),
-            })
-        }
-
-        AotSuspendReason::MutexLock => Some(SchedulerSuspendReason::MutexLock {
-            mutex_id: MutexId::from_u64(payload),
-        }),
-    }
-}
-
-// =============================================================================
 // Tests
 // =============================================================================
 
@@ -307,8 +307,9 @@ mod tests {
         _frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
     ) -> u64 {
-        (*ctx).suspend_reason = AotSuspendReason::AwaitTask;
-        (*ctx).suspend_payload = 7; // Task ID 7
+        (*ctx)
+            .suspend_record
+            .set_reason(&SchedulerSuspendReason::AwaitTask(TaskId::from_u64(7)));
         AOT_SUSPEND
     }
 
@@ -317,8 +318,9 @@ mod tests {
         _frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
     ) -> u64 {
-        (*ctx).suspend_reason = AotSuspendReason::Sleep;
-        (*ctx).suspend_payload = 100; // 100ms
+        (*ctx).suspend_record.set_reason(&SchedulerSuspendReason::Sleep {
+            wake_at: Instant::now() + Duration::from_millis(100),
+        });
         AOT_SUSPEND
     }
 
@@ -327,16 +329,16 @@ mod tests {
         _frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
     ) -> u64 {
-        (*ctx).suspend_reason = AotSuspendReason::Preempted;
+        (*ctx).suspend_record.set_tag(SuspendTag::Preemption);
         AOT_SUSPEND
     }
 
-    /// A test AOT function that suspends with NativeCallBoundary reason.
+    /// A test AOT function that suspends with KernelBoundary reason.
     unsafe extern "C" fn test_suspend_native_boundary(
         _frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
     ) -> u64 {
-        (*ctx).suspend_reason = AotSuspendReason::NativeCallBoundary;
+        (*ctx).suspend_record.set_tag(SuspendTag::KernelBoundary);
         AOT_SUSPEND
     }
 
@@ -348,8 +350,9 @@ mod tests {
         if (*frame).resume_point == 0 {
             // First call — suspend
             (*frame).resume_point = 1;
-            (*ctx).suspend_reason = AotSuspendReason::AwaitTask;
-            (*ctx).suspend_payload = 1;
+            (*ctx)
+                .suspend_record
+                .set_reason(&SchedulerSuspendReason::AwaitTask(TaskId::from_u64(1)));
             AOT_SUSPEND
         } else {
             // Resume — return the resume value
@@ -458,10 +461,8 @@ mod tests {
             let result = run_aot_function(frame, &mut ctx, 100);
 
             match &result.result {
-                ExecutionResult::Suspended(SchedulerSuspendReason::Sleep { .. }) => {
-                    // Preempted → immediate reschedule (Sleep { wake_at: now })
-                }
-                other => panic!("Expected Suspended(Sleep), got {:?}", other),
+                ExecutionResult::Suspended(SchedulerSuspendReason::Preemption) => {}
+                other => panic!("Expected Suspended(Preemption), got {:?}", other),
             }
 
             free_frame_chain(result.frame, &helpers);
@@ -479,10 +480,8 @@ mod tests {
             let result = run_aot_function(frame, &mut ctx, 100);
 
             match &result.result {
-                ExecutionResult::Suspended(SchedulerSuspendReason::Sleep { .. }) => {
-                    // NativeCallBoundary -> immediate thread-loop handoff/re-entry
-                }
-                other => panic!("Expected Suspended(Sleep), got {:?}", other),
+                ExecutionResult::Suspended(SchedulerSuspendReason::KernelBoundary) => {}
+                other => panic!("Expected Suspended(KernelBoundary), got {:?}", other),
             }
 
             free_frame_chain(result.frame, &helpers);
@@ -559,10 +558,8 @@ mod tests {
             let result = run_aot_function(frame, &mut ctx, 100);
 
             match &result.result {
-                ExecutionResult::Suspended(SchedulerSuspendReason::Sleep { .. }) => {
-                    // NativeCallBoundary -> immediate scheduler handoff/re-entry.
-                }
-                other => panic!("Expected Suspended(Sleep), got {:?}", other),
+                ExecutionResult::Suspended(SchedulerSuspendReason::KernelBoundary) => {}
+                other => panic!("Expected Suspended(KernelBoundary), got {:?}", other),
             }
             assert!(
                 !result.frame.is_null(),
@@ -607,51 +604,38 @@ mod tests {
 
         let ctx = build_task_context(&preempt, helpers, Some(Value::i32(42)));
         assert_eq!(ctx.resume_value, Value::i32(42).raw());
-        assert_eq!(ctx.suspend_reason, AotSuspendReason::None);
-        assert_eq!(ctx.suspend_payload, 0);
+        assert_eq!(ctx.suspend_record, SuspendRecord::none());
 
         let ctx2 = build_task_context(&preempt, helpers, None);
         assert_eq!(ctx2.resume_value, abi::NULL_VALUE);
     }
 
     #[test]
-    fn test_convert_suspend_reasons() {
-        // AwaitTask
-        let r = convert_suspend_reason(AotSuspendReason::AwaitTask, 42);
-        assert!(matches!(r, Some(SchedulerSuspendReason::AwaitTask(tid)) if tid.as_u64() == 42));
-
-        // Sleep
-        let before = Instant::now();
-        let r = convert_suspend_reason(AotSuspendReason::Sleep, 500);
-        match r {
-            Some(SchedulerSuspendReason::Sleep { wake_at }) => {
-                assert!(wake_at >= before + Duration::from_millis(500));
-            }
-            _ => panic!("Expected Sleep"),
-        }
-
-        // IoWait
-        let r = convert_suspend_reason(AotSuspendReason::IoWait, 0);
-        assert!(matches!(r, Some(SchedulerSuspendReason::IoWait)));
-
-        // ChannelRecv
-        let r = convert_suspend_reason(AotSuspendReason::ChannelRecv, 123);
+    fn test_suspend_record_roundtrip() {
+        let mut record = SuspendRecord::none();
+        record.set_reason(&SchedulerSuspendReason::AwaitTask(TaskId::from_u64(42)));
         assert!(matches!(
-            r,
-            Some(SchedulerSuspendReason::ChannelReceive { channel_id: 123 })
+            record.to_runtime_reason(),
+            Some(SchedulerSuspendReason::AwaitTask(tid)) if tid.as_u64() == 42
         ));
 
-        // MutexLock
-        let r = convert_suspend_reason(AotSuspendReason::MutexLock, 5);
-        assert!(matches!(r, Some(SchedulerSuspendReason::MutexLock { .. })));
+        record.set_reason(&SchedulerSuspendReason::MutexAcquire {
+            mutex_id: crate::vm::sync::MutexId::from_u64(5),
+            resume_policy: ResumePolicy::ReturnNull,
+        });
+        assert!(matches!(
+            record.to_runtime_reason(),
+            Some(SchedulerSuspendReason::MutexAcquire {
+                resume_policy: ResumePolicy::ReturnNull,
+                ..
+            })
+        ));
 
-        // NativeCallBoundary
-        let r = convert_suspend_reason(AotSuspendReason::NativeCallBoundary, 0);
-        assert!(matches!(r, Some(SchedulerSuspendReason::Sleep { .. })));
-
-        // None
-        let r = convert_suspend_reason(AotSuspendReason::None, 0);
-        assert!(r.is_none());
+        record.set_tag(SuspendTag::KernelBoundary);
+        assert!(matches!(
+            record.to_runtime_reason(),
+            Some(SchedulerSuspendReason::KernelBoundary)
+        ));
     }
 
     #[test]

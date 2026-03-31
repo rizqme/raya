@@ -16,102 +16,17 @@ use crate::vm::interpreter::execution::{ExecutionFrame, ReturnAction};
 use crate::vm::snapshot::SerializedValue;
 use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
 use crate::vm::stack::Stack;
-use crate::vm::sync::{MutexId, SemaphoreId};
+use crate::vm::suspend::{ResumePolicy, SuspendReason, TaskId};
+use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
+#[cfg(feature = "aot")]
+use crate::aot::{AotEntryFn, AotFrame};
 use parking_lot::Condvar as ParkingCondvar;
 use parking_lot::Mutex as ParkingMutex;
 use parking_lot::RwLock as ParkingRwLock;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
-
-/// Reason why a task is suspended
-///
-/// When a task cannot proceed (e.g., waiting for another task, sleeping,
-/// waiting for a mutex), it suspends with a reason that tells the scheduler
-/// what condition needs to be satisfied before resuming.
-#[derive(Debug, Clone)]
-pub enum SuspendReason {
-    /// Waiting for another task to complete
-    AwaitTask(TaskId),
-
-    /// Sleeping until a specific time
-    Sleep {
-        /// When to wake up
-        wake_at: Instant,
-    },
-
-    /// Waiting to acquire a mutex
-    MutexLock {
-        /// The mutex we're waiting for
-        mutex_id: MutexId,
-    },
-
-    /// Waiting to acquire a mutex from a method-call surface like `m.lock()`.
-    /// Resume should materialize a `null` return value instead of re-executing.
-    MutexLockCall {
-        /// The mutex we're waiting for
-        mutex_id: MutexId,
-    },
-
-    /// Waiting to acquire semaphore permits
-    SemaphoreAcquire {
-        /// The semaphore we're waiting for
-        semaphore_id: SemaphoreId,
-    },
-
-    /// Waiting to send on a full channel
-    ChannelSend {
-        /// Channel handle
-        channel_id: u64,
-        /// Value to send (stored here while waiting)
-        value: Value,
-    },
-
-    /// Waiting to receive from an empty channel
-    ChannelReceive {
-        /// Channel handle
-        channel_id: u64,
-    },
-
-    /// Waiting for IO completion from the event loop (NativeCallResult::Suspend)
-    IoWait,
-
-    /// Suspended at a JS generator `yield`, carrying the yielded value.
-    JsGeneratorYield { value: Value },
-
-    /// Suspended after JS generator call-time initialization and before first user step.
-    JsGeneratorInit,
-}
-
-/// Unique identifier for a Task
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct TaskId(u64);
-
-static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
-
-impl TaskId {
-    /// Generate a new unique TaskId
-    pub fn new() -> Self {
-        TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
-    }
-
-    /// Get the numeric ID value
-    pub fn as_u64(self) -> u64 {
-        self.0
-    }
-
-    /// Create a TaskId from a u64 value
-    pub fn from_u64(id: u64) -> Self {
-        TaskId(id)
-    }
-}
-
-impl Default for TaskId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// State of a Task
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -229,6 +144,13 @@ struct InitState {
     eval_state: EvalState,
 }
 
+#[cfg(feature = "aot")]
+struct AotState {
+    local_count: u32,
+    entry_fn: AotEntryFn,
+    frame_addr: usize,
+}
+
 // ============================================================================
 // Task
 // ============================================================================
@@ -285,6 +207,10 @@ pub struct Task {
 
     /// Initialization args and held mutexes
     init: ParkingMutex<InitState>,
+
+    /// AOT execution state for compiled tasks running through the scheduler.
+    #[cfg(feature = "aot")]
+    aot: ParkingMutex<Option<AotState>>,
 
     // -- Separate locks (special reasons) --
     /// Execution stack (held for full interpreter run duration — std::sync::Mutex)
@@ -362,6 +288,8 @@ impl Task {
                 held_mutexes: Vec::new(),
                 eval_state: EvalState::default(),
             }),
+            #[cfg(feature = "aot")]
+            aot: ParkingMutex::new(None),
 
             stack: StdMutex::new(Stack::new()),
             completion_lock: ParkingMutex::new(false),
@@ -669,6 +597,38 @@ impl Task {
     /// Take the initial arguments (consumes them)
     pub fn take_initial_args(&self) -> Vec<Value> {
         std::mem::take(&mut self.init.lock().initial_args)
+    }
+
+    #[cfg(feature = "aot")]
+    pub fn set_aot_entry(&self, local_count: u32, entry_fn: AotEntryFn) {
+        *self.aot.lock() = Some(AotState {
+            local_count,
+            entry_fn,
+            frame_addr: 0,
+        });
+    }
+
+    #[cfg(feature = "aot")]
+    pub fn aot_entry(&self) -> Option<(u32, AotEntryFn)> {
+        self.aot
+            .lock()
+            .as_ref()
+            .map(|state| (state.local_count, state.entry_fn))
+    }
+
+    #[cfg(feature = "aot")]
+    pub fn take_aot_frame(&self) -> Option<*mut AotFrame> {
+        let mut aot = self.aot.lock();
+        let state = aot.as_mut()?;
+        let frame_addr = std::mem::replace(&mut state.frame_addr, 0);
+        Some(frame_addr as *mut AotFrame)
+    }
+
+    #[cfg(feature = "aot")]
+    pub fn store_aot_frame(&self, frame: *mut AotFrame) {
+        if let Some(state) = self.aot.lock().as_mut() {
+            state.frame_addr = frame as usize;
+        }
     }
 
     /// Replace the task's stack with a pre-allocated one (for pool reuse).
@@ -1351,15 +1311,19 @@ impl Task {
         // Map SuspendReason -> BlockedReason
         let blocked_on = suspend_reason.map(|reason| match reason {
             SuspendReason::AwaitTask(task_id) => BlockedReason::AwaitingTask(task_id),
-            SuspendReason::MutexLock { mutex_id } => {
-                BlockedReason::AwaitingMutex(mutex_id.as_u64())
-            }
-            SuspendReason::MutexLockCall { mutex_id } => {
-                BlockedReason::AwaitingMutex(mutex_id.as_u64())
-            }
+            SuspendReason::MutexAcquire {
+                mutex_id,
+                resume_policy,
+            } => BlockedReason::AwaitingMutex {
+                mutex_id: mutex_id.as_u64(),
+                resume_policy,
+            },
             SuspendReason::SemaphoreAcquire { semaphore_id } => {
                 BlockedReason::AwaitingSemaphore(semaphore_id.as_u64())
             }
+            SuspendReason::YieldNow => BlockedReason::Other("yield_now".to_string()),
+            SuspendReason::Preemption => BlockedReason::Other("preemption".to_string()),
+            SuspendReason::KernelBoundary => BlockedReason::Other("kernel_boundary".to_string()),
             SuspendReason::Sleep { .. } => BlockedReason::Other("sleep".to_string()),
             SuspendReason::ChannelSend { channel_id, .. } => {
                 BlockedReason::Other(format!("channel_send:{}", channel_id))
@@ -1496,13 +1460,29 @@ impl Task {
         // Map BlockedReason -> SuspendReason
         let suspend_reason = serialized.blocked_on.map(|reason| match reason {
             BlockedReason::AwaitingTask(task_id) => SuspendReason::AwaitTask(task_id),
-            BlockedReason::AwaitingMutex(id) => SuspendReason::MutexLock {
-                mutex_id: MutexId::from_u64(id),
+            BlockedReason::AwaitingMutex {
+                mutex_id,
+                resume_policy,
+            } => SuspendReason::MutexAcquire {
+                mutex_id: crate::vm::sync::MutexId::from_u64(mutex_id),
+                resume_policy,
             },
             BlockedReason::AwaitingSemaphore(id) => SuspendReason::SemaphoreAcquire {
-                semaphore_id: SemaphoreId::from_u64(id),
+                semaphore_id: crate::vm::sync::SemaphoreId::from_u64(id),
             },
-            BlockedReason::Other(_) => SuspendReason::IoWait,
+            BlockedReason::Other(kind) => match kind.as_str() {
+                "yield_now" => SuspendReason::YieldNow,
+                "preemption" => SuspendReason::Preemption,
+                "kernel_boundary" => SuspendReason::KernelBoundary,
+                "sleep" => SuspendReason::Sleep {
+                    wake_at: Instant::now(),
+                },
+                "js_generator_yield" => SuspendReason::JsGeneratorYield {
+                    value: Value::undefined(),
+                },
+                "js_generator_init" => SuspendReason::JsGeneratorInit,
+                _ => SuspendReason::IoWait,
+            },
         });
 
         let current_func_id = execution_frames
@@ -1563,6 +1543,8 @@ impl Task {
                 held_mutexes: Vec::new(),
                 eval_state: EvalState::default(),
             }),
+            #[cfg(feature = "aot")]
+            aot: ParkingMutex::new(None),
 
             stack: StdMutex::new(stack),
             completion_lock: ParkingMutex::new(false),
@@ -1940,12 +1922,21 @@ mod tests {
         let module = create_test_module();
         let task = Task::new(0, module.clone(), None);
         let mutex_id = MutexId::from_u64(55);
-        task.suspend(SuspendReason::MutexLock { mutex_id });
+        task.suspend(SuspendReason::MutexAcquire {
+            mutex_id,
+            resume_policy: ResumePolicy::Reexecute,
+        });
 
         let serialized = task.to_serialized();
 
         match &serialized.blocked_on {
-            Some(BlockedReason::AwaitingMutex(id)) => assert_eq!(*id, 55),
+            Some(BlockedReason::AwaitingMutex {
+                mutex_id,
+                resume_policy,
+            }) => {
+                assert_eq!(*mutex_id, 55);
+                assert_eq!(*resume_policy, ResumePolicy::Reexecute);
+            }
             other => panic!("Expected AwaitingMutex, got {:?}", other),
         }
     }

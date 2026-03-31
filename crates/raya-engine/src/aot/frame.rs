@@ -6,6 +6,7 @@
 //! - `AotHelperTable`: function pointer table for runtime services
 //! - `AotEntryFn`: the standard function signature for all AOT functions
 
+use crate::vm::suspend::SuspendRecord;
 use std::sync::atomic::AtomicBool;
 
 /// Sentinel value returned by AOT functions when they suspend.
@@ -22,35 +23,8 @@ pub const AOT_SUSPEND: u64 = 0xFFFF_DEAD_0000_0000;
 /// - A NaN-boxed u64 value on completion
 /// - `AOT_SUSPEND` sentinel when the function suspends
 ///
-/// On suspend, the reason is written to `ctx.suspend_reason`.
+/// On suspend, the reason is written to `ctx.suspend_record`.
 pub type AotEntryFn = unsafe extern "C" fn(frame: *mut AotFrame, ctx: *mut AotTaskContext) -> u64;
-
-/// Reason why an AOT function suspended execution.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SuspendReason {
-    /// Not suspended (initial state)
-    #[default]
-    None = 0,
-    /// Awaiting a spawned task to complete. Payload: task handle (NaN-boxed).
-    AwaitTask = 1,
-    /// Waiting for I/O completion. Payload: IO request handle.
-    IoWait = 2,
-    /// Preempted by the scheduler (time slice expired).
-    Preempted = 3,
-    /// Yielded voluntarily.
-    Yielded = 4,
-    /// Sleeping for a duration. Payload: duration in milliseconds.
-    Sleep = 5,
-    /// Waiting on a channel receive.
-    ChannelRecv = 6,
-    /// Waiting on a channel send (backpressure).
-    ChannelSend = 7,
-    /// Waiting on a mutex lock.
-    MutexLock = 8,
-    /// Suspended at a native-call boundary so the VM thread loop can run native code.
-    NativeCallBoundary = 9,
-}
 
 /// Heap-allocated frame for each active function call.
 ///
@@ -81,9 +55,6 @@ pub struct AotFrame {
 
     /// Pointer to this frame's compiled function for re-entry.
     pub function_ptr: AotEntryFn,
-
-    /// Payload value associated with the suspend reason (e.g., task handle, IO handle).
-    pub suspend_payload: u64,
 }
 
 /// Task-level context passed to every AOT function.
@@ -99,11 +70,8 @@ pub struct AotTaskContext {
     /// Read by AOT code after re-entry at a suspension point.
     pub resume_value: u64,
 
-    /// Reason this function suspended. Written by AOT code before returning AOT_SUSPEND.
-    pub suspend_reason: SuspendReason,
-
-    /// Payload value associated with the suspend reason.
-    pub suspend_payload: u64,
+    /// Shared suspend transport written by AOT code before returning AOT_SUSPEND.
+    pub suspend_record: SuspendRecord,
 
     /// Function pointer table for runtime services.
     /// AOT code calls these indirectly — no relocations needed in machine code.
@@ -303,9 +271,9 @@ mod tests {
 
     #[test]
     fn test_suspend_reason_values() {
-        assert_eq!(SuspendReason::None as u32, 0);
-        assert_eq!(SuspendReason::AwaitTask as u32, 1);
-        assert_eq!(SuspendReason::Preempted as u32, 3);
-        assert_eq!(SuspendReason::NativeCallBoundary as u32, 9);
+        assert_eq!(crate::vm::suspend::SuspendTag::None as u32, 0);
+        assert_eq!(crate::vm::suspend::SuspendTag::AwaitTask as u32, 1);
+        assert_eq!(crate::vm::suspend::SuspendTag::Preemption as u32, 10);
+        assert_eq!(crate::vm::suspend::SuspendTag::KernelBoundary as u32, 9);
     }
 }

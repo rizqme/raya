@@ -213,6 +213,7 @@ fn test_parent_child_task_relationships() {
 #[test]
 fn test_blocked_task_snapshot() {
     use raya_engine::vm::snapshot::BlockedReason;
+    use raya_engine::vm::ResumePolicy;
 
     let mut writer = SnapshotWriter::new();
 
@@ -222,7 +223,10 @@ fn test_blocked_task_snapshot() {
 
     // Task blocked on mutex
     let mut task2 = SerializedTask::new(TaskId::from_u64(20), 0);
-    task2.blocked_on = Some(BlockedReason::AwaitingMutex(42));
+    task2.blocked_on = Some(BlockedReason::AwaitingMutex {
+        mutex_id: 42,
+        resume_policy: ResumePolicy::Reexecute,
+    });
 
     // Task blocked on other reason
     let mut task3 = SerializedTask::new(TaskId::from_u64(30), 0);
@@ -246,7 +250,13 @@ fn test_blocked_task_snapshot() {
     }
 
     match &reader.tasks()[1].blocked_on {
-        Some(BlockedReason::AwaitingMutex(id)) => assert_eq!(*id, 42),
+        Some(BlockedReason::AwaitingMutex {
+            mutex_id,
+            resume_policy,
+        }) => {
+            assert_eq!(*mutex_id, 42);
+            assert_eq!(*resume_policy, ResumePolicy::Reexecute);
+        }
         _ => panic!("Wrong blocked reason for task2"),
     }
 
