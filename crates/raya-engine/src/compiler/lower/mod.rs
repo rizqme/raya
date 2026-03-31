@@ -9,8 +9,8 @@ mod stmt;
 
 use crate::compiler::ir::{
     BasicBlock, BasicBlockId, BinaryOp, FunctionId, IrClass, IrConstant, IrField, IrFunction,
-    IrInstr, IrMethodKind, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, NominalTypeId,
-    Register, RegisterId, Terminator, TypeAliasId,
+    IrInstr, IrMethodKind, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, KernelOp,
+    NominalTypeId, Register, RegisterId, Terminator, TypeAliasId,
 };
 use crate::compiler::module::{
     builtin_surface_manifest_for_mode, builtin_surface_mode_for_profile, BuiltinSurfaceManifest,
@@ -1995,11 +1995,7 @@ impl<'a> Lowerer<'a> {
                     undefined
                 };
                 let iterator = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(iterator.clone()),
-                    native_id: crate::compiler::native_id::OBJECT_GENERATOR_SNAPSHOT_NEW,
-                    args: vec![yield_array, completion],
-                });
+                self.emit_vm_native_call(Some(iterator.clone()), crate::compiler::native_id::OBJECT_GENERATOR_SNAPSHOT_NEW, vec![yield_array, completion]);
                 Some(iterator)
             }
         } else {
@@ -2011,11 +2007,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn emit_fallthrough_return(&mut self) {
         if self.in_direct_eval_function {
             let value = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::NativeCall {
-                dest: Some(value.clone()),
-                native_id: crate::compiler::native_id::OBJECT_EVAL_GET_COMPLETION,
-                args: vec![],
-            });
+            self.emit_vm_native_call(Some(value.clone()), crate::compiler::native_id::OBJECT_EVAL_GET_COMPLETION, vec![]);
             self.emit_function_return(Some(value));
             return;
         }
@@ -2069,11 +2061,7 @@ impl<'a> Lowerer<'a> {
 
     pub(super) fn record_eval_completion(&mut self, value: Register) {
         if self.in_direct_eval_function {
-            self.emit(IrInstr::NativeCall {
-                dest: None,
-                native_id: crate::compiler::native_id::OBJECT_EVAL_SET_COMPLETION,
-                args: vec![value],
-            });
+            self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_EVAL_SET_COMPLETION, vec![value]);
             return;
         }
         if let Some(local_idx) = self.eval_completion_local {
@@ -3260,11 +3248,7 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = Some(arguments_local);
 
         let arguments_reg = self.alloc_register(TypeId::new(JSON_OBJECT_TYPE_ID));
-        self.emit(IrInstr::NativeCall {
-            dest: Some(arguments_reg.clone()),
-            native_id: crate::compiler::native_id::OBJECT_GET_ARGUMENTS_OBJECT,
-            args: vec![],
-        });
+        self.emit_vm_native_call(Some(arguments_reg.clone()), crate::compiler::native_id::OBJECT_GET_ARGUMENTS_OBJECT, vec![]);
 
         if self.refcell_vars.contains(&arguments_symbol) {
             let refcell_reg = self.alloc_register(TypeId::new(0));
@@ -3461,11 +3445,7 @@ impl<'a> Lowerer<'a> {
         if has_runtime_extends {
             let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
             let parent_constructor = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
-            self.emit(IrInstr::NativeCall {
-                dest: Some(parent_constructor.clone()),
-                native_id: crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF,
-                args: vec![class_value],
-            });
+            self.emit_vm_native_call(Some(parent_constructor.clone()), crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF, vec![class_value]);
             return Some(parent_constructor);
         }
 
@@ -4567,11 +4547,7 @@ impl<'a> Lowerer<'a> {
                     dest: name_reg.clone(),
                     value: IrValue::Constant(IrConstant::String(name)),
                 });
-                self.emit(IrInstr::NativeCall {
-                    dest: None,
-                    native_id: crate::compiler::native_id::OBJECT_JS_DECLARE_VAR,
-                    args: vec![name_reg],
-                });
+                self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_JS_DECLARE_VAR, vec![name_reg]);
             }
             return;
         }
@@ -4691,11 +4667,7 @@ impl<'a> Lowerer<'a> {
                 )),
             });
             let initial_value = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::NativeCall {
-                dest: Some(initial_value.clone()),
-                native_id: crate::compiler::native_id::TRY_GET_GLOBAL,
-                args: vec![prop_name],
-            });
+            self.emit_vm_native_call(Some(initial_value.clone()), crate::compiler::native_id::TRY_GET_GLOBAL, vec![prop_name]);
             self.global_type_map.insert(global_idx, initial_value.ty);
             self.emit(IrInstr::StoreGlobal {
                 index: global_idx,
@@ -4738,11 +4710,7 @@ impl<'a> Lowerer<'a> {
             value: IrValue::Constant(IrConstant::String(self.interner.resolve(name).to_string())),
         });
         let configurable = self.emit_bool_const(self.script_global_bindings_configurable);
-        self.emit(IrInstr::NativeCall {
-            dest: None,
-            native_id: crate::compiler::native_id::OBJECT_BIND_SCRIPT_GLOBAL,
-            args: vec![prop_name, value, configurable],
-        });
+        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_BIND_SCRIPT_GLOBAL, vec![prop_name, value, configurable]);
     }
 
     /// Lower a class declaration
@@ -5854,11 +5822,7 @@ impl<'a> Lowerer<'a> {
                 native_args.push(parent_constructor);
                 native_args.push(new_target);
                 native_args.extend(forwarded_args.into_iter().skip(1));
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(this_reg.clone()),
-                    native_id: crate::compiler::native_id::OBJECT_SUPER_CONSTRUCT,
-                    args: native_args,
-                });
+                self.emit_vm_native_call(Some(this_reg.clone()), crate::compiler::native_id::OBJECT_SUPER_CONSTRUCT, native_args);
             }
             self.emit_constructor_prologue(nominal_type_id, &this_reg, &[]);
             self.set_terminator(Terminator::Return(Some(this_reg.clone())));
@@ -6472,6 +6436,19 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn emit_vm_native_call(
+        &mut self,
+        dest: Option<Register>,
+        native_id: u16,
+        args: Vec<Register>,
+    ) {
+        self.emit(IrInstr::KernelCall {
+            dest,
+            op: KernelOp::VmNative(native_id),
+            args,
+        });
+    }
+
     /// Set the terminator for the current block.
     /// When sourcemap is enabled, automatically attaches the current source span.
     fn set_terminator(&mut self, term: Terminator) {
@@ -6525,11 +6502,7 @@ impl<'a> Lowerer<'a> {
                 dest: nominal_id_reg.clone(),
                 value: IrValue::Constant(IrConstant::I32(nominal_type_id.as_u32() as i32)),
             });
-            self.emit(IrInstr::NativeCall {
-                dest: Some(class_value.clone()),
-                native_id: crate::compiler::native_id::OBJECT_GET_CLASS_VALUE,
-                args: vec![nominal_id_reg],
-            });
+            self.emit_vm_native_call(Some(class_value.clone()), crate::compiler::native_id::OBJECT_GET_CLASS_VALUE, vec![nominal_id_reg]);
 
             let key_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
@@ -6538,11 +6511,7 @@ impl<'a> Lowerer<'a> {
                     self.interner.resolve(field_name).to_string(),
                 )),
             });
-            self.emit(IrInstr::NativeCall {
-                dest: None,
-                native_id: crate::compiler::native_id::REFLECT_SET,
-                args: vec![class_value, key_reg, value_reg],
-            });
+            self.emit_vm_native_call(None, crate::compiler::native_id::REFLECT_SET, vec![class_value, key_reg, value_reg]);
         }
     }
 
@@ -6855,11 +6824,7 @@ impl<'a> Lowerer<'a> {
         match &target {
             DecoratorTarget::Class { .. } => {
                 // registerClassDecorator(typeRef, decoratorName)
-                self.emit(IrInstr::NativeCall {
-                    dest: None,
-                    native_id: registration_native_id,
-                    args: vec![nominal_type_id_reg, dec_name_reg],
-                });
+                self.emit_vm_native_call(None, registration_native_id, vec![nominal_type_id_reg, dec_name_reg]);
             }
             DecoratorTarget::Method { method_name, .. } => {
                 // registerMethodDecorator(typeRef, methodName, decoratorName)
@@ -6868,11 +6833,7 @@ impl<'a> Lowerer<'a> {
                     dest: method_name_reg.clone(),
                     value: IrValue::Constant(IrConstant::String(method_name.clone())),
                 });
-                self.emit(IrInstr::NativeCall {
-                    dest: None,
-                    native_id: registration_native_id,
-                    args: vec![nominal_type_id_reg, method_name_reg, dec_name_reg],
-                });
+                self.emit_vm_native_call(None, registration_native_id, vec![nominal_type_id_reg, method_name_reg, dec_name_reg]);
             }
             DecoratorTarget::Field { field_name, .. } => {
                 // registerFieldDecorator(typeRef, fieldName, decoratorName)
@@ -6881,11 +6842,7 @@ impl<'a> Lowerer<'a> {
                     dest: field_name_reg.clone(),
                     value: IrValue::Constant(IrConstant::String(field_name.clone())),
                 });
-                self.emit(IrInstr::NativeCall {
-                    dest: None,
-                    native_id: registration_native_id,
-                    args: vec![nominal_type_id_reg, field_name_reg, dec_name_reg],
-                });
+                self.emit_vm_native_call(None, registration_native_id, vec![nominal_type_id_reg, field_name_reg, dec_name_reg]);
             }
             DecoratorTarget::Parameter {
                 method_name,
@@ -6903,16 +6860,12 @@ impl<'a> Lowerer<'a> {
                     dest: param_index_reg.clone(),
                     value: IrValue::Constant(IrConstant::I32(*param_index as i32)),
                 });
-                self.emit(IrInstr::NativeCall {
-                    dest: None,
-                    native_id: registration_native_id,
-                    args: vec![
+                self.emit_vm_native_call(None, registration_native_id, vec![
                         nominal_type_id_reg,
                         method_name_reg,
                         param_index_reg,
                         dec_name_reg,
-                    ],
-                });
+                    ]);
             }
         }
     }

@@ -1,7 +1,7 @@
 //! Native Function ID Constants
 //!
 //! Defines unique IDs for native functions called by primitive type methods.
-//! These IDs are used by the NativeCall instruction and dispatched by the VM.
+//! These IDs are carried by `KernelOp::VmNative` and dispatched by the VM.
 //!
 //! IMPORTANT: These IDs MUST match the IDs in raya-core/src/builtin.rs
 

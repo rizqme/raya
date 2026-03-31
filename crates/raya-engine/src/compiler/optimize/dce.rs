@@ -82,7 +82,7 @@ impl DeadCodeEliminator {
                     used.insert(arg.id);
                 }
             }
-            IrInstr::NativeCall { args, .. } | IrInstr::KernelCall { args, .. } => {
+            IrInstr::KernelCall { args, .. } => {
                 for arg in args {
                     used.insert(arg.id);
                 }

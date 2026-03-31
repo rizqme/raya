@@ -658,31 +658,6 @@ impl IrCodeGenerator {
                 }
             }
 
-            IrInstr::NativeCall {
-                dest,
-                native_id,
-                args,
-            } => {
-                // Push arguments onto stack
-                for arg in args {
-                    self.emit_load_register(ctx, arg);
-                }
-                // Lower low-level VM intrinsics through the unified KernelCall surface.
-                ctx.emit(Opcode::KernelCall);
-                ctx.emit_u16(crate::compiler::ir::encode_kernel_op_id(
-                    crate::compiler::ir::KernelOp::VmNative(*native_id),
-                ));
-                ctx.emit_u8(args.len() as u8);
-                // Store result if needed, or pop if not used
-                if let Some(dest) = dest {
-                    let slot = ctx.get_or_alloc_slot(dest);
-                    self.emit_store_local(ctx, slot);
-                } else {
-                    // Pop the result that KernelCall pushes since we don't need it
-                    ctx.emit(Opcode::Pop);
-                }
-            }
-
             IrInstr::KernelCall { dest, op, args } => {
                 for arg in args {
                     self.emit_load_register(ctx, arg);

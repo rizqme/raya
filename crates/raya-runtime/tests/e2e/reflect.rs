@@ -1,7 +1,7 @@
 //! End-to-end tests for the std:reflect module
 //!
 //! Tests verify that reflect methods compile and execute correctly
-//! through the NativeCall dispatch pipeline.
+//! through the kernel/vm-native dispatch pipeline.
 //!
 //! Notes:
 //! - Public std:reflect methods now accept real values and nominal type refs.

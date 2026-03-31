@@ -92,11 +92,7 @@ impl<'a> Lowerer<'a> {
             value: IrValue::Constant(IrConstant::I32(kind)),
         });
 
-        self.emit(IrInstr::NativeCall {
-            dest: None,
-            native_id: crate::compiler::native_id::OBJECT_DEFINE_CLASS_PROPERTY,
-            args: vec![target, key_reg, func_id_reg, kind_reg],
-        });
+        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_DEFINE_CLASS_PROPERTY, vec![target, key_reg, func_id_reg, kind_reg]);
     }
 
     fn emit_static_elements_for_class(
@@ -117,21 +113,13 @@ impl<'a> Lowerer<'a> {
         if self.js_this_binding_compat {
             if let Some(extends_expr) = &class.extends_expr {
                 let parent_constructor = self.lower_expr(extends_expr);
-                self.emit(IrInstr::NativeCall {
-                    dest: None,
-                    native_id: crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF,
-                    args: vec![class_value.clone(), parent_constructor.clone()],
-                });
+                self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF, vec![class_value.clone(), parent_constructor.clone()]);
 
                 let class_prototype =
                     self.ensure_class_prototype_target(&class_value, &mut prototype_value);
                 let parent_prototype = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
                 self.emit_dyn_get_named(parent_prototype.clone(), parent_constructor, "prototype");
-                self.emit(IrInstr::NativeCall {
-                    dest: None,
-                    native_id: crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF,
-                    args: vec![class_prototype, parent_prototype],
-                });
+                self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF, vec![class_prototype, parent_prototype]);
             }
         }
         for (member_idx, member) in class.members.iter().enumerate() {
@@ -183,11 +171,7 @@ impl<'a> Lowerer<'a> {
                     }
 
                     let key_reg = self.lower_class_property_key(&field.name, member_idx);
-                    self.emit(IrInstr::NativeCall {
-                        dest: None,
-                        native_id: crate::compiler::native_id::REFLECT_SET,
-                        args: vec![class_value.clone(), key_reg, value_reg],
-                    });
+                    self.emit_vm_native_call(None, crate::compiler::native_id::REFLECT_SET, vec![class_value.clone(), key_reg, value_reg]);
                 }
                 ast::ClassMember::StaticBlock(block) => {
                     for stmt in &block.statements {
@@ -602,20 +586,12 @@ impl<'a> Lowerer<'a> {
 
     fn lower_with(&mut self, with_stmt: &ast::WithStatement) {
         let object = self.lower_expr(&with_stmt.object);
-        self.emit(IrInstr::NativeCall {
-            dest: None,
-            native_id: crate::compiler::native_id::OBJECT_PUSH_WITH_ENV,
-            args: vec![object],
-        });
+        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_PUSH_WITH_ENV, vec![object]);
         self.active_with_env_depth += 1;
         self.lower_stmt(&with_stmt.body);
         self.active_with_env_depth = self.active_with_env_depth.saturating_sub(1);
         if !self.current_block_is_terminated() {
-            self.emit(IrInstr::NativeCall {
-                dest: None,
-                native_id: crate::compiler::native_id::OBJECT_POP_WITH_ENV,
-                args: vec![],
-            });
+            self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_POP_WITH_ENV, vec![]);
         }
     }
 
@@ -912,11 +888,7 @@ impl<'a> Lowerer<'a> {
 
         // Call Reflect.getEnumerableKeys(obj) to get keys array
         let keys_reg = self.alloc_register(UNRESOLVED);
-        self.emit(IrInstr::NativeCall {
-            dest: Some(keys_reg.clone()),
-            native_id: crate::vm::builtin::reflect::GET_ENUMERABLE_KEYS,
-            args: vec![obj_reg],
-        });
+        self.emit_vm_native_call(Some(keys_reg.clone()), crate::vm::builtin::reflect::GET_ENUMERABLE_KEYS, vec![obj_reg]);
 
         // Get keys array length
         let len_reg = self.alloc_register(number_ty);
@@ -1276,11 +1248,7 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn emit_require_object_coercible(&mut self, value: Register) {
-        self.emit(IrInstr::NativeCall {
-            dest: None,
-            native_id: crate::compiler::native_id::OBJECT_REQUIRE_OBJECT_COERCIBLE,
-            args: vec![value],
-        });
+        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_REQUIRE_OBJECT_COERCIBLE, vec![value]);
     }
 
     fn is_anonymous_binding_initializer(&self, expr: &ast::Expression) -> bool {
@@ -1369,11 +1337,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let binding_name = self.emit_named_key_register(self.interner.resolve(ident.name));
-        self.emit(IrInstr::NativeCall {
-            dest: None,
-            native_id: crate::compiler::native_id::OBJECT_ASSIGN_BINDING_NAME_IF_MISSING,
-            args: vec![value.clone(), binding_name],
-        });
+        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_ASSIGN_BINDING_NAME_IF_MISSING, vec![value.clone(), binding_name]);
     }
 
     fn emit_binding_default_value(
@@ -1435,21 +1399,13 @@ impl<'a> Lowerer<'a> {
         ty: TypeId,
     ) -> Register {
         let loaded = self.alloc_register(ty);
-        self.emit(IrInstr::NativeCall {
-            dest: Some(loaded.clone()),
-            native_id: crate::compiler::native_id::OBJECT_GET_DESTRUCTURING_PROPERTY,
-            args: vec![object, key],
-        });
+        self.emit_vm_native_call(Some(loaded.clone()), crate::compiler::native_id::OBJECT_GET_DESTRUCTURING_PROPERTY, vec![object, key]);
         loaded
     }
 
     pub(super) fn emit_property_key_coercion(&mut self, key: Register) -> Register {
         let coerced = self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
-        self.emit(IrInstr::NativeCall {
-            dest: Some(coerced.clone()),
-            native_id: crate::compiler::native_id::OBJECT_COERCE_PROPERTY_KEY,
-            args: vec![key],
-        });
+        self.emit_vm_native_call(Some(coerced.clone()), crate::compiler::native_id::OBJECT_COERCE_PROPERTY_KEY, vec![key]);
         coerced
     }
 
@@ -1940,12 +1896,11 @@ impl<'a> Lowerer<'a> {
                     args.push(rest_obj.clone());
                     args.push(value_reg.clone());
                     args.extend(excluded_keys);
-                    self.emit(IrInstr::NativeCall {
-                        dest: Some(rest_obj.clone()),
-                        native_id:
-                            crate::compiler::native_id::OBJECT_COPY_DATA_PROPERTIES_EXCLUDING,
+                    self.emit_vm_native_call(
+                        Some(rest_obj.clone()),
+                        crate::compiler::native_id::OBJECT_COPY_DATA_PROPERTIES_EXCLUDING,
                         args,
-                    });
+                    );
                     self.bind_pattern(&ast::Pattern::Identifier(rest_ident.clone()), rest_obj);
                 }
             }
@@ -3458,11 +3413,7 @@ impl<'a> Lowerer<'a> {
             dest: resumed_payload.clone(),
         });
         let resumed = self.alloc_register(UNRESOLVED);
-        self.emit(IrInstr::NativeCall {
-            dest: Some(resumed),
-            native_id: crate::compiler::native_id::OBJECT_HANDLE_GENERATOR_RESUME,
-            args: vec![resumed_payload],
-        });
+        self.emit_vm_native_call(Some(resumed), crate::compiler::native_id::OBJECT_HANDLE_GENERATOR_RESUME, vec![resumed_payload]);
     }
 
     fn close_active_loop_iterators(&mut self) {

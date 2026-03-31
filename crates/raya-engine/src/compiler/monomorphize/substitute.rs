@@ -143,15 +143,6 @@ impl TypeSubstitution {
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
                 optional: *optional,
             },
-            IrInstr::NativeCall {
-                dest,
-                native_id,
-                args,
-            } => IrInstr::NativeCall {
-                dest: dest.as_ref().map(|d| self.apply_register(d)),
-                native_id: *native_id,
-                args: args.iter().map(|a| self.apply_register(a)).collect(),
-            },
             IrInstr::KernelCall { dest, op, args } => IrInstr::KernelCall {
                 dest: dest.as_ref().map(|d| self.apply_register(d)),
                 op: *op,

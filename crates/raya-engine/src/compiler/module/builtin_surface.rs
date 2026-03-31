@@ -88,7 +88,7 @@ pub(crate) struct BuiltinTypeSurface {
 pub(crate) enum BuiltinDispatchBinding {
     SourceDefined,
     Opcode(OpcodeKind),
-    NativeCall {
+    VmNative {
         native_id: u16,
         return_type_name: Option<String>,
     },
@@ -273,7 +273,7 @@ impl BuiltinDispatchBinding {
         match self {
             Self::SourceDefined => None,
             Self::Opcode(kind) => Some(DispatchAction::Opcode(*kind)),
-            Self::NativeCall { native_id, .. } => Some(DispatchAction::NativeCall(*native_id)),
+            Self::VmNative { native_id, .. } => Some(DispatchAction::VmNative(*native_id)),
             Self::DeclaredField(field_type_name) => Some(DispatchAction::DeclaredField(
                 field_type_name
                     .as_deref()
@@ -291,7 +291,7 @@ impl BuiltinDispatchBinding {
 
     pub(crate) fn return_type_name(&self) -> Option<&str> {
         match self {
-            Self::NativeCall {
+            Self::VmNative {
                 return_type_name: Some(name),
                 ..
             } => Some(name.as_str()),
@@ -823,7 +823,7 @@ fn function_binding(
 ) -> BuiltinDispatchBinding {
     let body = span_slice(source, span_start, span_end);
     extract_native_call_id(body, constants)
-        .map(|native_id| BuiltinDispatchBinding::NativeCall {
+        .map(|native_id| BuiltinDispatchBinding::VmNative {
             native_id,
             return_type_name: type_name_from_annotation(return_type, interner),
         })

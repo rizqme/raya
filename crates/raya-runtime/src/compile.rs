@@ -3235,6 +3235,27 @@ mod tests {
     }
 
     #[test]
+    fn test_semantic_plan_classifies_strict_wrapper_builtin_vm_native_method_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            let mutex = new Mutex();
+            mutex.tryLock();
+            "#,
+            SemanticProfile::raya(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("tryLock")
+                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
+                && matches!(
+                    dispatch.registry_dispatch,
+                    Some(raya_engine::compiler::type_registry::DispatchAction::VmNative(_))
+                )
+        }));
+    }
+
+    #[test]
     fn test_semantic_plan_classifies_object_method_params_as_local_bindings() {
         let plan = inspect_semantic_plan_with_profile(
             r#"

@@ -25,8 +25,8 @@ pub const UNRESOLVED_TYPE_ID: u32 = u32::MAX;
 pub enum DispatchAction {
     /// Emit a specialized opcode directly (e.g., StringLen, ArrayLen)
     Opcode(OpcodeKind),
-    /// Emit CallMethodExact with this builtin method ID (VM handles natively)
-    NativeCall(u16),
+    /// Emit a kernel-backed VM native used by derived builtin dispatch.
+    VmNative(u16),
     /// Builtin primitive instance field declared in source.
     /// Carries the resolved field type when it can be determined.
     DeclaredField(Option<u32>),
@@ -228,7 +228,7 @@ impl TypeRegistry {
         binding: &BuiltinDispatchBinding,
         type_ctx: &TypeContext,
     ) {
-        let BuiltinDispatchBinding::NativeCall {
+        let BuiltinDispatchBinding::VmNative {
             native_id,
             return_type_name: Some(return_type_name),
         } = binding
@@ -275,7 +275,7 @@ impl TypeRegistry {
                 return Some(action.clone());
             }
             if let Some(native_id) = crate::vm::builtin::lookup_builtin_method("Array", name) {
-                return Some(DispatchAction::NativeCall(native_id));
+                return Some(DispatchAction::VmNative(native_id));
             }
         }
         None
@@ -322,7 +322,7 @@ impl TypeRegistry {
     ) -> Option<u16> {
         let type_id = canonical_dispatch_type_id(type_name)?;
         match self.lookup_method(type_id, method_name) {
-            Some(DispatchAction::NativeCall(id)) => Some(id),
+            Some(DispatchAction::VmNative(id)) => Some(id),
             _ => None,
         }
     }
@@ -1128,18 +1128,18 @@ class Array<T> {
         assert!(registry.lookup_method(arr_id, "pop").is_some());
         assert!(registry.lookup_property(arr_id, "length").is_some());
 
-        // Callback methods are dispatched as NativeCall (array native opcodes)
+        // Callback methods are dispatched as VmNative (array native opcodes)
         assert!(matches!(
             registry.lookup_method(arr_id, "map"),
-            Some(DispatchAction::NativeCall(_))
+            Some(DispatchAction::VmNative(_))
         ));
         assert!(matches!(
             registry.lookup_method(arr_id, "filter"),
-            Some(DispatchAction::NativeCall(_))
+            Some(DispatchAction::VmNative(_))
         ));
         assert!(matches!(
             registry.lookup_method(arr_id, "forEach"),
-            Some(DispatchAction::NativeCall(_))
+            Some(DispatchAction::VmNative(_))
         ));
 
         // Verify constructors

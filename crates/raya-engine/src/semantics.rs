@@ -1933,13 +1933,14 @@ impl<'a> SemanticHirBuilder<'a> {
 
     fn receiver_has_builtin_registry_property(
         &self,
+        receiver_expr: &Expression,
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> bool {
         let Some(type_ctx) = self.typed.map(|typed| typed.type_ctx) else {
             return false;
         };
-        self.receiver_builtin_surface_type_name(receiver_ty)
+        self.receiver_builtin_surface_type_name_for_expr(receiver_expr, receiver_ty)
             .and_then(|type_name| {
                 self.builtin_surface
                     .instance_property_binding(&type_name, name)
@@ -1950,13 +1951,14 @@ impl<'a> SemanticHirBuilder<'a> {
 
     fn receiver_has_builtin_registry_method(
         &self,
+        receiver_expr: &Expression,
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> bool {
         let Some(type_ctx) = self.typed.map(|typed| typed.type_ctx) else {
             return false;
         };
-        self.receiver_builtin_surface_type_name(receiver_ty)
+        self.receiver_builtin_surface_type_name_for_expr(receiver_expr, receiver_ty)
             .and_then(|type_name| self.builtin_surface.instance_method_binding(&type_name, name))
             .and_then(|binding| binding.to_dispatch_action(type_ctx))
             .is_some()
@@ -1971,11 +1973,12 @@ impl<'a> SemanticHirBuilder<'a> {
 
     fn receiver_builtin_registry_property_dispatch(
         &self,
+        receiver_expr: &Expression,
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> Option<crate::compiler::type_registry::DispatchAction> {
         let type_ctx = self.typed?.type_ctx;
-        self.receiver_builtin_surface_type_name(receiver_ty)
+        self.receiver_builtin_surface_type_name_for_expr(receiver_expr, receiver_ty)
             .and_then(|type_name| {
                 self.builtin_surface
                     .instance_property_binding(&type_name, name)
@@ -1985,13 +1988,25 @@ impl<'a> SemanticHirBuilder<'a> {
 
     fn receiver_builtin_registry_method_dispatch(
         &self,
+        receiver_expr: &Expression,
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> Option<crate::compiler::type_registry::DispatchAction> {
         let type_ctx = self.typed?.type_ctx;
-        self.receiver_builtin_surface_type_name(receiver_ty)
+        self.receiver_builtin_surface_type_name_for_expr(receiver_expr, receiver_ty)
             .and_then(|type_name| self.builtin_surface.instance_method_binding(&type_name, name))
             .and_then(|binding| binding.to_dispatch_action(type_ctx))
+    }
+
+    fn receiver_builtin_surface_type_name_for_expr(
+        &self,
+        receiver_expr: &Expression,
+        receiver_ty: Option<TypeId>,
+    ) -> Option<String> {
+        self.object_shape_for_expr(receiver_expr)
+            .and_then(|shape| shape.type_name)
+            .or_else(|| self.canonical_surface_type_name_for_expr(receiver_expr, receiver_ty))
+            .or_else(|| self.receiver_builtin_surface_type_name(receiver_ty))
     }
 
     fn receiver_builtin_surface_type_name(&self, receiver_ty: Option<TypeId>) -> Option<String> {
@@ -2487,8 +2502,11 @@ impl<'a> SemanticHirBuilder<'a> {
                 let property_name = self.identifier(&member.property);
                 let receiver_type_id = self.expr_type(&member.object);
                 let origin = self.builtin_origin_kind_for_expr(&member.object);
-                let registry_dispatch = self
-                    .receiver_builtin_registry_property_dispatch(receiver_type_id, &property_name);
+                let registry_dispatch = self.receiver_builtin_registry_property_dispatch(
+                    &member.object,
+                    receiver_type_id,
+                    &property_name,
+                );
                 let static_binding = self
                     .builtin_static_property_binding_for_expr(&member.object, &property_name)
                     .or_else(|| {
@@ -2506,7 +2524,7 @@ impl<'a> SemanticHirBuilder<'a> {
                             namespace_call: None,
                             registry_dispatch: None,
                             native_id: match binding {
-                                crate::compiler::module::BuiltinDispatchBinding::NativeCall {
+                                crate::compiler::module::BuiltinDispatchBinding::VmNative {
                                     native_id,
                                     ..
                                 } => Some(*native_id),
@@ -2553,7 +2571,7 @@ impl<'a> SemanticHirBuilder<'a> {
                             .builtin_static_method_binding_for_expr(&member.object, &member_name)
                         {
                             let native_id = match binding {
-                                crate::compiler::module::BuiltinDispatchBinding::NativeCall {
+                                crate::compiler::module::BuiltinDispatchBinding::VmNative {
                                     native_id,
                                     ..
                                 } => Some(*native_id),
@@ -2627,6 +2645,7 @@ impl<'a> SemanticHirBuilder<'a> {
                             })
                         } else {
                             self.receiver_builtin_registry_method_dispatch(
+                                &member.object,
                                 receiver_type_id,
                                 &member_name,
                             )
@@ -2867,6 +2886,7 @@ impl<'a> SemanticHirBuilder<'a> {
                         MemberTargetKind::StructuralSlot => CallDispatchKind::StructuralCall,
                         MemberTargetKind::BuiltinProperty
                             if self.receiver_has_builtin_registry_method(
+                                &member.object,
                                 receiver_type_id,
                                 &member_name,
                             ) =>
@@ -3172,6 +3192,15 @@ impl<'a> SemanticHirBuilder<'a> {
             _ => receiver_ty,
         };
 
+        let wrapper_surface_member = self
+            .receiver_builtin_surface_type_name(Some(effective_receiver_ty))
+            .and_then(|type_name| self.builtin_surface.type_surface(&type_name))
+            .is_some_and(|surface| {
+                surface.wrapper_method_surface
+                    && (surface.instance_methods.contains_key(name)
+                        || surface.instance_properties.contains_key(name))
+            });
+
         match typed.type_ctx.get(effective_receiver_ty) {
             Some(Type::Class(class_ty)) => match shape.kind {
                 ObjectShapeKind::ClassValue => {
@@ -3186,7 +3215,9 @@ impl<'a> SemanticHirBuilder<'a> {
                     }
                 }
                 ObjectShapeKind::NominalInstance => {
-                    if self.class_includes_accessor(class_ty, name, false) {
+                    if wrapper_surface_member {
+                        MemberTargetKind::BuiltinProperty
+                    } else if self.class_includes_accessor(class_ty, name, false) {
                         MemberTargetKind::DynamicProperty
                     } else if self.class_includes_method(class_ty, name) {
                         MemberTargetKind::NominalMethod

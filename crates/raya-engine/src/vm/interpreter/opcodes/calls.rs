@@ -936,7 +936,7 @@ impl<'a> Interpreter<'a> {
                         Ok(v) => v,
                         Err(e) => return OpcodeResult::Error(e),
                     };
-                    // Prepend receiver as args[0] for NativeCall pattern
+                    // Prepend receiver as args[0] for the vm-native helper pattern.
                     let mut native_args = Vec::with_capacity(args.len() + 1);
                     native_args.push(receiver);
                     native_args.extend(args);

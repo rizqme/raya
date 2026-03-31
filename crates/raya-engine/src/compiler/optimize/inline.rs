@@ -123,7 +123,6 @@ impl Inliner {
             | IrInstr::ConstructType { .. }
             | IrInstr::CallMethodExact { .. }
             | IrInstr::CallClosure { .. }
-            | IrInstr::NativeCall { .. }
             | IrInstr::KernelCall { .. }
             | IrInstr::LoadLocal { .. }
             | IrInstr::LoadFieldExact { .. }
@@ -322,7 +321,7 @@ impl Inliner {
                 f(index.id.as_u32());
                 f(value.id.as_u32());
             }
-            IrInstr::NativeCall { dest, args, .. } | IrInstr::KernelCall { dest, args, .. } => {
+            IrInstr::KernelCall { dest, args, .. } => {
                 if let Some(d) = dest {
                     f(d.id.as_u32());
                 }
@@ -533,20 +532,6 @@ impl Inliner {
                 object: self.rename_register(object, reg_map),
                 nominal_type_id: *nominal_type_id,
                 args: args
-                    .iter()
-                    .map(|a| self.rename_register(a, reg_map))
-                    .collect(),
-            }),
-            IrInstr::NativeCall {
-                dest,
-                native_id,
-                args: native_args,
-            } => Some(IrInstr::NativeCall {
-                dest: dest
-                    .as_ref()
-                    .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
-                native_id: *native_id,
-                args: native_args
                     .iter()
                     .map(|a| self.rename_register(a, reg_map))
                     .collect(),

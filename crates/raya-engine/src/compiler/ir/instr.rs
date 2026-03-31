@@ -267,14 +267,6 @@ pub enum IrInstr {
         method: u16,
     },
 
-    /// Native function call: dest = native_call(native_id, args)
-    /// Used for engine-internal methods (reflect, runtime, built-in types)
-    NativeCall {
-        dest: Option<Register>,
-        native_id: u16,
-        args: Vec<Register>,
-    },
-
     /// Builtin/metaobject/iterator/host-handle dispatch selected by the semantic planner.
     KernelCall {
         dest: Option<Register>,
@@ -655,7 +647,6 @@ impl IrInstr {
             IrInstr::Call { dest, .. }
             | IrInstr::CallMethodExact { dest, .. }
             | IrInstr::CallMethodShape { dest, .. }
-            | IrInstr::NativeCall { dest, .. }
             | IrInstr::KernelCall { dest, .. }
             | IrInstr::CallClosure { dest, .. } => dest.as_ref(),
             IrInstr::StoreLocal { .. }
@@ -688,7 +679,6 @@ impl IrInstr {
                 | IrInstr::ConstructType { .. }
                 | IrInstr::CallMethodExact { .. }
                 | IrInstr::CallMethodShape { .. }
-                | IrInstr::NativeCall { .. }
                 | IrInstr::KernelCall { .. }
                 | IrInstr::CallClosure { .. }
                 | IrInstr::DynGetProp { .. }

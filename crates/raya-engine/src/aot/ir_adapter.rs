@@ -372,9 +372,6 @@ impl<'a> IrFunctionAdapter<'a> {
                 dest: Some(dest), ..
             }
             | IrInstr::BindMethod { dest, .. }
-            | IrInstr::NativeCall {
-                dest: Some(dest), ..
-            }
             | IrInstr::KernelCall {
                 dest: Some(dest), ..
             }
@@ -410,7 +407,6 @@ impl<'a> IrFunctionAdapter<'a> {
             | IrInstr::Call { dest: None, .. }
             | IrInstr::CallMethodExact { dest: None, .. }
             | IrInstr::CallMethodShape { dest: None, .. }
-            | IrInstr::NativeCall { dest: None, .. }
             | IrInstr::KernelCall { dest: None, .. }
             | IrInstr::StoreGlobal { .. }
             | IrInstr::StoreFieldExact { .. }
@@ -1096,23 +1092,6 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: call_args,
                 });
             }
-            IrInstr::NativeCall {
-                dest,
-                native_id,
-                args,
-            } => {
-                let mut call_args = vec![
-                    crate::compiler::ir::encode_kernel_op_id(
-                        crate::compiler::ir::KernelOp::VmNative(*native_id),
-                    ) as u32,
-                ];
-                call_args.extend(args.iter().map(Self::reg));
-                out.push(SmInstr::CallHelper {
-                    dest: dest.as_ref().map(Self::reg),
-                    helper: HelperCall::KernelCall,
-                    args: call_args,
-                });
-            }
             IrInstr::KernelCall { dest, op, args } => {
                 let mut call_args = vec![crate::compiler::ir::encode_kernel_op_id(*op) as u32];
                 call_args.extend(args.iter().map(Self::reg));
@@ -1549,7 +1528,6 @@ impl<'a> IrFunctionAdapter<'a> {
             IrInstr::GeneratorInitSuspend => Some(SuspensionKind::Yield),
             IrInstr::GeneratorYield { .. } => Some(SuspensionKind::Yield),
             IrInstr::Sleep { .. } => Some(SuspensionKind::Sleep),
-            IrInstr::NativeCall { .. } => Some(SuspensionKind::NativeCall),
             IrInstr::KernelCall { .. } => Some(SuspensionKind::NativeCall),
             IrInstr::Call { .. } => Some(SuspensionKind::AotCall),
             IrInstr::CallMethodExact { .. } | IrInstr::CallMethodShape { .. } => {

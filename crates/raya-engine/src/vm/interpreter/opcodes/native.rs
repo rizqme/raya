@@ -22520,9 +22520,9 @@ impl<'a> Interpreter<'a> {
                             }
                         }
 
-                        // Other native calls not yet implemented
+                        // Other vm-native kernel ops not yet implemented
                         OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "NativeCall {:#06x} not yet implemented in Interpreter (args={})",
+                            "VmNative kernel op {:#06x} not yet implemented in Interpreter (args={})",
                             native_id,
                             args.len()
                         )))

@@ -212,24 +212,6 @@ fn format_instr(instr: &IrInstr) -> String {
                 )
             }
         }
-        IrInstr::NativeCall {
-            dest,
-            native_id,
-            args,
-        } => {
-            let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-            let native_name = crate::native_id::native_name(*native_id);
-            if let Some(d) = dest {
-                format!(
-                    "{} = native_call {}({})",
-                    d,
-                    native_name,
-                    args_str.join(", ")
-                )
-            } else {
-                format!("native_call {}({})", native_name, args_str.join(", "))
-            }
-        }
         IrInstr::KernelCall { dest, op, args } => {
             let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
             let op_name = match op {
