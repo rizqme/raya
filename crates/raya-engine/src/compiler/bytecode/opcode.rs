@@ -294,10 +294,6 @@ pub enum Opcode {
     ArrayPush = 0xC9,
     /// Pop element from array: pop array, push popped element
     ArrayPop = 0xCA,
-    /// Create new channel with capacity: pop capacity, push Channel reference
-    /// Stack: [capacity] -> [channel]
-    NewChannel = 0xCB,
-
     // ===== Concurrency & Tasks (0xD0-0xDB) =====
     /// Spawn new task (operands: u16 funcIndex, u16 argCount)
     Spawn = 0xD0,
@@ -307,12 +303,6 @@ pub enum Opcode {
     Yield = 0xD2,
     /// Register continuation on task (operand: u32 funcIndex)
     TaskThen = 0xD3,
-    /// Create new mutex: push Mutex reference
-    NewMutex = 0xD4,
-    /// Acquire mutex: pop mutex (may block)
-    MutexLock = 0xD5,
-    /// Release mutex: pop mutex
-    MutexUnlock = 0xD6,
     /// Create new semaphore: pop initial permit count, push Semaphore reference
     NewSemaphore = 0xD7,
     /// Acquire semaphore permits: pop permit count, pop semaphore (may block)
@@ -357,8 +347,6 @@ pub enum Opcode {
     CastNominal = 0xEB,
     /// Cast object to a structural shape (operand: u64 shapeId)
     CastShape = 0xEC,
-    /// Cancel a task: pop TaskHandle, task is marked for cancellation
-    TaskCancel = 0xED,
     /// Check if object is instance of a nominal type (operand: u16 nominalTypeIndex)
     IsNominal = 0xEE,
 
@@ -397,9 +385,6 @@ pub enum Opcode {
     Rethrow = 0xFB,
     /// Trap with error code (operand: u16 errorCode)
     Trap = 0xFC,
-    /// Call native function by ID (operand: u16 nativeId, u8 argCount)
-    /// Stack: [args...] -> [result]
-    NativeCall = 0xFD,
     /// Call a backend kernel operation (operand: u16 kernelOpId, u8 argCount)
     /// Stack: [args...] -> [result]
     KernelCall = 0xFE,
@@ -552,16 +537,11 @@ impl Opcode {
             0xC8 => Some(Self::TupleGet),
             0xC9 => Some(Self::ArrayPush),
             0xCA => Some(Self::ArrayPop),
-            0xCB => Some(Self::NewChannel),
-
             // Concurrency & tasks
             0xD0 => Some(Self::Spawn),
             0xD1 => Some(Self::Await),
             0xD2 => Some(Self::Yield),
             0xD3 => Some(Self::TaskThen),
-            0xD4 => Some(Self::NewMutex),
-            0xD5 => Some(Self::MutexLock),
-            0xD6 => Some(Self::MutexUnlock),
             0xD7 => Some(Self::NewSemaphore),
             0xD8 => Some(Self::SemAcquire),
             0xD9 => Some(Self::SemRelease),
@@ -584,7 +564,6 @@ impl Opcode {
             0xEC => Some(Self::CastShape),
 
             // Task control & type operations
-            0xED => Some(Self::TaskCancel),
             0xEE => Some(Self::IsNominal),
             // Closures & modules
             0xF0 => Some(Self::MakeClosure),
@@ -602,7 +581,6 @@ impl Opcode {
             0xFA => Some(Self::EndTry),
             0xFB => Some(Self::Rethrow),
             0xFC => Some(Self::Trap),
-            0xFD => Some(Self::NativeCall),
             0xFE => Some(Self::KernelCall),
 
             // Invalid opcodes
@@ -728,14 +706,10 @@ impl Opcode {
             Self::TupleGet => "TUPLE_GET",
             Self::ArrayPush => "ARRAY_PUSH",
             Self::ArrayPop => "ARRAY_POP",
-            Self::NewChannel => "NEW_CHANNEL",
             Self::Spawn => "SPAWN",
             Self::Await => "AWAIT",
             Self::Yield => "YIELD",
             Self::TaskThen => "TASK_THEN",
-            Self::NewMutex => "NEW_MUTEX",
-            Self::MutexLock => "MUTEX_LOCK",
-            Self::MutexUnlock => "MUTEX_UNLOCK",
             Self::NewSemaphore => "NEW_SEMAPHORE",
             Self::SemAcquire => "SEM_ACQUIRE",
             Self::SemRelease => "SEM_RELEASE",
@@ -747,7 +721,6 @@ impl Opcode {
             Self::DynGetKeyed => "DYN_GET_KEYED",
             Self::DynSetKeyed => "DYN_SET_KEYED",
             Self::ImplementsShape => "IMPLEMENTS_SHAPE",
-            Self::TaskCancel => "TASK_CANCEL",
             Self::IsNominal => "IS_NOMINAL",
             Self::CastTupleLen => "CAST_TUPLE_LEN",
             Self::CastObjectMinFields => "CAST_OBJECT_MIN_FIELDS",
@@ -771,7 +744,6 @@ impl Opcode {
             Self::EndTry => "END_TRY",
             Self::Rethrow => "RETHROW",
             Self::Trap => "TRAP",
-            Self::NativeCall => "NATIVE_CALL",
             Self::KernelCall => "KERNEL_CALL",
             Self::BindMethod => "BIND_METHOD",
         }
@@ -880,20 +852,17 @@ mod tests {
             Opcode::KernelCall,
             Opcode::LoadFieldShape,
             Opcode::StoreFieldShape,
-            Opcode::NewChannel,
             Opcode::SetClosureCapture,
             Opcode::SpawnClosure,
             Opcode::NewRefCell,
             Opcode::LoadRefCell,
             Opcode::StoreRefCell,
             Opcode::Sleep,
-            Opcode::TaskCancel,
             Opcode::ImplementsShape,
             Opcode::CastNominal,
             Opcode::CastShape,
             Opcode::IsNominal,
             Opcode::NewType,
-            Opcode::NativeCall,
             Opcode::ArrayPush,
             Opcode::ArrayPop,
         ];
@@ -1077,9 +1046,6 @@ mod tests {
             Opcode::Await,
             Opcode::Yield,
             Opcode::TaskThen,
-            Opcode::NewMutex,
-            Opcode::MutexLock,
-            Opcode::MutexUnlock,
             Opcode::NewSemaphore,
             Opcode::SemAcquire,
             Opcode::SemRelease,
@@ -1098,7 +1064,6 @@ mod tests {
             Opcode::CastArrayElemKind,
             Opcode::CastKindMask,
             Opcode::CastNominal,
-            Opcode::TaskCancel,
             Opcode::MakeClosure,
             Opcode::CloseVar,
             Opcode::LoadCaptured,
@@ -1112,7 +1077,6 @@ mod tests {
             Opcode::EndTry,
             Opcode::Rethrow,
             Opcode::Trap,
-            Opcode::NativeCall,
             Opcode::KernelCall,
             Opcode::Debugger,
         ];

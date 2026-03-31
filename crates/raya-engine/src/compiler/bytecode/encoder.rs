@@ -457,17 +457,35 @@ impl BytecodeWriter {
 
     /// Emit NEW_MUTEX instruction
     pub fn emit_new_mutex(&mut self) {
-        self.emit_opcode(Opcode::NewMutex);
+        self.emit_opcode(Opcode::KernelCall);
+        self.emit_u16(crate::compiler::ir::encode_kernel_op_id(
+            crate::compiler::ir::KernelOp::HostHandle(
+                crate::semantics::HostHandleOpKind::MutexConstructor,
+            ),
+        ));
+        self.emit_u8(0);
     }
 
     /// Emit MUTEX_LOCK instruction
     pub fn emit_mutex_lock(&mut self) {
-        self.emit_opcode(Opcode::MutexLock);
+        self.emit_opcode(Opcode::KernelCall);
+        self.emit_u16(crate::compiler::ir::encode_kernel_op_id(
+            crate::compiler::ir::KernelOp::HostHandle(
+                crate::semantics::HostHandleOpKind::MutexLock,
+            ),
+        ));
+        self.emit_u8(1);
     }
 
     /// Emit MUTEX_UNLOCK instruction
     pub fn emit_mutex_unlock(&mut self) {
-        self.emit_opcode(Opcode::MutexUnlock);
+        self.emit_opcode(Opcode::KernelCall);
+        self.emit_u16(crate::compiler::ir::encode_kernel_op_id(
+            crate::compiler::ir::KernelOp::HostHandle(
+                crate::semantics::HostHandleOpKind::MutexUnlock,
+            ),
+        ));
+        self.emit_u8(1);
     }
 
     /// Emit THROW instruction

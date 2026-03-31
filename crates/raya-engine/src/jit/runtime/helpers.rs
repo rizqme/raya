@@ -685,13 +685,10 @@ fn jit_function_is_sync_safe(
             Opcode::Await
             | Opcode::WaitAll
             | Opcode::Sleep
-            | Opcode::MutexLock
             | Opcode::Yield
-            | Opcode::NativeCall
             | Opcode::KernelCall
             | Opcode::Spawn
-            | Opcode::SpawnClosure
-            | Opcode::TaskCancel => return false,
+            | Opcode::SpawnClosure => return false,
             Opcode::Call => match instr.operands {
                 Operands::Call {
                     func_index: 0xFFFF_FFFF,
@@ -1187,7 +1184,7 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                 value_args.iter().map(|v| value_to_native(*v)).collect();
 
             match kernel_op {
-                KernelOp::NativeCall(native_id) => {
+                KernelOp::VmNative(native_id) => {
                     let resolved = (&*bridge.resolved_natives).read();
                     match resolved.call(native_id, &ctx, &native_args) {
                         NativeCallResult::Value(v) => return native_to_value(v).raw(),
@@ -1820,7 +1817,7 @@ mod tests {
 
         let raw = unsafe {
             helper_kernel_call_dispatch(
-                crate::compiler::ir::encode_kernel_op_id(KernelOp::NativeCall(0)),
+                crate::compiler::ir::encode_kernel_op_id(KernelOp::VmNative(0)),
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
@@ -1895,7 +1892,7 @@ mod tests {
 
         let raw = unsafe {
             helper_kernel_call_dispatch(
-                crate::compiler::ir::encode_kernel_op_id(KernelOp::NativeCall(0)),
+                crate::compiler::ir::encode_kernel_op_id(KernelOp::VmNative(0)),
                 std::ptr::null(),
                 0,
                 std::ptr::null(),

@@ -48,8 +48,6 @@ pub enum Operands {
         catch_offset: i32,
         finally_offset: i32,
     },
-    /// NativeCall: native_id (u16) + arg_count (u8)
-    NativeCall { native_id: u16, arg_count: u8 },
     /// KernelCall: kernel_op_id (u16) + arg_count (u8)
     KernelCall { kernel_op_id: u16, arg_count: u8 },
     /// Nominal constructor on an existing object: nominal_type_id (u16) + arg_count (u8)
@@ -193,16 +191,11 @@ fn decode_operands(
         | Opcode::Yield
         | Opcode::GeneratorInitSuspend
         | Opcode::GeneratorYield
-        | Opcode::NewMutex
-        | Opcode::NewChannel
-        | Opcode::MutexLock
-        | Opcode::MutexUnlock
         | Opcode::NewSemaphore
         | Opcode::SemAcquire
         | Opcode::SemRelease
         | Opcode::WaitAll
         | Opcode::Sleep
-        | Opcode::TaskCancel
         | Opcode::DynGetKeyed
         | Opcode::DynSetKeyed
         | Opcode::Throw
@@ -371,15 +364,7 @@ fn decode_operands(
             })
         }
 
-        // u16 + u8 — NativeCall, KernelCall
-        Opcode::NativeCall => {
-            let native_id = read_u16(code, pos, offset)?;
-            let arg_count = read_u8(code, pos, offset)?;
-            Ok(Operands::NativeCall {
-                native_id,
-                arg_count,
-            })
-        }
+        // u16 + u8 — KernelCall
         Opcode::KernelCall => {
             let kernel_op_id = read_u16(code, pos, offset)?;
             let arg_count = read_u8(code, pos, offset)?;
@@ -591,16 +576,16 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_native_call() {
-        let mut code = vec![Opcode::NativeCall as u8];
+    fn test_decode_kernel_call() {
+        let mut code = vec![Opcode::KernelCall as u8];
         code.extend_from_slice(&0x0100u16.to_le_bytes());
         code.push(2);
         let instrs = decode_function(&code).unwrap();
         assert_eq!(instrs.len(), 1);
         assert!(matches!(
             instrs[0].operands,
-            Operands::NativeCall {
-                native_id: 0x0100,
+            Operands::KernelCall {
+                kernel_op_id: 0x0100,
                 arg_count: 2
             }
         ));

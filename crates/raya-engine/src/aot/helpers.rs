@@ -123,7 +123,7 @@ pub fn clear_registered_aot_functions() {
 }
 
 /// Temporary marker native ID for exercising suspend handoff in default AOT helpers.
-/// This must stay in the plain `KernelOp::NativeCall` encoding range.
+/// This must stay in the plain `KernelOp::VmNative` encoding range.
 const STUB_NATIVE_SUSPEND_ID: u16 = 0x7FFF;
 const CAST_KIND_MASK_FLAG: u16 = 0x8000;
 const CAST_TUPLE_LEN_FLAG: u16 = 0x4000;
@@ -1274,7 +1274,7 @@ unsafe extern "C" fn helper_native_call(
             }
         }
 
-        if !matches!(kernel_op, KernelOp::NativeCall(_)) {
+        if !matches!(kernel_op, KernelOp::VmNative(_)) {
             let Some(module) =
                 (!(*ctx).module.is_null()).then(|| &*((*ctx).module as *const crate::compiler::Module))
             else {
@@ -1339,7 +1339,7 @@ unsafe extern "C" fn helper_native_call(
         }
 
         let native_id = match kernel_op {
-            KernelOp::NativeCall(native_id) => native_id,
+            KernelOp::VmNative(native_id) => native_id,
             _ => unreachable!(),
         };
 
@@ -1440,7 +1440,7 @@ unsafe extern "C" fn helper_native_call(
     // Stub split behavior:
     // - Most IDs take an immediate "completed" fast path (null result placeholder).
     // - STUB_NATIVE_SUSPEND_ID exercises boundary suspend handoff behavior.
-    if matches!(kernel_op, KernelOp::NativeCall(native_id) if native_id == STUB_NATIVE_SUSPEND_ID)
+    if matches!(kernel_op, KernelOp::VmNative(native_id) if native_id == STUB_NATIVE_SUSPEND_ID)
     {
         if !ctx.is_null() {
             (*ctx).suspend_reason = SuspendReason::NativeCallBoundary;

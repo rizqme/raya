@@ -209,17 +209,9 @@ impl HeuristicsAnalyzer {
                     score += PENALTY_SLEEP;
                     has_io = true;
                 }
-                Opcode::MutexLock | Opcode::MutexUnlock => {
-                    score += PENALTY_MUTEX;
-                    has_io = true;
-                }
-                Opcode::NewChannel => {
-                    score += PENALTY_CHANNEL;
-                    has_io = true;
-                }
 
                 // === Penalties: calls ===
-                Opcode::NativeCall | Opcode::KernelCall => {
+                Opcode::KernelCall => {
                     score += PENALTY_NATIVE_CALL;
                 }
                 Opcode::Call
@@ -380,7 +372,6 @@ pub fn function_supported_for_jit(func: &Function) -> bool {
                 | Opcode::JmpIfFalse
                 | Opcode::JmpIfNull
                 | Opcode::JmpIfNotNull
-                | Opcode::NativeCall
                 | Opcode::KernelCall
                 | Opcode::NewType
                 | Opcode::IsNominal

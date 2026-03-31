@@ -286,7 +286,7 @@ pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
             // Use single worker with StdNativeHandler for stdlib support (logger, etc.).
             let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
 
-            // Register symbolic native functions for ModuleNativeCall dispatch.
+            // Register symbolic native functions for registered kernel-call dispatch.
             {
                 let mut registry = vm.native_registry().write();
                 raya_stdlib::register_stdlib(&mut registry);
@@ -1180,7 +1180,7 @@ fn compile_and_run_multiworker_with_builtins_timeout(
 
             let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
 
-            // Register symbolic native functions for ModuleNativeCall dispatch.
+            // Register symbolic native functions for registered kernel-call dispatch.
             {
                 let mut registry = vm.native_registry().write();
                 raya_stdlib::register_stdlib(&mut registry);

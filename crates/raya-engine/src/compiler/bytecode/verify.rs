@@ -242,10 +242,6 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::GeneratorInitSuspend
         | Opcode::GeneratorYield
         | Opcode::Sleep
-        | Opcode::NewMutex
-        | Opcode::NewChannel
-        | Opcode::MutexLock
-        | Opcode::MutexUnlock
         | Opcode::Throw
         | Opcode::DynGetKeyed
         | Opcode::DynSetKeyed
@@ -253,7 +249,6 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::SemAcquire
         | Opcode::SemRelease
         | Opcode::WaitAll
-        | Opcode::TaskCancel
         | Opcode::NewRefCell
         | Opcode::LoadRefCell
         | Opcode::StoreRefCell
@@ -340,9 +335,6 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
 
         // SpawnClosure has 2-byte operand (u16 argCount)
         Opcode::SpawnClosure => 2,
-
-        // NativeCall has 3-byte operand (u16 nativeId + u8 argCount)
-        Opcode::NativeCall => 3,
 
         // KernelCall has 3-byte operand (u16 kernelOpId + u8 argCount)
         Opcode::KernelCall => 3,
@@ -483,9 +475,6 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::GeneratorYield => (1, 0),
         Opcode::Sleep => (1, 0), // pops duration_ms
         Opcode::TaskThen => (1, 1),
-        Opcode::NewMutex => (0, 1),
-        Opcode::NewChannel => (1, 1), // pops capacity, pushes channel reference
-        Opcode::MutexLock | Opcode::MutexUnlock => (1, 0),
         Opcode::Throw => (1, 0),
         Opcode::Trap => (0, 0),
         Opcode::LoadGlobal => (0, 1),
@@ -514,9 +503,6 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         // Task waiting
         Opcode::WaitAll => (1, 1), // Pop task array, push result array
 
-        // Task cancellation
-        Opcode::TaskCancel => (1, 0), // Pop task handle
-
         // Exception handling
         Opcode::Try => (0, 0),     // Installs handler, no stack effect
         Opcode::EndTry => (0, 0),  // Removes handler, no stack effect
@@ -534,9 +520,6 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         | Opcode::CastObjectMinFields
         | Opcode::CastArrayElemKind
         | Opcode::CastKindMask => (1, 1), // Pop object, push object (or throw)
-
-        // Native call
-        Opcode::NativeCall => (0, 1), // Simplified - pops args (dynamic), pushes result
 
         // Kernel call
         Opcode::KernelCall => (0, 1), // Simplified - pops args (dynamic), pushes result

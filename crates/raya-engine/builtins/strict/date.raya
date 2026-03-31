@@ -30,6 +30,14 @@ const DATE_TO_TIME_STRING: number = 0x0B23;
 class Date {
     private timestamp: number;
 
+    static now(): number {
+        return __NATIVE_CALL<number>(DATE_NOW);
+    }
+
+    static parse(value: string): number {
+        return __NATIVE_CALL<number>(DATE_PARSE, value);
+    }
+
     constructor(...parts: any[]) {
         this.timestamp = __NATIVE_CALL<number>(DATE_CONSTRUCT, arguments);
     }

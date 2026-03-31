@@ -559,8 +559,6 @@ impl fmt::Display for JitInstr {
             JitInstr::Await { dest, task } => write!(f, "{} = await {}", dest, task),
             JitInstr::Yield => write!(f, "yield"),
             JitInstr::Sleep { duration } => write!(f, "sleep {}", duration),
-            JitInstr::MutexLock { mutex } => write!(f, "mutex.lock {}", mutex),
-            JitInstr::MutexUnlock { mutex } => write!(f, "mutex.unlock {}", mutex),
             JitInstr::NewSemaphore { dest } => write!(f, "{} = new.semaphore", dest),
             JitInstr::SemAcquire { sem } => write!(f, "sem.acquire {}", sem),
             JitInstr::SemRelease { sem } => write!(f, "sem.release {}", sem),

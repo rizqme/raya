@@ -115,8 +115,9 @@ pub mod opcode {
     pub const ARRAY_STORE: u8 = 0xC2;
     pub const ARRAY_LENGTH: u8 = 0xC3;
 
-    // Native calls
+    // Kernel/native calls
     pub const NATIVE_CALL: u8 = 0xA8;
+    pub const KERNEL_CALL: u8 = 0xFE;
 }
 
 /// Global counter for builder IDs
@@ -656,9 +657,17 @@ impl BytecodeBuilder {
         // Push return value
         self.push_type(StackType::Unknown);
 
-        self.emit_byte(opcode::NATIVE_CALL);
-        self.emit_u16(native_id);
-        self.emit_u16(arg_count);
+        self.emit_byte(opcode::KERNEL_CALL);
+        self.emit_u16(crate::compiler::ir::encode_kernel_op_id(
+            crate::compiler::ir::KernelOp::VmNative(native_id),
+        ));
+        let argc = u8::try_from(arg_count).map_err(|_| {
+            VmError::RuntimeError(format!(
+                "Native call arg count {} exceeds kernel call encoding",
+                arg_count
+            ))
+        })?;
+        self.emit_byte(argc);
         Ok(())
     }
 

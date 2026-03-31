@@ -172,7 +172,7 @@ pub mod flags {
     pub const HAS_DEBUG_INFO: u32 = 1 << 0;
     /// Module has reflection data
     pub const HAS_REFLECTION: u32 = 1 << 1;
-    /// Module has native function table (for ModuleNativeCall)
+    /// Module has registered-native name table (for kernel-call resolution)
     pub const HAS_NATIVE_FUNCTIONS: u32 = 1 << 2;
     /// Module has JIT compilation hints (pre-computed heuristic scores)
     pub const HAS_JIT_HINTS: u32 = 1 << 3;

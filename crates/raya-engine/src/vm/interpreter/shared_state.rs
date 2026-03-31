@@ -454,10 +454,10 @@ pub struct SharedVmState {
     /// External native call handler (stdlib implementation)
     pub native_handler: Arc<dyn NativeHandler>,
 
-    /// Resolved native functions for ModuleNativeCall dispatch
+    /// Resolved native functions for registered kernel-call dispatch
     pub resolved_natives: RwLock<ResolvedNatives>,
 
-    /// Native function registry for linking module native calls at load time
+    /// Native function registry for linking registered kernel calls at load time
     pub native_registry: RwLock<NativeFunctionRegistry>,
 
     /// Module registry for loaded bytecode modules
@@ -944,8 +944,8 @@ impl SharedVmState {
         }
     }
 
-    /// Link a module's native function table against the registry.
-    /// Must be called before executing a module that uses ModuleNativeCall.
+    /// Link a module's registered native name table against the registry.
+    /// Must be called before executing a module that uses registered kernel calls.
     pub fn link_module_natives(&self, module: &Module) -> Result<(), String> {
         let resolved = self.resolve_module_natives(module)?;
         if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {

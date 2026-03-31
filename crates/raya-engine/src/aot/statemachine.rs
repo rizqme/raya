@@ -341,7 +341,6 @@ pub enum HelperCall {
     ObjectSetField,
     LoadGlobalValue,
     StoreGlobalValue,
-    NativeCall,
     KernelCall,
     IsNativeSuspend,
     Spawn,
@@ -416,8 +415,6 @@ pub enum HelperCall {
     YieldTask,
     SleepTask,
     SpawnClosure,
-    MutexLock,
-    MutexUnlock,
 
     // Exception handling
     SetupTry,
@@ -436,8 +433,6 @@ impl HelperCall {
                 | HelperCall::AwaitAll
                 | HelperCall::YieldTask
                 | HelperCall::SleepTask
-                | HelperCall::MutexLock
-                | HelperCall::NativeCall
                 | HelperCall::KernelCall
         )
     }
@@ -1177,8 +1172,6 @@ fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
         | HelperCall::YieldTask
         | HelperCall::SleepTask
         | HelperCall::SpawnClosure
-        | HelperCall::MutexLock
-        | HelperCall::MutexUnlock
         | HelperCall::SetupTry
         | HelperCall::EndTry
         | HelperCall::StringCompare => true,
@@ -1186,7 +1179,7 @@ fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
         HelperCall::ObjectSetField => arg_index == 0 || arg_index == 2,
         HelperCall::LoadGlobalValue => false,
         HelperCall::StoreGlobalValue => arg_index == 1,
-        HelperCall::NativeCall | HelperCall::KernelCall => arg_index > 0,
+        HelperCall::KernelCall => arg_index > 0,
         HelperCall::IsNativeSuspend => true,
         HelperCall::Spawn => arg_index > 0,
         HelperCall::CheckPreemption => false,
@@ -1225,8 +1218,7 @@ mod tests {
         assert!(HelperCall::AwaitTask.is_suspension_point());
         assert!(HelperCall::YieldTask.is_suspension_point());
         assert!(HelperCall::SleepTask.is_suspension_point());
-        assert!(HelperCall::MutexLock.is_suspension_point());
-        assert!(HelperCall::NativeCall.is_suspension_point());
+        assert!(HelperCall::KernelCall.is_suspension_point());
 
         assert!(!HelperCall::AllocObject.is_suspension_point());
         assert!(!HelperCall::StringConcat.is_suspension_point());
@@ -1393,7 +1385,7 @@ mod tests {
             instructions: vec![
                 SmInstr::CallHelper {
                     dest: Some(0),
-                    helper: HelperCall::NativeCall,
+                    helper: HelperCall::KernelCall,
                     args: vec![],
                 },
                 SmInstr::ConstI32 { dest: 1, value: 7 },

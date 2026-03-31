@@ -1,9 +1,8 @@
-//! Native call opcode handlers: NativeCall, KernelCall, ModuleNativeCall
+//! Runtime handlers for low-level VM natives and unified kernel calls.
 //!
-//! NativeCall dispatches to built-in operations (channel, buffer, map, set, date, regexp, etc.)
-//! and reflect/runtime methods. KernelCall is the unified backend surface for dispatch-like
-//! builtin/metaobject/iterator/host-handle/module-native execution. ModuleNativeCall remains as
-//! a compatibility path for pre-kernel bytecode.
+//! `KernelCall` is the active backend surface for dispatch-like
+//! builtin/metaobject/iterator/host-handle/module-native execution.
+//! The remaining raw native helpers in this module are low-level VM/runtime primitives.
 
 use crate::compiler::native_id::{
     CHANNEL_CAPACITY, CHANNEL_CLOSE, CHANNEL_IS_CLOSED, CHANNEL_LENGTH, CHANNEL_NEW,
@@ -16562,12 +16561,12 @@ impl<'a> Interpreter<'a> {
                         &fake_code,
                         module,
                         task,
-                        Opcode::NativeCall,
+                        Opcode::Nop,
                     )
                 };
 
                 match kernel_op {
-                    crate::compiler::ir::KernelOp::NativeCall(native_id) => {
+                    crate::compiler::ir::KernelOp::VmNative(native_id) => {
                         dispatch_native(self, native_id)
                     }
                     crate::compiler::ir::KernelOp::RegisteredNative(local_idx) => {
@@ -16834,7 +16833,10 @@ impl<'a> Interpreter<'a> {
                     },
                 }
             }
-            Opcode::NativeCall => {
+            // Private raw vm-native entry used only by KernelCall::VmNative and
+            // other internal helper paths that provide a `[native_id_lo,
+            // native_id_hi, arg_count]` payload in `code`.
+            _ => {
                 let native_id = match Self::read_u16(code, ip) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
@@ -18217,9 +18219,16 @@ impl<'a> Interpreter<'a> {
                             args.get(2).copied().is_some_and(|value| value.is_truthy());
                         let in_parameter_initializer =
                             args.get(3).copied().is_some_and(|value| value.is_truthy());
+                        let current_function_is_globalish_eval = module
+                            .functions
+                            .get(task.current_func_id())
+                            .is_some_and(|function| {
+                                function.name == "main" || function.name == "__direct_eval__"
+                            });
                         let uses_script_global_bindings =
                             args.get(4).copied().is_some_and(|value| value.is_truthy())
-                                || self.active_direct_eval_uses_script_global_bindings(task);
+                                || (current_function_is_globalish_eval
+                                    && self.active_direct_eval_uses_script_global_bindings(task));
                         let value = match self.eval_dynamic_js_source(
                             &source,
                             DynamicJsCompileOptions {

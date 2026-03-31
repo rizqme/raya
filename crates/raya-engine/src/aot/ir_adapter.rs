@@ -1047,7 +1047,7 @@ impl<'a> IrFunctionAdapter<'a> {
                 call_args.insert(0, func.as_u32()); // function ID as first arg
                 out.push(SmInstr::CallHelper {
                     dest: dest.as_ref().map(Self::reg),
-                    helper: HelperCall::NativeCall, // Will be resolved to CallAot later
+                    helper: HelperCall::KernelCall, // Will be resolved to CallAot later
                     args: call_args,
                 });
             }
@@ -1076,7 +1076,7 @@ impl<'a> IrFunctionAdapter<'a> {
                 call_args.extend(args.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
                     dest: dest.as_ref().map(Self::reg),
-                    helper: HelperCall::NativeCall,
+                    helper: HelperCall::KernelCall,
                     args: call_args,
                 });
             }
@@ -1092,7 +1092,7 @@ impl<'a> IrFunctionAdapter<'a> {
                 call_args.extend(args.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
                     dest: dest.as_ref().map(Self::reg),
-                    helper: HelperCall::NativeCall,
+                    helper: HelperCall::KernelCall,
                     args: call_args,
                 });
             }
@@ -1101,11 +1101,15 @@ impl<'a> IrFunctionAdapter<'a> {
                 native_id,
                 args,
             } => {
-                let mut call_args = vec![*native_id as u32];
+                let mut call_args = vec![
+                    crate::compiler::ir::encode_kernel_op_id(
+                        crate::compiler::ir::KernelOp::VmNative(*native_id),
+                    ) as u32,
+                ];
                 call_args.extend(args.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
                     dest: dest.as_ref().map(Self::reg),
-                    helper: HelperCall::NativeCall,
+                    helper: HelperCall::KernelCall,
                     args: call_args,
                 });
             }

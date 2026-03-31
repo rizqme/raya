@@ -1072,8 +1072,6 @@ impl LoweringCtx {
             | HelperCall::YieldTask
             | HelperCall::SleepTask
             | HelperCall::SpawnClosure
-            | HelperCall::MutexLock
-            | HelperCall::MutexUnlock
             | HelperCall::SetupTry
             | HelperCall::EndTry => {
                 // TODO: Implement compound operations via extended helper table
@@ -1260,7 +1258,7 @@ impl LoweringCtx {
             }
 
             // (ctx, op_id: u16, args_ptr: i64, argc: u8) -> u64
-            HelperCall::NativeCall | HelperCall::KernelCall => {
+            HelperCall::KernelCall => {
                 // Adapter convention: args = [native_id_imm, arg0, arg1, ...]
                 // Marshal arg values into a contiguous stack buffer and pass pointer+argc.
                 let mut v = vec![ctx];
@@ -1598,7 +1596,7 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
             sig.params.push(AbiParam::new(types::I64));
         }
         // (ctx: i64, op_id: u16, args_ptr: i64, argc: u8) -> u64
-            HelperCall::NativeCall | HelperCall::KernelCall => {
+        HelperCall::KernelCall => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I16));
             sig.params.push(AbiParam::new(types::I64));
@@ -1731,7 +1729,7 @@ fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
         HelperCall::DynSetProp => offset_of!(AotHelperTable, dyn_set_prop),
         HelperCall::LoadGlobalValue => offset_of!(AotHelperTable, load_global_value),
         HelperCall::StoreGlobalValue => offset_of!(AotHelperTable, store_global_value),
-        HelperCall::NativeCall | HelperCall::KernelCall => offset_of!(AotHelperTable, native_call),
+        HelperCall::KernelCall => offset_of!(AotHelperTable, native_call),
         HelperCall::IsNativeSuspend => offset_of!(AotHelperTable, is_native_suspend),
         HelperCall::Spawn => offset_of!(AotHelperTable, spawn),
         HelperCall::CheckPreemption => offset_of!(AotHelperTable, check_preemption),
@@ -2162,12 +2160,12 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_native_call_helper_marshals_args_via_stack_buffer() {
+    fn test_lower_kernel_call_helper_marshals_args_via_stack_buffer() {
         use super::super::analysis::SuspensionAnalysis;
         use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
 
-        // Build a minimal body that invokes HelperCall::NativeCall with:
-        // args = [native_id_reg, arg0_i32, arg1_i32]
+        // Build a minimal body that invokes HelperCall::KernelCall with:
+        // args = [kernel_op_id_reg, arg0_i32, arg1_i32]
         // Lowering should marshal arg0/arg1 into a contiguous temporary buffer.
         let sm_func = StateMachineFunction {
             function_id: 99,
@@ -2179,12 +2177,12 @@ mod tests {
                 id: SmBlockId(0),
                 kind: SmBlockKind::Body,
                 instructions: vec![
-                    SmInstr::ConstI32 { dest: 0, value: 7 },  // native_id
+                    SmInstr::ConstI32 { dest: 0, value: 7 },  // kernel_op_id
                     SmInstr::ConstI32 { dest: 1, value: 11 }, // arg0
                     SmInstr::ConstI32 { dest: 2, value: 13 }, // arg1
                     SmInstr::CallHelper {
                         dest: Some(3),
-                        helper: HelperCall::NativeCall,
+                        helper: HelperCall::KernelCall,
                         args: vec![0, 1, 2],
                     },
                 ],

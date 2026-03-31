@@ -80,10 +80,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::Await
         | Opcode::Yield
         | Opcode::Debugger
-        | Opcode::NewMutex
-        | Opcode::NewChannel
-        | Opcode::MutexLock
-        | Opcode::MutexUnlock
         | Opcode::NewSemaphore
         | Opcode::SemAcquire
         | Opcode::SemRelease
@@ -91,7 +87,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::Sleep
         | Opcode::GeneratorInitSuspend
         | Opcode::GeneratorYield
-        | Opcode::TaskCancel
         | Opcode::DynGetKeyed
         | Opcode::DynSetKeyed
         | Opcode::Throw
@@ -180,9 +175,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
 
         // i32 + i32 operands (try block)
         Opcode::Try => 1 + 4 + 4,
-
-        // u16 + u8 operands (native call)
-        Opcode::NativeCall => 1 + 2 + 1,
 
         // u16 + u8 operands (kernel call)
         Opcode::KernelCall => 1 + 2 + 1,

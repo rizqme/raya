@@ -2074,7 +2074,7 @@ impl<'a> Lowerer<'a> {
             crate::parser::types::Type::Class(class_ty) => {
                 self.nominal_type_id_from_type_name(&class_ty.name)
                     .is_none()
-                    && !self.type_registry.has_builtin_dispatch_type(&class_ty.name)
+                    && !self.builtin_surface.has_dispatch_type(&class_ty.name)
             }
             crate::parser::types::Type::Union(union) => union
                 .members

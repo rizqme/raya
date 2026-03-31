@@ -24,7 +24,7 @@ pub struct IrModule {
     class_map: FxHashMap<String, NominalTypeId>,
     /// Type alias lookup by name
     type_alias_map: FxHashMap<String, TypeAliasId>,
-    /// Native function name table for ModuleNativeCall.
+    /// Registered native name table for kernel-call lowering.
     /// Maps module-local index → symbolic name (e.g., "math.abs", "time.now").
     pub native_functions: Vec<String>,
     /// Canonical structural shape metadata referenced by this module.

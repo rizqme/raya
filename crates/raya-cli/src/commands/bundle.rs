@@ -291,10 +291,6 @@ mod aot_impl {
             | Opcode::GeneratorInitSuspend
             | Opcode::GeneratorYield
             | Opcode::Sleep
-            | Opcode::NewMutex
-            | Opcode::NewChannel
-            | Opcode::MutexLock
-            | Opcode::MutexUnlock
             | Opcode::Throw
             | Opcode::DynGetKeyed
             | Opcode::DynSetKeyed
@@ -302,7 +298,6 @@ mod aot_impl {
             | Opcode::SemAcquire
             | Opcode::SemRelease
             | Opcode::WaitAll
-            | Opcode::TaskCancel
             | Opcode::NewRefCell
             | Opcode::LoadRefCell
             | Opcode::StoreRefCell
@@ -367,7 +362,7 @@ mod aot_impl {
             | Opcode::MakeClosure
             | Opcode::TupleLiteral => 6,
             Opcode::ConstructType => 3,
-            Opcode::NativeCall | Opcode::ModuleNativeCall => 3,
+            Opcode::KernelCall => 3,
         }
     }
 

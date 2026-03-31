@@ -12,6 +12,9 @@ use crate::compiler::ir::{
     IrInstr, IrMethodKind, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, NominalTypeId,
     Register, RegisterId, Terminator, TypeAliasId,
 };
+use crate::compiler::module::{
+    builtin_surface_manifest_for_mode, builtin_surface_mode_for_profile, BuiltinSurfaceManifest,
+};
 use crate::parser::ast::{
     self, walk_arrow_function, walk_block_statement, walk_expression, walk_function_decl,
     walk_statement, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor,
@@ -837,6 +840,8 @@ pub struct Lowerer<'a> {
     /// Compile-time constant values (for constant folding)
     /// Maps symbol to its constant value (only for literals)
     constant_map: FxHashMap<Symbol, ConstantValue>,
+    /// Profile-derived builtin surface manifest used for semantic hints only.
+    builtin_surface: &'static BuiltinSurfaceManifest,
     /// Object field layout for registers from decode<T> calls
     /// Maps register id → Vec<(field_name, field_index)>
     register_object_fields: FxHashMap<RegisterId, Vec<(String, usize)>>,
@@ -878,7 +883,7 @@ pub struct Lowerer<'a> {
     /// When set, `lower_object` materializes this full layout (missing fields as null)
     /// to keep structural/union slot positions stable.
     object_literal_target_layout: Option<Vec<String>>,
-    /// Native function name table for ModuleNativeCall.
+    /// Module/plugin native function name table for registered kernel calls.
     /// Accumulates symbolic names during lowering; each name gets a module-local index.
     native_function_table: Vec<String>,
     /// Reverse lookup: name → local index (for deduplication)
@@ -1520,6 +1525,8 @@ impl<'a> Lowerer<'a> {
         interner: &'a Interner,
         expr_types: FxHashMap<usize, TypeId>,
     ) -> Self {
+        let builtin_surface =
+            builtin_surface_manifest_for_mode(crate::compiler::module::BuiltinSurfaceMode::RayaStrict);
         Self {
             type_ctx,
             interner,
@@ -1610,6 +1617,7 @@ impl<'a> Lowerer<'a> {
             pending_class_method_env_globals: None,
             current_method_env_globals: None,
             constant_map: FxHashMap::default(),
+            builtin_surface,
             register_object_fields: FxHashMap::default(),
             register_structural_projection_fields: FxHashMap::default(),
             register_nested_object_fields: FxHashMap::default(),
@@ -1631,7 +1639,7 @@ impl<'a> Lowerer<'a> {
             emit_sourcemap: false,
             current_span: Span::default(),
             errors: Vec::new(),
-            type_registry: super::type_registry::TypeRegistry::new(type_ctx),
+            type_registry: super::type_registry::TypeRegistry::new(type_ctx, builtin_surface),
             class_method_cache: FxHashMap::default(),
             generic_function_asts: FxHashMap::default(),
             type_param_substitutions: FxHashMap::default(),
@@ -1690,7 +1698,11 @@ impl<'a> Lowerer<'a> {
     /// Configure lowering behavior from a semantic lowering plan.
     pub fn with_semantic_plan(mut self, plan: SemanticLoweringPlan) -> Self {
         let lowering = plan.lowering_semantics();
+        let builtin_surface =
+            builtin_surface_manifest_for_mode(builtin_surface_mode_for_profile(plan.profile()));
         self.semantic_plan = plan;
+        self.builtin_surface = builtin_surface;
+        self.type_registry = super::type_registry::TypeRegistry::new(self.type_ctx, builtin_surface);
         self.js_this_binding_compat = lowering.js_this_binding_compat;
         self.allow_unresolved_runtime_fallback = lowering.allow_unresolved_runtime_fallback;
         self.track_top_level_completion = lowering.track_top_level_completion;
@@ -8084,8 +8096,8 @@ impl<'a> Lowerer<'a> {
             .copied()
             .or_else(|| self.runtime_constructor_symbol_cache.get(&name).copied())
             .is_some_and(|ctor_symbol| {
-                self.type_registry
-                    .has_builtin_dispatch_type(self.interner.resolve(ctor_symbol))
+                self.builtin_surface
+                    .has_dispatch_type(self.interner.resolve(ctor_symbol))
             })
     }
 

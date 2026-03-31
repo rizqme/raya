@@ -193,13 +193,10 @@ fn bytecode_function_is_sync_safe(
             Opcode::Await
             | Opcode::WaitAll
             | Opcode::Sleep
-            | Opcode::MutexLock
             | Opcode::Yield
-            | Opcode::NativeCall
             | Opcode::KernelCall
             | Opcode::Spawn
             | Opcode::SpawnClosure
-            | Opcode::TaskCancel
             | Opcode::CallMethodExact
             | Opcode::OptionalCallMethodExact
             | Opcode::CallMethodShape
@@ -394,9 +391,6 @@ fn classify_suspension(instr: &JitInstr) -> Option<SuspensionKind> {
 
         // May suspend - AOT function call
         JitInstr::Call { .. } => Some(SuspensionKind::AotCall),
-
-        // May suspend - mutex lock
-        JitInstr::MutexLock { .. } => Some(SuspensionKind::MutexLock),
 
         // Preemption check
         JitInstr::CheckPreemption { .. } => Some(SuspensionKind::PreemptionCheck),
@@ -1410,13 +1404,10 @@ fn classify_sm_suspension(instr: &SmInstr) -> Option<SuspensionKind> {
     match instr {
         SmInstr::CallAot { .. } => Some(SuspensionKind::AotCall),
         SmInstr::CallHelper { helper, .. } => match helper {
-            HelperCall::NativeCall | HelperCall::KernelCall => {
-                Some(SuspensionKind::NativeCall)
-            }
+            HelperCall::KernelCall => Some(SuspensionKind::NativeCall),
             HelperCall::AwaitTask | HelperCall::AwaitAll => Some(SuspensionKind::Await),
             HelperCall::YieldTask => Some(SuspensionKind::Yield),
             HelperCall::SleepTask => Some(SuspensionKind::Sleep),
-            HelperCall::MutexLock => Some(SuspensionKind::MutexLock),
             _ => None,
         },
         _ => None,

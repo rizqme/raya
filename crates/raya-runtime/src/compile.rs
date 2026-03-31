@@ -3121,6 +3121,28 @@ mod tests {
     }
 
     #[test]
+    fn test_semantic_plan_classifies_manifest_backed_static_builtin_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            function main() {
+                return Number.isNaN(Date.now());
+            }
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.call_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("now")
+                && dispatch.kind == raya_engine::CallDispatchKind::BuiltinNamespaceMethod
+        }));
+        assert!(plan.hir.call_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("isNaN")
+                && dispatch.kind == raya_engine::CallDispatchKind::BuiltinNamespaceMethod
+        }));
+    }
+
+    #[test]
     fn test_semantic_plan_classifies_runtime_constructor_value_dispatch() {
         let plan = inspect_semantic_plan_with_profile(
             r#"
@@ -3140,7 +3162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_plan_classifies_builtin_constructor_dispatch() {
+    fn test_semantic_plan_classifies_wrapper_builtin_constructor_dispatch() {
         let plan = inspect_semantic_plan_with_profile(
             r#"
             new Channel();
@@ -3150,7 +3172,65 @@ mod tests {
         .expect("semantic plan should build");
 
         assert!(plan.hir.constructor_dispatches.iter().any(|dispatch| {
-            dispatch.kind == raya_engine::ConstructorDispatchKind::NominalClass
+            dispatch.kind == raya_engine::ConstructorDispatchKind::BuiltinNativeConstructor
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_strict_mutex_constructor_as_builtin_native() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            new Mutex();
+            "#,
+            SemanticProfile::raya(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.constructor_dispatches.iter().any(|dispatch| {
+            dispatch.kind == raya_engine::ConstructorDispatchKind::BuiltinNativeConstructor
+        }));
+        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
+            dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::HostHandleOp
+                && dispatch.host_handle_op
+                    == Some(raya_engine::semantics::HostHandleOpKind::MutexConstructor)
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_wrapper_builtin_instance_method_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            const mutex = new Mutex();
+            mutex.lock();
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("lock")
+                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::HostHandleOp
+                && dispatch.host_handle_op
+                    == Some(raya_engine::semantics::HostHandleOpKind::MutexLock)
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_strict_wrapper_builtin_instance_method_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            let mutex = new Mutex();
+            mutex.lock();
+            "#,
+            SemanticProfile::raya(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("lock")
+                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::HostHandleOp
+                && dispatch.host_handle_op
+                    == Some(raya_engine::semantics::HostHandleOpKind::MutexLock)
         }));
     }
 

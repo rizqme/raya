@@ -12,6 +12,7 @@ const CHANNEL_IS_CLOSED: number = 0x0406;
 const CHANNEL_LENGTH: number = 0x0407;
 const CHANNEL_CAPACITY: number = 0x0408;
 
+//@@wrapper_method_surface
 class Channel<T> {
     private channelId: any;
 

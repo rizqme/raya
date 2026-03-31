@@ -325,7 +325,10 @@ impl<'a> Compiler<'a> {
         }
 
         // Step 2b: Resolve late-bound member accesses (TypeVar → concrete type dispatch)
-        let type_registry = type_registry::TypeRegistry::new(&self.type_ctx);
+        let builtin_surface = module::builtin_surface_manifest_for_mode(
+            module::builtin_surface_mode_for_profile(self.semantic_profile),
+        );
+        let type_registry = type_registry::TypeRegistry::new(&self.type_ctx, builtin_surface);
         monomorphize::resolve_late_bound_members(&mut ir_module, &type_registry, &self.type_ctx);
 
         // Strict no-fallback invariant: DynSetProp must not survive lowering
@@ -496,7 +499,10 @@ impl<'a> Compiler<'a> {
         .unwrap();
 
         // Step 2b: Resolve late-bound member accesses (TypeVar → concrete type dispatch)
-        let type_registry = type_registry::TypeRegistry::new(&self.type_ctx);
+        let builtin_surface = module::builtin_surface_manifest_for_mode(
+            module::builtin_surface_mode_for_profile(self.semantic_profile),
+        );
+        let type_registry = type_registry::TypeRegistry::new(&self.type_ctx, builtin_surface);
         monomorphize::resolve_late_bound_members(&mut ir_module, &type_registry, &self.type_ctx);
 
         // Step 3: Optimization passes

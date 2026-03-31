@@ -516,80 +516,6 @@ impl<'a> Interpreter<'a> {
                 OpcodeResult::Suspend(SuspendReason::Sleep { wake_at })
             }
 
-            Opcode::MutexLock => {
-                let mutex_id_val = match stack.pop() {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
-                let mutex_id = MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
-
-                // Try to acquire the lock
-                if let Some(mutex) = self.mutex_registry.get(mutex_id) {
-                    match mutex.try_lock(task.id()) {
-                        Ok(()) => {
-                            // Acquired immediately
-                            task.add_held_mutex(mutex_id);
-                            OpcodeResult::Continue
-                        }
-                        Err(_) => {
-                            // Need to wait - suspend
-                            OpcodeResult::Suspend(SuspendReason::MutexLock { mutex_id })
-                        }
-                    }
-                } else {
-                    OpcodeResult::Error(VmError::RuntimeError(format!(
-                        "Mutex {:?} not found",
-                        mutex_id
-                    )))
-                }
-            }
-
-            Opcode::MutexUnlock => {
-                let mutex_id_val = match stack.pop() {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
-                let mutex_id = MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
-
-                if let Some(mutex) = self.mutex_registry.get(mutex_id) {
-                    match mutex.unlock(task.id()) {
-                        Ok(next_waiter) => {
-                            task.remove_held_mutex(mutex_id);
-
-                            // If there's a waiting task, wake it up
-                            if let Some(waiter_id) = next_waiter {
-                                let tasks = self.tasks.read();
-                                if let Some(waiter_task) = tasks.get(&waiter_id) {
-                                    // Only wake tasks that have already finished parking.
-                                    // If the waiter is still Running, the reactor will notice that
-                                    // ownership was transferred once its suspend result is handled.
-                                    if waiter_task.try_resume() {
-                                        waiter_task.add_held_mutex(mutex_id);
-                                        if matches!(
-                                            waiter_task.suspend_reason(),
-                                            Some(crate::vm::scheduler::SuspendReason::MutexLockCall { .. })
-                                        ) {
-                                            waiter_task.set_resume_value(Value::null());
-                                        }
-                                        waiter_task.clear_suspend_reason();
-                                        self.injector.push(waiter_task.clone());
-                                    }
-                                }
-                            }
-                            OpcodeResult::Continue
-                        }
-                        Err(e) => OpcodeResult::Error(VmError::RuntimeError(format!("{}", e))),
-                    }
-                } else {
-                    OpcodeResult::Error(VmError::RuntimeError(format!(
-                        "Mutex {:?} not found",
-                        mutex_id
-                    )))
-                }
-            }
-
             Opcode::SemAcquire => {
                 let count_val = match stack.pop() {
                     Ok(v) => v,
@@ -659,33 +585,6 @@ impl<'a> Interpreter<'a> {
                 OpcodeResult::Suspend(SuspendReason::Sleep {
                     wake_at: Instant::now(),
                 })
-            }
-
-            Opcode::TaskCancel => {
-                // Pop task ID from stack
-                let task_id_val = match stack.pop() {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
-                let handle = match self.promise_handle_from_value(task_id_val) {
-                    Some(handle) => handle,
-                    None => {
-                        return OpcodeResult::Error(VmError::TypeError(
-                            "TaskCancel: expected task-backed promise handle".to_string(),
-                        ));
-                    }
-                };
-
-                let target_id = handle.task_id();
-
-                // Look up the task and cancel it
-                if let Some(target_task) = self.tasks.read().get(&target_id).cloned() {
-                    self.cancel_task_and_await_chain(target_task);
-                }
-                // Silently ignore if task not found (may have already completed)
-
-                OpcodeResult::Continue
             }
 
             _ => OpcodeResult::Error(VmError::RuntimeError(format!(

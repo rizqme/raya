@@ -648,7 +648,12 @@ mod tests {
         let mut module = IrModule::new("test");
         module.add_function(func);
 
-        let type_registry = TypeRegistry::new(&type_ctx);
+        let type_registry = TypeRegistry::new(
+            &type_ctx,
+            crate::compiler::module::builtin_surface_manifest_for_mode(
+                crate::compiler::module::BuiltinSurfaceMode::RayaStrict,
+            ),
+        );
         resolve_late_bound_members(&mut module, &type_registry, &type_ctx);
 
         match &module.functions[0].blocks[0].instructions[0] {

@@ -5,6 +5,7 @@
 const MUTEX_TRY_LOCK: number = 0x0300;
 const MUTEX_IS_LOCKED: number = 0x0301;
 
+//@@wrapper_method_surface
 class Mutex {
     private handle: any;
 

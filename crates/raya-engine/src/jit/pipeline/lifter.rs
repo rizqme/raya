@@ -1408,27 +1408,6 @@ fn lift_instruction(
                 stack.push(dest);
             }
         }
-        Opcode::NativeCall => {
-            if let Operands::NativeCall {
-                native_id,
-                arg_count,
-            } = instr.operands
-            {
-                let mut args = Vec::new();
-                for _ in 0..arg_count {
-                    args.push(stack.pop(instr.offset)?);
-                }
-                args.reverse();
-                let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::CallKernel {
-                    dest: Some(dest),
-                    kernel_op_id: encode_kernel_op_id(KernelOp::NativeCall(native_id)),
-                    args,
-                    bytecode_offset: instr.offset as u32,
-                });
-                stack.push(dest);
-            }
-        }
         Opcode::KernelCall => {
             if let Operands::KernelCall {
                 kernel_op_id,
@@ -1597,42 +1576,6 @@ fn lift_instruction(
                 .instrs
                 .push(JitInstr::Sleep { duration });
         }
-        Opcode::NewMutex => {
-            let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::CallKernel {
-                dest: Some(dest),
-                kernel_op_id: encode_kernel_op_id(KernelOp::HostHandle(
-                    HostHandleOpKind::MutexConstructor,
-                )),
-                args: Vec::new(),
-                bytecode_offset: instr.offset as u32,
-            });
-            stack.push(dest);
-        }
-        Opcode::MutexLock => {
-            let mutex = stack.pop(instr.offset)?;
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::MutexLock { mutex });
-        }
-        Opcode::MutexUnlock => {
-            let mutex = stack.pop(instr.offset)?;
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::MutexUnlock { mutex });
-        }
-        Opcode::NewChannel => {
-            let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::CallKernel {
-                dest: Some(dest),
-                kernel_op_id: encode_kernel_op_id(KernelOp::HostHandle(
-                    HostHandleOpKind::ChannelConstructor,
-                )),
-                args: Vec::new(),
-                bytecode_offset: instr.offset as u32,
-            });
-            stack.push(dest);
-        }
         Opcode::NewSemaphore => {
             let dest = func.alloc_reg(JitType::Ptr);
             func.block_mut(block)
@@ -1659,17 +1602,6 @@ fn lift_instruction(
                 .instrs
                 .push(JitInstr::WaitAll { dest, tasks });
             stack.push(dest);
-        }
-        Opcode::TaskCancel => {
-            let task = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::CallKernel {
-                dest: None,
-                kernel_op_id: encode_kernel_op_id(KernelOp::HostHandle(
-                    HostHandleOpKind::TaskCancel,
-                )),
-                args: vec![task],
-                bytecode_offset: instr.offset as u32,
-            });
         }
         Opcode::TaskThen => {
             if let Operands::U32(callback_index) = instr.operands {

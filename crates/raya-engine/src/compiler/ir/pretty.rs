@@ -233,7 +233,7 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::KernelCall { dest, op, args } => {
             let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
             let op_name = match op {
-                crate::compiler::ir::KernelOp::NativeCall(native_id) => {
+                crate::compiler::ir::KernelOp::VmNative(native_id) => {
                     format!("native:{}", crate::native_id::native_name(*native_id))
                 }
                 crate::compiler::ir::KernelOp::RegisteredNative(local_idx) => {

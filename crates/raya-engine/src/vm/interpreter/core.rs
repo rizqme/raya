@@ -98,6 +98,7 @@ fn reflect_type_name_to_id(type_name: &str) -> u32 {
 mod tests {
     use super::Interpreter;
     use crate::compiler::{Function, Opcode};
+    use crate::compiler::ir::{encode_kernel_op_id, KernelOp};
     use crate::jit::runtime::trampoline::JitExitInfo;
     use crate::vm::interpreter::JitTelemetry;
     use crate::vm::value::Value;
@@ -116,8 +117,8 @@ mod tests {
     #[test]
     fn resume_guard_allows_entry_nativecall_zero_args() {
         let mut code = Vec::new();
-        code.push(Opcode::NativeCall as u8);
-        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::KernelCall as u8);
+        code.extend_from_slice(&encode_kernel_op_id(KernelOp::VmNative(0)).to_le_bytes());
         code.push(0u8);
         code.push(Opcode::Return as u8);
         let func = make_function(code);
@@ -132,8 +133,8 @@ mod tests {
         let mut code = Vec::new();
         code.push(Opcode::ConstNull as u8);
         code.push(Opcode::Pop as u8);
-        code.push(Opcode::NativeCall as u8);
-        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::KernelCall as u8);
+        code.extend_from_slice(&encode_kernel_op_id(KernelOp::VmNative(0)).to_le_bytes());
         code.push(0u8);
         code.push(Opcode::Return as u8);
         let func = make_function(code);
@@ -146,8 +147,8 @@ mod tests {
     #[test]
     fn resume_guard_allows_nativecall_with_args_when_stack_empty() {
         let mut code = Vec::new();
-        code.push(Opcode::NativeCall as u8);
-        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::KernelCall as u8);
+        code.extend_from_slice(&encode_kernel_op_id(KernelOp::VmNative(0)).to_le_bytes());
         code.push(1u8);
         let func = make_function(code);
         assert_eq!(
@@ -160,8 +161,8 @@ mod tests {
     fn resume_guard_rejects_non_entry_with_non_empty_stack() {
         let mut code = Vec::new();
         code.push(Opcode::ConstNull as u8); // leaves stack depth = 1
-        code.push(Opcode::NativeCall as u8);
-        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::KernelCall as u8);
+        code.extend_from_slice(&encode_kernel_op_id(KernelOp::VmNative(0)).to_le_bytes());
         code.push(0u8);
         let func = make_function(code);
         assert_eq!(
@@ -175,8 +176,8 @@ mod tests {
         let mut code = Vec::new();
         code.push(Opcode::ConstNull as u8);
         code.push(Opcode::Pop as u8); // stack depth back to 0
-        code.push(Opcode::NativeCall as u8);
-        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::KernelCall as u8);
+        code.extend_from_slice(&encode_kernel_op_id(KernelOp::VmNative(0)).to_le_bytes());
         code.push(2u8);
         let func = make_function(code);
         assert_eq!(
@@ -224,8 +225,8 @@ mod tests {
     #[test]
     fn native_resume_materialization_accepts_matching_count() {
         let mut code = Vec::new();
-        code.push(Opcode::NativeCall as u8);
-        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::KernelCall as u8);
+        code.extend_from_slice(&encode_kernel_op_id(KernelOp::VmNative(0)).to_le_bytes());
         code.push(2u8);
         let func = make_function(code);
 
@@ -247,8 +248,8 @@ mod tests {
     #[test]
     fn native_resume_materialization_rejects_mismatched_count() {
         let mut code = Vec::new();
-        code.push(Opcode::NativeCall as u8);
-        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::KernelCall as u8);
+        code.extend_from_slice(&encode_kernel_op_id(KernelOp::VmNative(0)).to_le_bytes());
         code.push(1u8);
         let func = make_function(code);
 
@@ -2425,7 +2426,7 @@ impl<'a> Interpreter<'a> {
                             | Opcode::LoadFieldShape
                             | Opcode::CallMethodExact
                             | Opcode::CallMethodShape
-                            | Opcode::NativeCall
+                            | Opcode::KernelCall
                     )))
             {
                 let func_name = module
@@ -3229,12 +3230,9 @@ impl<'a> Interpreter<'a> {
             | Opcode::Await
             | Opcode::WaitAll
             | Opcode::Sleep
-            | Opcode::MutexLock
-            | Opcode::MutexUnlock
             | Opcode::SemAcquire
             | Opcode::SemRelease
-            | Opcode::Yield
-            | Opcode::TaskCancel => {
+            | Opcode::Yield => {
                 self.exec_concurrency_ops(stack, ip, code, module, task, opcode)
             }
 
@@ -3260,7 +3258,7 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             // Native Calls (needs MutexGuard for suspend/resume)
             // =========================================================
-            Opcode::NativeCall | Opcode::KernelCall => {
+            Opcode::KernelCall => {
                 self.exec_native_ops(stack, ip, code, module, task, opcode)
             }
 
@@ -3277,9 +3275,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::CastNominal
             | Opcode::DynGetKeyed
             | Opcode::DynSetKeyed
-            | Opcode::NewMutex
             | Opcode::NewSemaphore
-            | Opcode::NewChannel
             | Opcode::LoadStatic
             | Opcode::StoreStatic
             | Opcode::Typeof => self.exec_type_ops(stack, ip, code, module, task, opcode),
@@ -3527,7 +3523,7 @@ impl<'a> Interpreter<'a> {
 
     /// Conservative check for direct resume into a native-call suspension point.
     ///
-    /// Safe only for zero-arg NativeCall/KernelCall and when the
+    /// Safe only for zero-arg KernelCall and when the
     /// bytecode prefix guarantees an empty operand stack at resume point.
     #[cfg(feature = "jit")]
     fn native_resume_boundary_arg_count(
@@ -3540,7 +3536,7 @@ impl<'a> Interpreter<'a> {
             return None;
         }
         let op = code[offset];
-        if op != Opcode::NativeCall as u8 && op != Opcode::KernelCall as u8 {
+        if op != Opcode::KernelCall as u8 {
             return None;
         }
         // Encoding: opcode (1) + native_id (2) + arg_count (1)

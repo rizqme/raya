@@ -39,7 +39,7 @@ pub fn create_vm(options: &RuntimeOptions) -> Vm {
         Vm::with_native_handler(threads, Arc::new(StdNativeHandler))
     };
 
-    // Register symbolic native functions for ModuleNativeCall dispatch
+    // Register symbolic native functions for registered kernel-call dispatch.
     {
         let mut registry = vm.native_registry().write();
         raya_stdlib::register_stdlib(&mut registry);

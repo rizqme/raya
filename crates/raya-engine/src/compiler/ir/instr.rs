@@ -69,7 +69,8 @@ impl std::fmt::Display for TypeAliasId {
 /// Compact builtin/metaobject execution surface selected from semantic dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KernelOp {
-    NativeCall(u16),
+    /// Raw VM/runtime native used only for low-level non-dispatch intrinsics.
+    VmNative(u16),
     PropertyOpcode(crate::compiler::type_registry::OpcodeKind),
     Metaobject(crate::semantics::MetaobjectOpKind),
     Iterator(crate::semantics::IteratorOpKind),
@@ -88,7 +89,7 @@ const KERNEL_HOST_HANDLE_BASE: KernelOpId = 0xF400;
 
 pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
     match op {
-        KernelOp::NativeCall(native_id) => {
+        KernelOp::VmNative(native_id) => {
             debug_assert!(native_id < KERNEL_REGISTERED_NATIVE_BASE);
             native_id
         }
@@ -200,7 +201,7 @@ pub fn decode_kernel_op_id(id: KernelOpId) -> Option<KernelOp> {
             id - KERNEL_REGISTERED_NATIVE_BASE,
         ));
     }
-    Some(KernelOp::NativeCall(id))
+    Some(KernelOp::VmNative(id))
 }
 
 /// IR instruction (Three-Address Code)

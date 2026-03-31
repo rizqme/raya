@@ -1,13 +1,12 @@
 //! Type Registry
 //!
-//! Single source of truth for built-in type dispatch, built from `.raya` builtin files.
-//! Replaces DispatchRegistry, BUILTIN_SIGS, get_type_name, resolve_type_annotation,
-//! and normalize_type_for_dispatch.
+//! Derived builtin dispatch registry.
 //!
-//! The registry is populated at compiler init by scanning embedded `.raya` source
-//! files for `//@@builtin_primitive` classes, extracting native IDs from
-//! `__NATIVE_CALL(CONST, ...)` patterns, and `//@@opcode` annotations.
+//! Builtin surface shape now comes from builtin source modules plus builtin
+//! contract manifests. `TypeRegistry` is only the derived lookup/index layer
+//! used by lowering, monomorphization, and runtime helpers.
 
+use crate::compiler::module::{BuiltinDispatchBinding, BuiltinSurfaceManifest};
 use crate::parser::types::ty::{Type, TypeId};
 use crate::parser::TypeContext;
 use crate::vm::builtin::array;
@@ -42,24 +41,6 @@ pub enum OpcodeKind {
     StringLen,
     ArrayLen,
 }
-
-// ============================================================================
-// Embedded Builtin Sources
-// ============================================================================
-
-/// Builtin primitive `.raya` sources embedded at compile time.
-/// These are scanned at TypeRegistry init to build dispatch tables.
-pub(crate) const BUILTIN_PRIMITIVE_SOURCES: &[(&str, &str)] = &[
-    ("string", include_str!("../../builtins/strict/string.raya")),
-    ("number", include_str!("../../builtins/strict/number.raya")),
-    ("Array", include_str!("../../builtins/strict/array.raya")),
-    ("RegExp", include_str!("../../builtins/strict/regexp.raya")),
-    ("Set", include_str!("../../builtins/strict/set.raya")),
-    (
-        "Promise",
-        include_str!("../../builtins/strict/promise.raya"),
-    ),
-];
 
 // ============================================================================
 // Type Registry
@@ -105,8 +86,8 @@ impl TypeRegistry {
         })
     }
 
-    /// Build the registry from embedded `.raya` sources and the TypeContext.
-    pub fn new(type_ctx: &TypeContext) -> Self {
+    /// Build the registry from the derived builtin surface manifest and TypeContext.
+    pub fn new(type_ctx: &TypeContext, manifest: &BuiltinSurfaceManifest) -> Self {
         let mut registry = Self {
             method_dispatch: FxHashMap::default(),
             property_dispatch: FxHashMap::default(),
@@ -118,22 +99,26 @@ impl TypeRegistry {
             method_return_types: FxHashMap::default(),
         };
 
-        // Build reverse name lookup from TypeContext's named types
-        // We check all known type names
         let known_names = [
-            "number", "string", "boolean", "null", "void", "never", "unknown", "Mutex", "RegExp",
-            "Date", "Buffer", "Promise", "Channel", "Map", "Set", "Json", "int", "Array",
+            "number", "string", "boolean", "null", "void", "never", "unknown", "Mutex",
+            "RegExp", "Date", "Buffer", "Promise", "Channel", "Map", "Set", "Json", "int",
+            "Array",
         ];
         for name in &known_names {
             if let Some(id) = type_ctx.lookup_named_type(name) {
                 registry.type_names.insert(id.as_u32(), name.to_string());
             }
         }
-
-        // Scan each builtin primitive source
-        for &(type_name, source) in BUILTIN_PRIMITIVE_SOURCES {
-            registry.scan_builtin_primitive(type_name, source, type_ctx);
+        for type_name in manifest.types.keys() {
+            for type_id in dispatch_type_ids_for_name(type_name, type_ctx) {
+                registry
+                    .type_names
+                    .entry(type_id)
+                    .or_insert_with(|| type_name.clone());
+            }
         }
+
+        registry.populate_from_manifest(type_ctx, manifest);
 
         // Register return types for compiler-internal method variants.
         // The lowerer remaps string methods when the argument is RegExp:
@@ -160,371 +145,98 @@ impl TypeRegistry {
             }
         }
 
-        // Register builtin class dispatch (Map, Set, Channel, etc.) — these don't
-        // have .raya files yet, so their native IDs are registered programmatically.
-        registry.register_builtin_class_dispatch(type_ctx);
-
         registry
     }
 
-    /// Register dispatch entries for builtin classes that don't have .raya files yet.
-    ///
-    /// These are classes whose methods are handled natively by the VM.
-    /// Eventually these will be migrated to .raya files.
-    fn register_builtin_class_dispatch(&mut self, type_ctx: &TypeContext) {
-        use crate::vm::builtin::{buffer, channel, date, map, mutex, set, task};
+    fn populate_from_manifest(
+        &mut self,
+        type_ctx: &TypeContext,
+        manifest: &BuiltinSurfaceManifest,
+    ) {
+        for global_surface in manifest.globals.values() {
+            for binding in global_surface
+                .static_methods
+                .values()
+                .chain(global_surface.static_properties.values())
+            {
+                self.record_binding_return_type(binding, type_ctx);
+            }
+        }
 
-        let builtin_types: &[(&str, &[(&str, u16)])] = &[
-            (
-                "Object",
-                &[
-                    ("toString", crate::compiler::native_id::OBJECT_TO_STRING),
-                    ("hashCode", crate::compiler::native_id::OBJECT_HASH_CODE),
-                    ("equals", crate::compiler::native_id::OBJECT_EQUAL),
-                ],
-            ),
-            (
-                "Map",
-                &[
-                    ("get", map::GET),
-                    ("set", map::SET),
-                    ("has", map::HAS),
-                    ("delete", map::DELETE),
-                    ("clear", map::CLEAR),
-                    ("keys", map::KEYS),
-                    ("values", map::VALUES),
-                    ("entries", map::ENTRIES),
-                    ("forEach", map::FOR_EACH),
-                    ("size", map::SIZE),
-                ],
-            ),
-            (
-                "Set",
-                &[
-                    ("add", set::ADD),
-                    ("has", set::HAS),
-                    ("delete", set::DELETE),
-                    ("clear", set::CLEAR),
-                    ("values", set::VALUES),
-                    ("forEach", set::FOR_EACH),
-                    ("size", set::SIZE),
-                    ("union", set::UNION),
-                    ("intersection", set::INTERSECTION),
-                    ("difference", set::DIFFERENCE),
-                ],
-            ),
-            (
-                "Channel",
-                &[
-                    ("send", channel::SEND),
-                    ("receive", channel::RECEIVE),
-                    ("trySend", channel::TRY_SEND),
-                    ("tryReceive", channel::TRY_RECEIVE),
-                    ("close", channel::CLOSE),
-                    ("isClosed", channel::IS_CLOSED),
-                    ("length", channel::LENGTH),
-                    ("capacity", channel::CAPACITY),
-                ],
-            ),
-            (
-                "Buffer",
-                &[
-                    ("length", buffer::LENGTH),
-                    ("getByte", buffer::GET_BYTE),
-                    ("setByte", buffer::SET_BYTE),
-                    ("getInt32", buffer::GET_INT32),
-                    ("setInt32", buffer::SET_INT32),
-                    ("getFloat64", buffer::GET_FLOAT64),
-                    ("setFloat64", buffer::SET_FLOAT64),
-                    ("slice", buffer::SLICE),
-                    ("copy", buffer::COPY),
-                    ("toString", buffer::TO_STRING),
-                ],
-            ),
-            (
-                "Date",
-                &[
-                    ("getTime", date::GET_TIME),
-                    ("getFullYear", date::GET_FULL_YEAR),
-                    ("getMonth", date::GET_MONTH),
-                    ("getDate", date::GET_DATE),
-                    ("getDay", date::GET_DAY),
-                    ("getHours", date::GET_HOURS),
-                    ("getMinutes", date::GET_MINUTES),
-                    ("getSeconds", date::GET_SECONDS),
-                    ("getMilliseconds", date::GET_MILLISECONDS),
-                    ("getTimezoneOffset", date::GET_TIMEZONE_OFFSET),
-                    ("setFullYear", date::SET_FULL_YEAR),
-                    ("setMonth", date::SET_MONTH),
-                    ("setDate", date::SET_DATE),
-                    ("setHours", date::SET_HOURS),
-                    ("setMinutes", date::SET_MINUTES),
-                    ("setSeconds", date::SET_SECONDS),
-                    ("setMilliseconds", date::SET_MILLISECONDS),
-                    ("toString", date::TO_STRING),
-                    ("toISOString", date::TO_ISO_STRING),
-                    ("toDateString", date::TO_DATE_STRING),
-                    ("toTimeString", date::TO_TIME_STRING),
-                ],
-            ),
-            (
-                "Mutex",
-                &[("tryLock", mutex::TRY_LOCK), ("isLocked", mutex::IS_LOCKED)],
-            ),
-            (
-                "Promise",
-                &[
-                    ("isDone", task::IS_DONE),
-                    ("isCancelled", task::IS_CANCELLED),
-                ],
-            ),
-            (
-                "Error",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-            (
-                "TypeError",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-            (
-                "RangeError",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-            (
-                "ReferenceError",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-            (
-                "SyntaxError",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-            (
-                "URIError",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-            (
-                "EvalError",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-            (
-                "AggregateError",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-            (
-                "ChannelClosedError",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-            (
-                "AssertionError",
-                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
-            ),
-        ];
-
-        for &(type_name, methods) in builtin_types {
-            let type_ids = dispatch_type_ids_for_name(type_name, type_ctx);
-            if type_ids.is_empty() {
-                continue;
+        for (type_name, surface) in &manifest.types {
+            if surface.builtin_primitive {
+                self.builtin_primitives.insert(type_name.clone());
             }
 
-            for &tid in &type_ids {
-                let meths = self.method_dispatch.entry(tid).or_default();
-                for &(method_name, native_id) in methods {
-                    meths.insert(
-                        method_name.to_string(),
-                        DispatchAction::NativeCall(native_id),
-                    );
-                }
+            if let Some(native_id) = surface.constructor_native_id {
+                self.constructors.insert(type_name.clone(), native_id);
+            }
 
-                // Property-style native getters for handle-backed ambient builtins.
-                // These mirror class fields when no concrete local class declaration exists.
-                let property_natives: &[(&str, u16)] = match type_name {
-                    "Buffer" => &[("length", buffer::LENGTH)],
-                    "Map" => &[("size", map::SIZE)],
-                    "Set" => &[("size", set::SIZE)],
-                    "Channel" => &[("length", channel::LENGTH), ("capacity", channel::CAPACITY)],
-                    _ => &[],
+            let is_array = type_name == TypeContext::ARRAY_TYPE_NAME;
+            let type_ids = if is_array {
+                Vec::new()
+            } else {
+                dispatch_type_ids_for_name(type_name, type_ctx)
+            };
+
+            for (name, binding) in &surface.instance_properties {
+                self.record_binding_return_type(binding, type_ctx);
+                let Some(action) = binding.to_dispatch_action(type_ctx) else {
+                    continue;
                 };
-                if !property_natives.is_empty() {
-                    let props = self.property_dispatch.entry(tid).or_default();
-                    for &(prop_name, native_id) in property_natives {
-                        props.insert(prop_name.to_string(), DispatchAction::NativeCall(native_id));
+                if is_array {
+                    self.array_properties.insert(name.clone(), action);
+                } else {
+                    for &tid in &type_ids {
+                        self.property_dispatch
+                            .entry(tid)
+                            .or_default()
+                            .insert(name.clone(), action.clone());
                     }
                 }
             }
 
-            // Register constructor native IDs for builtin classes that are lowered
-            // without concrete class IR declarations in per-module compilation.
-            let constructor_id = match type_name {
-                "Object" => Some(crate::compiler::native_id::OBJECT_NEW),
-                "Map" => Some(map::NEW),
-                "Set" => Some(set::NEW),
-                "Buffer" => Some(buffer::NEW),
-                _ => None,
-            };
-            if let Some(native_id) = constructor_id {
-                self.constructors.insert(type_name.to_string(), native_id);
+            for (name, binding) in &surface.instance_methods {
+                self.record_binding_return_type(binding, type_ctx);
+                let Some(action) = binding.to_dispatch_action(type_ctx) else {
+                    continue;
+                };
+                if is_array {
+                    self.array_methods.insert(name.clone(), action);
+                } else {
+                    for &tid in &type_ids {
+                        self.method_dispatch
+                            .entry(tid)
+                            .or_default()
+                            .insert(name.clone(), action.clone());
+                    }
+                }
             }
-        }
 
-        // Object constructor must exist even when Object is not materialized as a
-        // concrete class in the current module type context.
-        self.constructors
-            .entry("Object".to_string())
-            .or_insert(crate::compiler::native_id::OBJECT_NEW);
-
-        // Promise chaining methods are implemented as compiled Raya class methods.
-        let meths = self
-            .method_dispatch
-            .entry(TypeContext::TASK_TYPE_ID)
-            .or_default();
-        meths.insert(
-            "then".to_string(),
-            DispatchAction::ClassMethod("Promise".to_string(), "then".to_string()),
-        );
-        meths.insert(
-            "catch".to_string(),
-            DispatchAction::ClassMethod("Promise".to_string(), "catch".to_string()),
-        );
-        meths.insert(
-            "finally".to_string(),
-            DispatchAction::ClassMethod("Promise".to_string(), "finally".to_string()),
-        );
-
-        if let Some(set_ty) = type_ctx.lookup_named_type("Set") {
-            let meths = self.method_dispatch.entry(set_ty.as_u32()).or_default();
-            meths.insert(
-                "keys".to_string(),
-                DispatchAction::ClassMethod("Set".to_string(), "keys".to_string()),
-            );
-            meths.insert(
-                "entries".to_string(),
-                DispatchAction::ClassMethod("Set".to_string(), "entries".to_string()),
-            );
+            for binding in surface
+                .static_methods
+                .values()
+                .chain(surface.static_properties.values())
+            {
+                self.record_binding_return_type(binding, type_ctx);
+            }
         }
     }
 
-    /// Scan a `//@@builtin_primitive` `.raya` source and populate dispatch tables.
-    fn scan_builtin_primitive(&mut self, type_name: &str, source: &str, type_ctx: &TypeContext) {
-        // Verify the source contains //@@builtin_primitive
-        if !source.contains("//@@builtin_primitive") {
+    fn record_binding_return_type(
+        &mut self,
+        binding: &BuiltinDispatchBinding,
+        type_ctx: &TypeContext,
+    ) {
+        let BuiltinDispatchBinding::NativeCall {
+            native_id,
+            return_type_name: Some(return_type_name),
+        } = binding
+        else {
             return;
-        }
-
-        self.builtin_primitives.insert(type_name.to_string());
-
-        // Step 1: Extract const declarations → name→value map
-        let constants = extract_constants(source);
-
-        // Step 2: Extract opcode properties
-        let opcode_props = extract_opcode_properties(source);
-
-        // Step 3: Extract methods and their dispatch behavior
-        let methods = extract_methods(source, &constants);
-
-        // Step 4: Extract declared instance fields
-        let declared_fields = extract_declared_fields(source, type_ctx);
-
-        // Step 5: Check for constructor
-        let constructor_id = extract_constructor(source, &constants);
-
-        // Step 6: Extract //@@class_method annotated methods
-        let class_methods = extract_class_method_names(source);
-
-        // Step 7: Register in dispatch tables
-        if type_name == crate::parser::TypeContext::ARRAY_TYPE_NAME {
-            // Array has special dispatch: matches any array TypeId
-            for (prop_name, kind) in &opcode_props {
-                self.array_properties
-                    .insert(prop_name.clone(), DispatchAction::Opcode(*kind));
-            }
-            for &(ref method_name, native_id, ref ret_type) in &methods {
-                self.array_methods
-                    .insert(method_name.clone(), DispatchAction::NativeCall(native_id));
-                if let Some(ret_tid) = ret_type
-                    .as_ref()
-                    .and_then(|rt| resolve_return_type_str(type_ctx, rt))
-                {
-                    self.method_return_types.insert(native_id, ret_tid);
-                }
-            }
-            for (field_name, field_type) in &declared_fields {
-                self.array_properties.insert(
-                    field_name.clone(),
-                    DispatchAction::DeclaredField(*field_type),
-                );
-            }
-            // Register class methods (callback methods like map, filter, etc.)
-            for cm_name in &class_methods {
-                let action = if type_name == "Array" {
-                    Self::array_callback_native_id(cm_name)
-                        .map(DispatchAction::NativeCall)
-                        .unwrap_or_else(|| {
-                            DispatchAction::ClassMethod(type_name.to_string(), cm_name.clone())
-                        })
-                } else {
-                    DispatchAction::ClassMethod(type_name.to_string(), cm_name.clone())
-                };
-                self.array_methods.insert(cm_name.clone(), action);
-            }
-        } else {
-            let type_ids = dispatch_type_ids_for_name(type_name, type_ctx);
-            for tid in type_ids {
-                // Properties
-                if !opcode_props.is_empty() {
-                    let props = self.property_dispatch.entry(tid).or_default();
-                    for (prop_name, kind) in &opcode_props {
-                        props.insert(prop_name.clone(), DispatchAction::Opcode(*kind));
-                    }
-                }
-                if !declared_fields.is_empty() {
-                    let props = self.property_dispatch.entry(tid).or_default();
-                    for (field_name, field_type) in &declared_fields {
-                        props.insert(
-                            field_name.clone(),
-                            DispatchAction::DeclaredField(*field_type),
-                        );
-                    }
-                }
-
-                // Atomic methods (NativeCall)
-                if !methods.is_empty() {
-                    let meths = self.method_dispatch.entry(tid).or_default();
-                    for &(ref method_name, native_id, ref ret_type) in &methods {
-                        meths.insert(method_name.clone(), DispatchAction::NativeCall(native_id));
-                        if let Some(ret_tid) = ret_type
-                            .as_ref()
-                            .and_then(|rt| resolve_return_type_str(type_ctx, rt))
-                        {
-                            self.method_return_types.insert(native_id, ret_tid);
-                        }
-                    }
-                }
-
-                // Class methods (callback methods)
-                if !class_methods.is_empty() {
-                    let meths = self.method_dispatch.entry(tid).or_default();
-                    for cm_name in &class_methods {
-                        let action = if type_name == "Array" {
-                            Self::array_callback_native_id(cm_name)
-                                .map(DispatchAction::NativeCall)
-                                .unwrap_or_else(|| {
-                                    DispatchAction::ClassMethod(
-                                        type_name.to_string(),
-                                        cm_name.clone(),
-                                    )
-                                })
-                        } else {
-                            DispatchAction::ClassMethod(type_name.to_string(), cm_name.clone())
-                        };
-                        meths.insert(cm_name.clone(), action);
-                    }
-                }
-            }
-        }
-
-        // Constructor
-        if let Some(native_id) = constructor_id {
-            self.constructors.insert(type_name.to_string(), native_id);
+        };
+        if let Some(ret_tid) = resolve_return_type_str(type_ctx, return_type_name) {
+            self.method_return_types.insert(*native_id, ret_tid);
         }
     }
 
@@ -1301,6 +1013,12 @@ fn resolve_return_type_str(type_ctx: &TypeContext, return_type: &str) -> Option<
 mod tests {
     use super::*;
 
+    fn strict_builtin_manifest() -> &'static crate::compiler::module::BuiltinSurfaceManifest {
+        crate::compiler::module::builtin_surface_manifest_for_mode(
+            crate::compiler::module::BuiltinSurfaceMode::RayaStrict,
+        )
+    }
+
     #[test]
     fn test_extract_constants() {
         let source = r#"
@@ -1381,7 +1099,7 @@ class Array<T> {
     #[test]
     fn test_registry_new() {
         let type_ctx = TypeContext::new();
-        let registry = TypeRegistry::new(&type_ctx);
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
 
         // Verify string methods
         let str_id = type_ctx.lookup_named_type("string").unwrap().as_u32();
@@ -1456,7 +1174,7 @@ class Array<T> {
         let null_id = type_ctx.lookup_named_type("null").unwrap();
         let union_id = type_ctx.union_type(vec![str_id, null_id]);
 
-        let registry = TypeRegistry::new(&type_ctx);
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
         let result = registry.resolve_union_for_dispatch(union_id.as_u32(), &type_ctx);
         assert_eq!(result, Ok(str_id.as_u32()));
     }
@@ -1470,7 +1188,7 @@ class Array<T> {
         let int_id = type_ctx.lookup_named_type("int").unwrap();
         let union_id = type_ctx.union_type(vec![num_id, int_id]);
 
-        let registry = TypeRegistry::new(&type_ctx);
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
         let result = registry.resolve_union_for_dispatch(union_id.as_u32(), &type_ctx);
         assert_eq!(result, Ok(num_id.as_u32()));
     }
@@ -1484,7 +1202,7 @@ class Array<T> {
         let num_id = type_ctx.lookup_named_type("number").unwrap();
         let union_id = type_ctx.union_type(vec![str_id, num_id]);
 
-        let registry = TypeRegistry::new(&type_ctx);
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
         let result = registry.resolve_union_for_dispatch(union_id.as_u32(), &type_ctx);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("ambiguous union"));
@@ -1500,7 +1218,7 @@ class Array<T> {
         let void_id = type_ctx.lookup_named_type("void").unwrap();
         let union_id = type_ctx.union_type(vec![str_id, null_id, void_id]);
 
-        let registry = TypeRegistry::new(&type_ctx);
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
         let result = registry.resolve_union_for_dispatch(union_id.as_u32(), &type_ctx);
         assert_eq!(result, Ok(str_id.as_u32()));
     }
@@ -1508,7 +1226,7 @@ class Array<T> {
     #[test]
     fn test_type_name_lookup() {
         let type_ctx = TypeContext::new();
-        let registry = TypeRegistry::new(&type_ctx);
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
 
         let str_id = type_ctx.lookup_named_type("string").unwrap().as_u32();
         assert_eq!(registry.type_name(str_id), Some("string"));
@@ -1520,7 +1238,7 @@ class Array<T> {
     #[test]
     fn test_return_type_propagation() {
         let type_ctx = TypeContext::new();
-        let registry = TypeRegistry::new(&type_ctx);
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
 
         let str_id = type_ctx.lookup_named_type("string").unwrap().as_u32();
         let num_id = type_ctx.lookup_named_type("number").unwrap().as_u32();

@@ -4,6 +4,10 @@
 //! checker, lowering, and runtime entrypoints can derive behavior from one
 //! profile instead of scattering booleans across layers.
 
+use crate::compiler::module::{
+    builtin_surface_manifest_for_mode, builtin_surface_mode_for_profile, BuiltinGlobalKind,
+    BuiltinSurfaceManifest,
+};
 use crate::compiler::type_registry::TypeRegistry;
 use crate::parser::ast::{
     self, AssignmentOperator, Expression, FunctionDecl, MethodDecl, Pattern, Statement,
@@ -1081,6 +1085,8 @@ pub fn build_semantic_lowering_plan_with_types(
     type_ctx: Option<&TypeContext>,
     expr_types: Option<&FxHashMap<usize, TypeId>>,
 ) -> SemanticLoweringPlan {
+    let builtin_surface =
+        builtin_surface_manifest_for_mode(builtin_surface_mode_for_profile(profile));
     let mut builder = SemanticHirBuilder {
         interner,
         typed: type_ctx
@@ -1089,7 +1095,8 @@ pub fn build_semantic_lowering_plan_with_types(
                 type_ctx,
                 expr_types,
             }),
-        type_registry: type_ctx.map(TypeRegistry::new),
+        builtin_surface,
+        type_registry: type_ctx.map(|type_ctx| TypeRegistry::new(type_ctx, builtin_surface)),
         callables: Vec::new(),
         function_semantics: Vec::new(),
         bindings: Vec::new(),
@@ -1376,6 +1383,7 @@ struct TypedSemanticInfo<'a> {
 struct SemanticHirBuilder<'a> {
     interner: &'a Interner,
     typed: Option<TypedSemanticInfo<'a>>,
+    builtin_surface: &'static BuiltinSurfaceManifest,
     type_registry: Option<TypeRegistry>,
     callables: Vec<SemanticCallableInfo>,
     function_semantics: Vec<FunctionSemantics>,
@@ -1596,7 +1604,7 @@ impl<'a> SemanticHirBuilder<'a> {
             } else {
                 ResolvedIdentifierKind::CaptureBinding
             }
-        } else if self.known_builtin_global_name(&name) {
+        } else if self.is_builtin_global_name(&name) {
             ResolvedIdentifierKind::BuiltinGlobal
         } else {
             ResolvedIdentifierKind::AmbientGlobal
@@ -1656,7 +1664,7 @@ impl<'a> SemanticHirBuilder<'a> {
                 let name = self.interner.resolve(ident.name);
                 if self.imported_namespace_symbols.contains(&ident.name) {
                     ValueOriginKind::ImportedNamespace
-                } else if Self::known_builtin_namespace_name(name) {
+                } else if self.is_builtin_namespace_name(name) {
                     ValueOriginKind::BuiltinNamespace
                 } else if self.imported_symbols.contains(&ident.name) {
                     ValueOriginKind::ImportedBinding
@@ -1859,6 +1867,7 @@ impl<'a> SemanticHirBuilder<'a> {
             Some(Type::Reference(reference)) => Some(reference.name.clone()),
             Some(Type::Array(_)) => Some(TypeContext::ARRAY_TYPE_NAME.to_string()),
             Some(Type::Task(_)) => Some(TypeContext::PROMISE_TYPE_NAME.to_string()),
+            Some(Type::Mutex) => Some(TypeContext::MUTEX_TYPE_NAME.to_string()),
             Some(Type::Channel(_)) => Some(TypeContext::CHANNEL_TYPE_NAME.to_string()),
             Some(Type::Map(_)) => Some(TypeContext::MAP_TYPE_NAME.to_string()),
             Some(Type::Set(_)) => Some(TypeContext::SET_TYPE_NAME.to_string()),
@@ -1866,6 +1875,33 @@ impl<'a> SemanticHirBuilder<'a> {
             Some(Type::Date) => Some("Date".to_string()),
             Some(Type::Buffer) => Some("Buffer".to_string()),
             _ => None,
+        }
+    }
+
+    fn canonical_surface_type_name_for_expr(
+        &self,
+        expr: &Expression,
+        type_id: Option<TypeId>,
+    ) -> Option<String> {
+        match expr {
+            Expression::Identifier(ident) => {
+                let name = self.identifier(ident);
+                self.builtin_surface
+                    .backing_type_name(&name)
+                    .map(str::to_string)
+                    .or_else(|| type_id.and_then(|ty| self.type_name_for_type_id(ty)))
+            }
+            Expression::New(new_expr) => self
+                .builtin_global_name_for_expr(&new_expr.callee)
+                .and_then(|name| self.builtin_surface.backing_type_name(&name).map(str::to_string))
+                .or_else(|| type_id.and_then(|ty| self.type_name_for_type_id(ty))),
+            Expression::Parenthesized(paren) => {
+                self.canonical_surface_type_name_for_expr(&paren.expression, type_id)
+            }
+            Expression::TypeCast(cast) => {
+                self.canonical_surface_type_name_for_expr(&cast.object, type_id)
+            }
+            _ => type_id.and_then(|ty| self.type_name_for_type_id(ty)),
         }
     }
 
@@ -1877,57 +1913,12 @@ impl<'a> SemanticHirBuilder<'a> {
         })
     }
 
-    fn known_builtin_namespace_name(name: &str) -> bool {
-        matches!(name, "Object" | "Reflect" | "JSON" | "Math")
+    fn is_builtin_namespace_name(&self, name: &str) -> bool {
+        self.builtin_surface.is_namespace_global(name)
     }
 
-    fn known_builtin_global_name(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "Infinity"
-                | "NaN"
-                | "undefined"
-                | "globalThis"
-                | "Math"
-                | "String"
-                | "Number"
-                | "Boolean"
-                | "Function"
-                | "Array"
-                | "BigInt"
-                | "Object"
-                | "Reflect"
-                | "JSON"
-                | "Math"
-                | "Symbol"
-                | "Map"
-                | "Set"
-                | "Date"
-                | "Buffer"
-                | "RegExp"
-                | "Promise"
-                | "Channel"
-                | "Mutex"
-                | "Error"
-                | "TypeError"
-                | "RangeError"
-                | "ReferenceError"
-                | "SyntaxError"
-                | "URIError"
-                | "EvalError"
-                | "AggregateError"
-                | "parseInt"
-                | "parseFloat"
-                | "isNaN"
-                | "isFinite"
-                | "decodeURI"
-                | "decodeURIComponent"
-                | "encodeURI"
-                | "encodeURIComponent"
-                | "escape"
-                | "unescape"
-                | "EventEmitter"
-        ) || Self::known_builtin_namespace_name(name)
+    fn is_builtin_global_name(&self, name: &str) -> bool {
+        self.builtin_surface.is_builtin_global(name)
     }
 
     fn dispatch_type_id_for_type_id(&self, ty_id: TypeId) -> Option<u32> {
@@ -1945,14 +1936,15 @@ impl<'a> SemanticHirBuilder<'a> {
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> bool {
-        let Some(receiver_ty) = receiver_ty else {
+        let Some(type_ctx) = self.typed.map(|typed| typed.type_ctx) else {
             return false;
         };
-        let Some(registry) = self.type_registry.as_ref() else {
-            return false;
-        };
-        self.dispatch_type_id_for_type_id(receiver_ty)
-            .and_then(|dispatch_ty| registry.lookup_property(dispatch_ty, name))
+        self.receiver_builtin_surface_type_name(receiver_ty)
+            .and_then(|type_name| {
+                self.builtin_surface
+                    .instance_property_binding(&type_name, name)
+            })
+            .and_then(|binding| binding.to_dispatch_action(type_ctx))
             .is_some()
     }
 
@@ -1961,29 +1953,20 @@ impl<'a> SemanticHirBuilder<'a> {
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> bool {
-        let Some(receiver_ty) = receiver_ty else {
+        let Some(type_ctx) = self.typed.map(|typed| typed.type_ctx) else {
             return false;
         };
-        if self.type_uses_wrapper_method_surface(receiver_ty) {
-            return false;
-        }
-        let Some(registry) = self.type_registry.as_ref() else {
-            return false;
-        };
-        self.dispatch_type_id_for_type_id(receiver_ty)
-            .and_then(|dispatch_ty| registry.lookup_method(dispatch_ty, name))
+        self.receiver_builtin_surface_type_name(receiver_ty)
+            .and_then(|type_name| self.builtin_surface.instance_method_binding(&type_name, name))
+            .and_then(|binding| binding.to_dispatch_action(type_ctx))
             .is_some()
     }
 
     fn type_uses_wrapper_method_surface(&self, receiver_ty: TypeId) -> bool {
-        self.type_name_for_type_id(receiver_ty)
+        self.receiver_builtin_surface_type_name(Some(receiver_ty))
             .as_deref()
-            .is_some_and(|name| {
-                matches!(
-                    name,
-                    TypeContext::CHANNEL_TYPE_NAME | TypeContext::MUTEX_TYPE_NAME
-                )
-            })
+            .and_then(|name| self.builtin_surface.type_surface(name))
+            .is_some_and(|surface| surface.wrapper_method_surface)
     }
 
     fn receiver_builtin_registry_property_dispatch(
@@ -1991,15 +1974,13 @@ impl<'a> SemanticHirBuilder<'a> {
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> Option<crate::compiler::type_registry::DispatchAction> {
-        let Some(receiver_ty) = receiver_ty else {
-            return None;
-        };
-        if self.type_uses_wrapper_method_surface(receiver_ty) {
-            return None;
-        }
-        let registry = self.type_registry.as_ref()?;
-        self.dispatch_type_id_for_type_id(receiver_ty)
-            .and_then(|dispatch_ty| registry.lookup_property(dispatch_ty, name))
+        let type_ctx = self.typed?.type_ctx;
+        self.receiver_builtin_surface_type_name(receiver_ty)
+            .and_then(|type_name| {
+                self.builtin_surface
+                    .instance_property_binding(&type_name, name)
+            })
+            .and_then(|binding| binding.to_dispatch_action(type_ctx))
     }
 
     fn receiver_builtin_registry_method_dispatch(
@@ -2007,15 +1988,22 @@ impl<'a> SemanticHirBuilder<'a> {
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> Option<crate::compiler::type_registry::DispatchAction> {
-        let Some(receiver_ty) = receiver_ty else {
-            return None;
-        };
-        if self.type_uses_wrapper_method_surface(receiver_ty) {
-            return None;
-        }
-        let registry = self.type_registry.as_ref()?;
+        let type_ctx = self.typed?.type_ctx;
+        self.receiver_builtin_surface_type_name(receiver_ty)
+            .and_then(|type_name| self.builtin_surface.instance_method_binding(&type_name, name))
+            .and_then(|binding| binding.to_dispatch_action(type_ctx))
+    }
+
+    fn receiver_builtin_surface_type_name(&self, receiver_ty: Option<TypeId>) -> Option<String> {
+        let receiver_ty = receiver_ty?;
         self.dispatch_type_id_for_type_id(receiver_ty)
-            .and_then(|dispatch_ty| registry.lookup_method(dispatch_ty, name))
+            .and_then(|dispatch_ty| {
+                self.type_registry
+                    .as_ref()
+                    .and_then(|registry| registry.type_name(dispatch_ty))
+                    .map(str::to_string)
+            })
+            .or_else(|| self.type_name_for_type_id(receiver_ty))
     }
 
     fn type_name_is_host_handle(name: &str) -> bool {
@@ -2027,11 +2015,111 @@ impl<'a> SemanticHirBuilder<'a> {
         )
     }
 
+    fn builtin_global_name_for_expr(&self, expr: &Expression) -> Option<String> {
+        match expr {
+            Expression::Identifier(ident) => {
+                let name = self.identifier(ident);
+                self.is_builtin_global_name(&name).then_some(name)
+            }
+            Expression::Parenthesized(paren) => self.builtin_global_name_for_expr(&paren.expression),
+            Expression::TypeCast(cast) => self.builtin_global_name_for_expr(&cast.object),
+            _ => None,
+        }
+    }
+
+    fn builtin_static_method_binding_for_expr(
+        &self,
+        expr: &Expression,
+        member_name: &str,
+    ) -> Option<(String, &crate::compiler::module::BuiltinDispatchBinding)> {
+        let global_name = self.builtin_global_name_for_expr(expr)?;
+        self.builtin_surface
+            .static_method_binding(&global_name, member_name)
+            .map(|binding| (global_name, binding))
+    }
+
+    fn builtin_static_property_binding_for_expr(
+        &self,
+        expr: &Expression,
+        property_name: &str,
+    ) -> Option<(String, &crate::compiler::module::BuiltinDispatchBinding)> {
+        let global_name = self.builtin_global_name_for_expr(expr)?;
+        self.builtin_surface
+            .static_property_binding(&global_name, property_name)
+            .map(|binding| (global_name, binding))
+    }
+
+    fn metaobject_op_from_native_id(native_id: u16) -> Option<MetaobjectOpKind> {
+        match native_id {
+            crate::compiler::native_id::OBJECT_DEFINE_PROPERTY => {
+                Some(MetaobjectOpKind::DefineProperty)
+            }
+            crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR => {
+                Some(MetaobjectOpKind::GetOwnPropertyDescriptor)
+            }
+            crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES => {
+                Some(MetaobjectOpKind::DefineProperties)
+            }
+            crate::compiler::native_id::OBJECT_DELETE_PROPERTY => {
+                Some(MetaobjectOpKind::DeleteProperty)
+            }
+            crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF => {
+                Some(MetaobjectOpKind::GetPrototypeOf)
+            }
+            crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF => {
+                Some(MetaobjectOpKind::SetPrototypeOf)
+            }
+            crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS => {
+                Some(MetaobjectOpKind::PreventExtensions)
+            }
+            crate::compiler::native_id::OBJECT_IS_EXTENSIBLE => {
+                Some(MetaobjectOpKind::IsExtensible)
+            }
+            crate::compiler::native_id::REFLECT_GET => Some(MetaobjectOpKind::ReflectGet),
+            crate::compiler::native_id::REFLECT_SET => Some(MetaobjectOpKind::ReflectSet),
+            crate::compiler::native_id::REFLECT_HAS => Some(MetaobjectOpKind::ReflectHas),
+            crate::compiler::native_id::REFLECT_OWN_KEYS => Some(MetaobjectOpKind::ReflectOwnKeys),
+            crate::compiler::native_id::REFLECT_CONSTRUCT => {
+                Some(MetaobjectOpKind::ReflectConstruct)
+            }
+            _ => None,
+        }
+    }
+
+    fn namespace_call_kind_from_native_id(native_id: u16) -> Option<BuiltinNamespaceCallKind> {
+        match native_id {
+            crate::compiler::native_id::OBJECT_SAME_VALUE => {
+                Some(BuiltinNamespaceCallKind::ObjectSameValue)
+            }
+            crate::compiler::native_id::JSON_PARSE => Some(BuiltinNamespaceCallKind::JsonParse),
+            crate::compiler::native_id::JSON_STRINGIFY => {
+                Some(BuiltinNamespaceCallKind::JsonStringify)
+            }
+            crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE => {
+                Some(BuiltinNamespaceCallKind::StringFromCharCode)
+            }
+            crate::vm::builtin::number::IS_NAN => Some(BuiltinNamespaceCallKind::NumberIsNaN),
+            crate::vm::builtin::number::IS_FINITE => {
+                Some(BuiltinNamespaceCallKind::NumberIsFinite)
+            }
+            crate::compiler::native_id::DATE_NOW => Some(BuiltinNamespaceCallKind::DateNow),
+            crate::compiler::native_id::DATE_PARSE => Some(BuiltinNamespaceCallKind::DateParse),
+            _ => None,
+        }
+    }
+
     fn builtin_origin_kind_for_expr(&self, expr: &Expression) -> BuiltinOriginKind {
         let value_origin = self.value_origin_kind_for_expr(expr);
         let ty = self.expr_type(expr);
-        let shape_kind = self.object_shape_for_expr(expr).map(|shape| shape.kind);
-        let type_name = ty.and_then(|ty| self.type_name_for_type_id(ty));
+        let shape = self.object_shape_for_expr(expr);
+        let shape_kind = shape.as_ref().map(|shape| shape.kind);
+        let type_name = shape
+            .as_ref()
+            .and_then(|shape| shape.type_name.clone())
+            .or_else(|| self.canonical_surface_type_name_for_expr(expr, ty));
+        let builtin_global_kind = self
+            .builtin_global_name_for_expr(expr)
+            .and_then(|name| self.builtin_surface.global_kind(&name));
         match value_origin {
             ValueOriginKind::ImportedBinding => BuiltinOriginKind::ImportedBuiltinBinding,
             ValueOriginKind::ImportedNamespace => BuiltinOriginKind::ImportedBuiltinNamespace,
@@ -2042,7 +2130,11 @@ impl<'a> SemanticHirBuilder<'a> {
                     .is_some_and(Self::type_name_is_host_handle)
                 {
                     BuiltinOriginKind::HostHandleValue
-                } else if matches!(shape_kind, Some(ObjectShapeKind::ClassValue)) {
+                } else if matches!(
+                    builtin_global_kind,
+                    Some(BuiltinGlobalKind::ClassValue | BuiltinGlobalKind::StaticValue)
+                ) || matches!(shape_kind, Some(ObjectShapeKind::ClassValue))
+                {
                     BuiltinOriginKind::BuiltinClassValue
                 } else {
                     BuiltinOriginKind::BuiltinInstance
@@ -2054,11 +2146,10 @@ impl<'a> SemanticHirBuilder<'a> {
                     .is_some_and(Self::type_name_is_host_handle)
                 {
                     BuiltinOriginKind::HostHandleValue
-                } else if self.type_registry.as_ref().is_some_and(|registry| {
-                    type_name
-                        .as_deref()
-                        .is_some_and(|name| registry.has_builtin_dispatch_type(name))
-                }) {
+                } else if type_name
+                    .as_deref()
+                    .is_some_and(|name| self.builtin_surface.has_dispatch_type(name))
+                {
                     if matches!(shape_kind, Some(ObjectShapeKind::ClassValue)) {
                         BuiltinOriginKind::BuiltinClassValue
                     } else {
@@ -2071,102 +2162,24 @@ impl<'a> SemanticHirBuilder<'a> {
         }
     }
 
-    fn namespace_metaobject_op(object_name: &str, member_name: &str) -> Option<MetaobjectOpKind> {
-        match (object_name, member_name) {
-            ("Object", "defineProperty") => Some(MetaobjectOpKind::DefineProperty),
-            ("Object", "getOwnPropertyDescriptor") => {
-                Some(MetaobjectOpKind::GetOwnPropertyDescriptor)
-            }
-            ("Object", "defineProperties") => Some(MetaobjectOpKind::DefineProperties),
-            ("Object", "getPrototypeOf") => Some(MetaobjectOpKind::GetPrototypeOf),
-            ("Object", "setPrototypeOf") => Some(MetaobjectOpKind::SetPrototypeOf),
-            ("Object", "preventExtensions") => Some(MetaobjectOpKind::PreventExtensions),
-            ("Object", "isExtensible") => Some(MetaobjectOpKind::IsExtensible),
-            ("Reflect", "get") => Some(MetaobjectOpKind::ReflectGet),
-            ("Reflect", "set") => Some(MetaobjectOpKind::ReflectSet),
-            ("Reflect", "has") => Some(MetaobjectOpKind::ReflectHas),
-            ("Reflect", "ownKeys") => Some(MetaobjectOpKind::ReflectOwnKeys),
-            ("Reflect", "construct") => Some(MetaobjectOpKind::ReflectConstruct),
-            _ => None,
-        }
-    }
-
-    fn namespace_call_kind(
-        object_name: &str,
-        member_name: &str,
-    ) -> Option<BuiltinNamespaceCallKind> {
-        match (object_name, member_name) {
-            ("Object", "is") => Some(BuiltinNamespaceCallKind::ObjectSameValue),
-            ("JSON", "parse") => Some(BuiltinNamespaceCallKind::JsonParse),
-            ("JSON", "stringify") => Some(BuiltinNamespaceCallKind::JsonStringify),
-            ("String", "fromCharCode") => Some(BuiltinNamespaceCallKind::StringFromCharCode),
-            ("Number", "isNaN") => Some(BuiltinNamespaceCallKind::NumberIsNaN),
-            ("Number", "isFinite") => Some(BuiltinNamespaceCallKind::NumberIsFinite),
-            ("Date", "now") => Some(BuiltinNamespaceCallKind::DateNow),
-            ("Date", "parse") => Some(BuiltinNamespaceCallKind::DateParse),
-            _ => None,
-        }
-    }
-
-    fn namespace_call_native_id(&self, object_name: &str, member_name: &str) -> Option<u16> {
-        match (object_name, member_name) {
-            ("Object", "is") => Some(crate::compiler::native_id::OBJECT_SAME_VALUE),
-            ("JSON", "parse") => Some(crate::compiler::native_id::JSON_PARSE),
-            ("JSON", "stringify") => Some(crate::compiler::native_id::JSON_STRINGIFY),
-            ("String", "fromCharCode") => {
-                Some(crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE)
-            }
-            ("Number", "isNaN") => Some(crate::vm::builtin::number::IS_NAN),
-            ("Number", "isFinite") => Some(crate::vm::builtin::number::IS_FINITE),
-            ("Date", "now") => Some(crate::compiler::native_id::DATE_NOW),
-            ("Date", "parse") => Some(crate::compiler::native_id::DATE_PARSE),
-            _ => None,
-        }
-    }
-
-    fn metaobject_native_id(op: MetaobjectOpKind) -> Option<u16> {
-        match op {
-            MetaobjectOpKind::DefineProperty => {
-                Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY)
-            }
-            MetaobjectOpKind::GetOwnPropertyDescriptor => {
-                Some(crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR)
-            }
-            MetaobjectOpKind::DefineProperties => {
-                Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES)
-            }
-            MetaobjectOpKind::DeleteProperty => {
-                Some(crate::compiler::native_id::OBJECT_DELETE_PROPERTY)
-            }
-            MetaobjectOpKind::GetPrototypeOf => {
-                Some(crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF)
-            }
-            MetaobjectOpKind::SetPrototypeOf => {
-                Some(crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF)
-            }
-            MetaobjectOpKind::PreventExtensions => {
-                Some(crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS)
-            }
-            MetaobjectOpKind::IsExtensible => {
-                Some(crate::compiler::native_id::OBJECT_IS_EXTENSIBLE)
-            }
-            MetaobjectOpKind::ReflectGet => Some(crate::compiler::native_id::REFLECT_GET),
-            MetaobjectOpKind::ReflectSet => Some(crate::compiler::native_id::REFLECT_SET),
-            MetaobjectOpKind::ReflectHas => Some(crate::compiler::native_id::REFLECT_HAS),
-            MetaobjectOpKind::ReflectOwnKeys => Some(crate::compiler::native_id::REFLECT_OWN_KEYS),
-            MetaobjectOpKind::ReflectConstruct => {
-                Some(crate::compiler::native_id::REFLECT_CONSTRUCT)
-            }
-        }
-    }
-
     fn host_handle_op_for_member(
         &self,
+        receiver_expr: &Expression,
         receiver_type_id: Option<TypeId>,
         member_name: &str,
     ) -> Option<HostHandleOpKind> {
-        let type_name = receiver_type_id.and_then(|ty| self.type_name_for_type_id(ty))?;
+        let shape_type_name = self
+            .object_shape_for_expr(receiver_expr)
+            .and_then(|shape| shape.type_name);
+        let raw_type_name = receiver_type_id.and_then(|ty| self.type_name_for_type_id(ty));
+        let surface_type_name = shape_type_name
+            .clone()
+            .or_else(|| self.receiver_builtin_surface_type_name(receiver_type_id))
+            .or_else(|| raw_type_name.clone());
+        let type_name = surface_type_name?;
         match (type_name.as_str(), member_name) {
+            (TypeContext::MUTEX_TYPE_NAME, "lock") => Some(HostHandleOpKind::MutexLock),
+            (TypeContext::MUTEX_TYPE_NAME, "unlock") => Some(HostHandleOpKind::MutexUnlock),
             (TypeContext::PROMISE_TYPE_NAME, "cancel") => Some(HostHandleOpKind::TaskCancel),
             (TypeContext::PROMISE_TYPE_NAME, "isDone") => Some(HostHandleOpKind::TaskIsDone),
             (TypeContext::PROMISE_TYPE_NAME, "isCancelled") => {
@@ -2177,9 +2190,9 @@ impl<'a> SemanticHirBuilder<'a> {
     }
 
     fn is_builtin_constructor_type_name(&self, name: &str) -> bool {
-        self.type_registry
-            .as_ref()
-            .is_some_and(|registry| registry.constructor_native_id(name).is_some())
+        self.builtin_surface
+            .type_surface(name)
+            .is_some_and(|surface| surface.constructor_native_id.is_some())
     }
 
     fn runtime_late_bound_receiver(&self, expr: &Expression, receiver_ty: Option<TypeId>) -> bool {
@@ -2195,18 +2208,14 @@ impl<'a> SemanticHirBuilder<'a> {
         if self.has_local_class_named(&type_name) {
             return false;
         }
-        if self
-            .type_registry
-            .as_ref()
-            .is_some_and(|registry| registry.has_builtin_dispatch_type(&type_name))
-        {
+        if self.builtin_surface.has_dispatch_type(&type_name) {
             return false;
         }
         if matches!(expr, Expression::Identifier(ident) if self.imported_symbols.contains(&ident.name))
         {
             return true;
         }
-        !Self::known_builtin_namespace_name(&type_name)
+        !self.is_builtin_namespace_name(&type_name)
     }
 
     fn call_completion_kind_for_expr(
@@ -2270,15 +2279,16 @@ impl<'a> SemanticHirBuilder<'a> {
         let mut kind = self.object_shape_kind_for_type_id(type_id, binding_kind);
         if let Expression::Identifier(ident) = expr {
             let name = self.interner.resolve(ident.name);
+            let builtin_global_kind = self.builtin_surface.global_kind(name);
             if binding_kind == Some(BindingKind::Class)
                 || (self.imported_symbols.contains(&ident.name)
                     && !self.imported_namespace_symbols.contains(&ident.name)
                     && (self.type_is_nominal_class_type(type_id)
                         || self.type_has_construct_signatures(type_id)))
-                || (!Self::known_builtin_namespace_name(name)
-                    && self.known_builtin_global_name(name)
-                    && (self.type_is_nominal_class_type(type_id)
-                        || self.type_has_construct_signatures(type_id)))
+                || matches!(
+                    builtin_global_kind,
+                    Some(BuiltinGlobalKind::ClassValue | BuiltinGlobalKind::StaticValue)
+                )
             {
                 kind = ObjectShapeKind::ClassValue;
             }
@@ -2288,7 +2298,7 @@ impl<'a> SemanticHirBuilder<'a> {
             span_end: expr.span().end,
             kind,
             type_id: Some(type_id),
-            type_name: self.type_name_for_type_id(type_id),
+            type_name: self.canonical_surface_type_name_for_expr(expr, Some(type_id)),
         })
     }
 
@@ -2434,6 +2444,10 @@ impl<'a> SemanticHirBuilder<'a> {
         let receiver_origin = self.value_origin_kind_for_expr(&member.object);
         let receiver_shape = self.object_shape_for_expr(&member.object);
         let receiver_type_id = receiver_shape.as_ref().and_then(|shape| shape.type_id);
+        let has_builtin_static_binding = self
+            .builtin_static_property_binding_for_expr(&member.object, &name)
+            .or_else(|| self.builtin_static_method_binding_for_expr(&member.object, &name))
+            .is_some();
         let member_target_kind = receiver_shape
             .as_ref()
             .map(|shape| self.member_target_kind_for_shape_and_name(shape, &name))
@@ -2441,6 +2455,9 @@ impl<'a> SemanticHirBuilder<'a> {
         let kind = match receiver_origin {
             ValueOriginKind::ImportedNamespace => PropertyDispatchKind::ImportedNamespaceExport,
             ValueOriginKind::BuiltinNamespace => PropertyDispatchKind::BuiltinNamespaceProperty,
+            ValueOriginKind::BuiltinGlobalValue if has_builtin_static_binding => {
+                PropertyDispatchKind::BuiltinNamespaceProperty
+            }
             _ => match member_target_kind {
                 MemberTargetKind::NominalField => PropertyDispatchKind::NominalField,
                 MemberTargetKind::StructuralSlot => PropertyDispatchKind::StructuralSlot,
@@ -2468,14 +2485,17 @@ impl<'a> SemanticHirBuilder<'a> {
         match expr {
             Expression::Member(member) => {
                 let property_name = self.identifier(&member.property);
-                let receiver_origin = self.value_origin_kind_for_expr(&member.object);
                 let receiver_type_id = self.expr_type(&member.object);
                 let origin = self.builtin_origin_kind_for_expr(&member.object);
                 let registry_dispatch = self
                     .receiver_builtin_registry_property_dispatch(receiver_type_id, &property_name);
+                let static_binding = self
+                    .builtin_static_property_binding_for_expr(&member.object, &property_name)
+                    .or_else(|| {
+                        self.builtin_static_method_binding_for_expr(&member.object, &property_name)
+                    });
                 let dispatch = match origin {
-                    BuiltinOriginKind::BuiltinNamespace | BuiltinOriginKind::BuiltinClassValue => {
-                        Some(SemanticBuiltinDispatch {
+                    BuiltinOriginKind::BuiltinNamespace | BuiltinOriginKind::BuiltinClassValue => static_binding.map(|(export_name, binding)| SemanticBuiltinDispatch {
                             span_start: member.span.start,
                             span_end: member.span.end,
                             origin,
@@ -2485,15 +2505,20 @@ impl<'a> SemanticHirBuilder<'a> {
                             host_handle_op: None,
                             namespace_call: None,
                             registry_dispatch: None,
-                            native_id: None,
+                            native_id: match binding {
+                                crate::compiler::module::BuiltinDispatchBinding::NativeCall {
+                                    native_id,
+                                    ..
+                                } => Some(*native_id),
+                                _ => None,
+                            },
                             receiver_type_id,
                             callee_type_id: None,
                             result_type_id: self.expr_type(expr),
                             property_name: Some(property_name.clone()),
                             member_name: None,
-                            export_name: Some(property_name),
-                        })
-                    }
+                            export_name: Some(export_name),
+                        }),
                     _ if registry_dispatch.is_some() => Some(SemanticBuiltinDispatch {
                         span_start: member.span.start,
                         span_end: member.span.end,
@@ -2523,20 +2548,19 @@ impl<'a> SemanticHirBuilder<'a> {
                     Expression::Member(member) => {
                         let member_name = self.identifier(&member.property);
                         let receiver_type_id = self.expr_type(&member.object);
-                        let receiver_origin = self.value_origin_kind_for_expr(&member.object);
                         let origin = self.builtin_origin_kind_for_expr(&member.object);
-                        let builtin_static_surface = matches!(
-                            origin,
-                            BuiltinOriginKind::BuiltinNamespace
-                                | BuiltinOriginKind::BuiltinClassValue
-                        );
-                        if builtin_static_surface {
-                            let object_name = match &*member.object {
-                                Expression::Identifier(ident) => self.interner.resolve(ident.name),
-                                _ => "",
+                        if let Some((export_name, binding)) = self
+                            .builtin_static_method_binding_for_expr(&member.object, &member_name)
+                        {
+                            let native_id = match binding {
+                                crate::compiler::module::BuiltinDispatchBinding::NativeCall {
+                                    native_id,
+                                    ..
+                                } => Some(*native_id),
+                                _ => None,
                             };
                             if let Some(metaobject_op) =
-                                Self::namespace_metaobject_op(object_name, &member_name)
+                                native_id.and_then(Self::metaobject_op_from_native_id)
                             {
                                 Some(SemanticBuiltinDispatch {
                                     span_start: call.span.start,
@@ -2548,60 +2572,40 @@ impl<'a> SemanticHirBuilder<'a> {
                                     host_handle_op: None,
                                     namespace_call: None,
                                     registry_dispatch: None,
-                                    native_id: Self::metaobject_native_id(metaobject_op),
+                                    native_id,
                                     receiver_type_id,
                                     callee_type_id: self.expr_type(&call.callee),
                                     result_type_id: self.expr_type(expr),
                                     property_name: None,
                                     member_name: Some(member_name),
-                                    export_name: None,
-                                })
-                            } else if let Some(namespace_call) =
-                                Self::namespace_call_kind(object_name, &member_name)
-                            {
-                                Some(SemanticBuiltinDispatch {
-                                    span_start: call.span.start,
-                                    span_end: call.span.end,
-                                    origin,
-                                    kind: BuiltinDispatchKind::NamespaceCall,
-                                    metaobject_op: None,
-                                    iterator_op: None,
-                                    host_handle_op: None,
-                                    namespace_call: Some(namespace_call),
-                                    registry_dispatch: None,
-                                    native_id: self
-                                        .namespace_call_native_id(object_name, &member_name),
-                                    receiver_type_id,
-                                    callee_type_id: self.expr_type(&call.callee),
-                                    result_type_id: self.expr_type(expr),
-                                    property_name: None,
-                                    member_name: Some(member_name),
-                                    export_name: None,
-                                })
-                            } else if matches!(origin, BuiltinOriginKind::BuiltinNamespace) {
-                                Some(SemanticBuiltinDispatch {
-                                    span_start: call.span.start,
-                                    span_end: call.span.end,
-                                    origin,
-                                    kind: BuiltinDispatchKind::NamespaceCall,
-                                    metaobject_op: None,
-                                    iterator_op: None,
-                                    host_handle_op: None,
-                                    namespace_call: None,
-                                    registry_dispatch: None,
-                                    native_id: None,
-                                    receiver_type_id,
-                                    callee_type_id: self.expr_type(&call.callee),
-                                    result_type_id: self.expr_type(expr),
-                                    property_name: None,
-                                    member_name: Some(member_name),
-                                    export_name: None,
+                                    export_name: Some(export_name),
                                 })
                             } else {
-                                None
+                                Some(SemanticBuiltinDispatch {
+                                    span_start: call.span.start,
+                                    span_end: call.span.end,
+                                    origin,
+                                    kind: BuiltinDispatchKind::NamespaceCall,
+                                    metaobject_op: None,
+                                    iterator_op: None,
+                                    host_handle_op: None,
+                                    namespace_call: native_id
+                                        .and_then(Self::namespace_call_kind_from_native_id),
+                                    registry_dispatch: None,
+                                    native_id,
+                                    receiver_type_id,
+                                    callee_type_id: self.expr_type(&call.callee),
+                                    result_type_id: self.expr_type(expr),
+                                    property_name: None,
+                                    member_name: Some(member_name),
+                                    export_name: Some(export_name),
+                                })
                             }
-                        } else if let Some(host_handle_op) =
-                            self.host_handle_op_for_member(receiver_type_id, &member_name)
+                        } else if let Some(host_handle_op) = self.host_handle_op_for_member(
+                            &member.object,
+                            receiver_type_id,
+                            &member_name,
+                        )
                         {
                             Some(SemanticBuiltinDispatch {
                                 span_start: call.span.start,
@@ -2843,6 +2847,9 @@ impl<'a> SemanticHirBuilder<'a> {
                 let receiver_origin = self.value_origin_kind_for_expr(&member.object);
                 let receiver_shape = self.object_shape_for_expr(&member.object);
                 let receiver_type_id = receiver_shape.as_ref().and_then(|shape| shape.type_id);
+                let has_builtin_static_method = self
+                    .builtin_static_method_binding_for_expr(&member.object, &member_name)
+                    .is_some();
                 let member_target_kind = receiver_shape
                     .as_ref()
                     .map(|shape| self.member_target_kind_for_shape_and_name(shape, &member_name))
@@ -2851,6 +2858,9 @@ impl<'a> SemanticHirBuilder<'a> {
                 let dispatch_kind = match receiver_origin {
                     ValueOriginKind::ImportedNamespace => CallDispatchKind::ImportedNamespaceCall,
                     ValueOriginKind::BuiltinNamespace => CallDispatchKind::BuiltinNamespaceMethod,
+                    ValueOriginKind::BuiltinGlobalValue if has_builtin_static_method => {
+                        CallDispatchKind::BuiltinNamespaceMethod
+                    }
                     _ => match member_target_kind {
                         MemberTargetKind::NominalMethod => CallDispatchKind::NominalMethod,
                         MemberTargetKind::StaticMethod => CallDispatchKind::StaticMethod,
@@ -2968,6 +2978,7 @@ impl<'a> SemanticHirBuilder<'a> {
         let callee_type_id = self.expr_type(&new_expr.callee);
         let callee_shape = self.object_shape_for_expr(&new_expr.callee);
         let callee_origin = self.value_origin_kind_for_expr(&new_expr.callee);
+        let callee_name = self.builtin_global_name_for_expr(&new_expr.callee);
         let kind = match &*new_expr.callee {
             Expression::Identifier(ident)
                 if self
@@ -2979,6 +2990,16 @@ impl<'a> SemanticHirBuilder<'a> {
             Expression::Identifier(_) => match callee_origin {
                 ValueOriginKind::ImportedBinding => {
                     ConstructorDispatchKind::ImportedConstructorValue
+                }
+                ValueOriginKind::BuiltinGlobalValue
+                    if callee_name.as_deref().is_some_and(|name| {
+                        matches!(
+                            name,
+                            TypeContext::CHANNEL_TYPE_NAME | TypeContext::MUTEX_TYPE_NAME
+                        )
+                    }) =>
+                {
+                    ConstructorDispatchKind::BuiltinNativeConstructor
                 }
                 ValueOriginKind::BuiltinGlobalValue
                     if callee_type_id.is_some_and(|ty| {
@@ -3201,13 +3222,14 @@ impl<'a> SemanticHirBuilder<'a> {
                 | Type::Set(_)
                 | Type::Date
                 | Type::Buffer
+                | Type::Mutex
+                | Type::Channel(_)
                 | Type::Tuple(_)
                 | Type::Function(_)
                 | Type::Primitive(PrimitiveType::String)
                 | Type::Primitive(PrimitiveType::Number)
                 | Type::Primitive(PrimitiveType::Boolean),
             ) => MemberTargetKind::BuiltinProperty,
-            Some(Type::Mutex | Type::Channel(_)) => MemberTargetKind::DynamicProperty,
             _ => MemberTargetKind::DynamicProperty,
         }
     }

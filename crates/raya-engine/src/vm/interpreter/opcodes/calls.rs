@@ -46,9 +46,13 @@ impl<'a> Interpreter<'a> {
                 ))
             }
         };
+        let kernel_op_id =
+            crate::compiler::ir::encode_kernel_op_id(crate::compiler::ir::KernelOp::VmNative(
+                native_id,
+            ));
         let code = [
-            (native_id & 0x00FF) as u8,
-            ((native_id >> 8) & 0x00FF) as u8,
+            (kernel_op_id & 0x00FF) as u8,
+            ((kernel_op_id >> 8) & 0x00FF) as u8,
             arg_count_u8,
         ];
         let mut native_ip = 0usize;
@@ -58,7 +62,7 @@ impl<'a> Interpreter<'a> {
             &code,
             module,
             task,
-            Opcode::NativeCall,
+            Opcode::KernelCall,
         )
     }
 

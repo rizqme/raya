@@ -932,7 +932,12 @@ impl<'a> Interpreter<'a> {
         TYPE_REGISTRY
             .get_or_init(|| {
                 let type_ctx = TypeContext::new();
-                TypeRegistry::new(&type_ctx)
+                TypeRegistry::new(
+                    &type_ctx,
+                    crate::compiler::module::builtin_surface_manifest_for_mode(
+                        crate::compiler::module::BuiltinSurfaceMode::NodeCompat,
+                    ),
+                )
             })
             .native_method_id_for_type_name(class_name, method_name)
     }
@@ -1711,17 +1716,6 @@ impl<'a> Interpreter<'a> {
                 OpcodeResult::Continue
             }
 
-            // =========================================================
-            // Mutex Creation
-            // =========================================================
-            Opcode::NewMutex => {
-                let (mutex_id, _) = self.mutex_registry.create_mutex();
-                if let Err(e) = stack.push(Value::i64(mutex_id.as_u64() as i64)) {
-                    return OpcodeResult::Error(e);
-                }
-                OpcodeResult::Continue
-            }
-
             Opcode::NewSemaphore => {
                 let permits_val = match stack.pop() {
                     Ok(v) => v,
@@ -1733,24 +1727,6 @@ impl<'a> Interpreter<'a> {
                     .unwrap_or(0) as usize;
                 let (semaphore_id, _) = self.semaphore_registry.create_semaphore(permits);
                 if let Err(e) = stack.push(Value::i64(semaphore_id.as_u64() as i64)) {
-                    return OpcodeResult::Error(e);
-                }
-                OpcodeResult::Continue
-            }
-
-            // =========================================================
-            // Channel Creation
-            // =========================================================
-            Opcode::NewChannel => {
-                self.safepoint.poll();
-                let capacity_val = match stack.pop() {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-                let capacity = capacity_val.as_i32().unwrap_or(0) as usize;
-                let channel = ChannelObject::new(capacity);
-                let handle = self.allocate_pinned_handle(channel);
-                if let Err(e) = stack.push(Value::u64(handle)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue

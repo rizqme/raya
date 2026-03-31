@@ -633,12 +633,6 @@ pub enum JitInstr {
     Sleep {
         duration: Reg,
     },
-    MutexLock {
-        mutex: Reg,
-    },
-    MutexUnlock {
-        mutex: Reg,
-    },
     NewSemaphore {
         dest: Reg,
     },
@@ -937,8 +931,6 @@ impl JitInstr {
             | JitInstr::StoreRefCell { .. }
             | JitInstr::Yield
             | JitInstr::Sleep { .. }
-            | JitInstr::MutexLock { .. }
-            | JitInstr::MutexUnlock { .. }
             | JitInstr::SemAcquire { .. }
             | JitInstr::SemRelease { .. }
             | JitInstr::TaskThen { .. }

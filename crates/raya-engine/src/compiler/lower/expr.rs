@@ -617,7 +617,7 @@ impl<'a> Lowerer<'a> {
         } else if let Some(native_id) = dispatch.native_id {
             self.emit_builtin_kernel_call(
                 Some(dispatch_dest.clone()),
-                KernelOp::NativeCall(native_id),
+                KernelOp::VmNative(native_id),
                 args.to_vec(),
             );
         } else {
@@ -1041,7 +1041,7 @@ impl<'a> Lowerer<'a> {
                 );
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    KernelOp::NativeCall(native_id),
+                    KernelOp::VmNative(native_id),
                     vec![object],
                 );
                 Some(dest)
@@ -1503,7 +1503,7 @@ impl<'a> Lowerer<'a> {
                 native_args.extend(args.iter().cloned());
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    KernelOp::NativeCall(id),
+                    KernelOp::VmNative(id),
                     native_args,
                 );
                 Some(dest)
@@ -3103,12 +3103,12 @@ impl<'a> Lowerer<'a> {
 
     fn should_resolve_from_direct_eval_env(&self, ident: &ast::Identifier) -> bool {
         let name = self.interner.resolve(ident.name);
-        let runtime_lookup_suppressed = self.runtime_identifier_lookup_suppressed(ident.span.start);
-        self.in_direct_eval_function
-            && (self.direct_eval_binding_enabled(name)
-                || (!runtime_lookup_suppressed
-                    && self.semantic_identifier_requires_runtime_lookup(ident.span.start)))
-            && !self.identifier_is_ambient_runtime_global(name)
+        // The synthetic direct-eval wrapper does not own JS bindings itself:
+        // reads, writes, deletes, and typeof all need to resolve through the
+        // runtime eval environment so the active lexical/with/loop chain stays
+        // authoritative. Ambient non-shadowable globals still bypass that path.
+        !self.identifier_is_ambient_runtime_global(name)
+            && (self.in_direct_eval_function || self.direct_eval_binding_enabled(name))
     }
 
     pub(super) fn emit_direct_eval_name_reg(&mut self, name: &str) -> Register {
@@ -4207,6 +4207,15 @@ impl<'a> Lowerer<'a> {
         if self.js_this_binding_compat
             && !self.runtime_identifier_lookup_suppressed(ident.span.start)
             && self.semantic_identifier_requires_runtime_lookup(ident.span.start)
+        {
+            let ty = self.effective_identifier_value_type(ident, self.default_js_function_type());
+            if let Some(binding) = self.resolve_identifier_binding(ident.name, ident.span.start) {
+                return self.emit_load_identifier_binding(binding, ty);
+            }
+        }
+        if self.js_this_binding_compat
+            && !self.identifier_is_ambient_runtime_global(name)
+            && (self.in_direct_eval_function || self.direct_eval_binding_enabled(name))
         {
             let ty = self.effective_identifier_value_type(ident, self.default_js_function_type());
             if let Some(binding) = self.resolve_identifier_binding(ident.name, ident.span.start) {
@@ -5373,7 +5382,6 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::ResolvedIdentifierKind::LocalBinding)
                         | Some(crate::semantics::ResolvedIdentifierKind::CaptureBinding)
                         | Some(crate::semantics::ResolvedIdentifierKind::ScriptGlobalBinding)
-                        | Some(crate::semantics::ResolvedIdentifierKind::BuiltinGlobal)
                 )
             } else {
                 self.local_map.contains_key(&ident.name)

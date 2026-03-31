@@ -642,9 +642,6 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
         JitInstr::Sleep { duration } => {
             used.insert(*duration);
         }
-        JitInstr::MutexLock { mutex } | JitInstr::MutexUnlock { mutex } => {
-            used.insert(*mutex);
-        }
         JitInstr::ArrayPush { array, value } | JitInstr::DynArrayPush { array, value } => {
             used.insert(*array);
             used.insert(*value);
