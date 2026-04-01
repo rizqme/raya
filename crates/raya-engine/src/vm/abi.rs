@@ -28,6 +28,7 @@ use crate::vm::scheduler::Task;
 use crate::vm::scheduler::{TaskId, TaskState};
 use crate::vm::value::Value;
 use crossbeam_deque::Injector;
+use crate::compiler::compiled_support::CompiledNumericIntrinsicOp;
 
 // ============================================================================
 // Zero-cost Value Conversion
@@ -43,6 +44,36 @@ pub fn value_to_native(val: Value) -> NativeValue {
 #[inline(always)]
 pub fn native_to_value(val: NativeValue) -> Value {
     unsafe { Value::from_raw(val.to_bits()) }
+}
+
+/// Execute an exact numeric intrinsic for compiled backends.
+pub fn dispatch_compiled_numeric_intrinsic(
+    op: CompiledNumericIntrinsicOp,
+    lhs_raw: u64,
+    rhs_raw: u64,
+) -> u64 {
+    match op {
+        CompiledNumericIntrinsicOp::I32Pow => {
+            let lhs = lhs_raw as i32;
+            let rhs = rhs_raw as i32;
+            let result = if rhs < 0 {
+                0
+            } else {
+                lhs.wrapping_pow(rhs as u32)
+            };
+            (result as i64) as u64
+        }
+        CompiledNumericIntrinsicOp::F64Pow => {
+            let lhs = f64::from_bits(lhs_raw);
+            let rhs = f64::from_bits(rhs_raw);
+            lhs.powf(rhs).to_bits()
+        }
+        CompiledNumericIntrinsicOp::F64Mod => {
+            let lhs = f64::from_bits(lhs_raw);
+            let rhs = f64::from_bits(rhs_raw);
+            (lhs % rhs).to_bits()
+        }
+    }
 }
 
 // ============================================================================

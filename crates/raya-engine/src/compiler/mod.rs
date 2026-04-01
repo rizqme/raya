@@ -16,6 +16,7 @@ pub mod bytecode;
 pub mod codegen;
 #[allow(dead_code)]
 pub mod codegen_ast;
+pub mod compiled_support;
 pub mod error;
 pub mod intrinsic;
 pub mod ir;

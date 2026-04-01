@@ -10,6 +10,9 @@
 
 use crate::compiler::bytecode::module::Module;
 use crate::compiler::bytecode::opcode::Opcode;
+use crate::compiler::compiled_support::{
+    bytecode_function_support, CompiledBackendKind,
+};
 use rustc_hash::FxHashMap;
 
 use super::analysis::{ExecutionSuspendKind, SuspensionAnalysis, SuspensionPoint};
@@ -173,55 +176,6 @@ impl std::fmt::Display for BytecodeAdapterError {
 
 impl std::error::Error for BytecodeAdapterError {}
 
-#[cfg(all(feature = "aot", feature = "jit"))]
-fn bytecode_function_is_sync_safe(
-    module: &Module,
-    func_id: usize,
-    visiting: &mut std::collections::HashSet<usize>,
-) -> bool {
-    if !visiting.insert(func_id) {
-        return true;
-    }
-    let Some(func) = module.functions.get(func_id) else {
-        return false;
-    };
-    let Ok(instrs) = crate::jit::analysis::decoder::decode_function(&func.code) else {
-        return false;
-    };
-    for instr in instrs {
-        match instr.opcode {
-            Opcode::Await
-            | Opcode::WaitAll
-            | Opcode::Sleep
-            | Opcode::Yield
-            | Opcode::KernelCall
-            | Opcode::Spawn
-            | Opcode::SpawnClosure
-            | Opcode::CallMethodExact
-            | Opcode::OptionalCallMethodExact
-            | Opcode::CallMethodShape
-            | Opcode::OptionalCallMethodShape
-            | Opcode::CallConstructor
-            | Opcode::ConstructType
-            | Opcode::CallSuper => return false,
-            Opcode::Call | Opcode::CallStatic => match instr.operands {
-                Operands::Call {
-                    func_index: 0xFFFF_FFFF,
-                    ..
-                } => return false,
-                Operands::Call { func_index, .. } => {
-                    if !bytecode_function_is_sync_safe(module, func_index as usize, visiting) {
-                        return false;
-                    }
-                }
-                _ => return false,
-            },
-            _ => {}
-        }
-    }
-    true
-}
-
 /// Lift all functions in a bytecode module through the JIT pipeline.
 ///
 /// For each function in the module:
@@ -291,10 +245,9 @@ pub fn lift_bytecode_module(module: &Module) -> Result<Vec<LiftedFunction>, Byte
         .iter()
         .enumerate()
         .map(|(idx, _)| {
-            let mut visiting = std::collections::HashSet::new();
             (
                 idx as u32,
-                bytecode_function_is_sync_safe(module, idx, &mut visiting),
+                bytecode_function_support(CompiledBackendKind::Aot, module, idx).is_sync_safe,
             )
         })
         .collect::<FxHashMap<_, _>>();
@@ -851,7 +804,7 @@ impl LiftedFunction {
         reg_state: &mut FxHashMap<Reg, ExactLayout>,
         local_state: &mut LocalLayoutState,
         global_state: &mut FxHashMap<u32, ExactLayout>,
-    ) {
+    ) -> Result<(), AotError> {
         let reg_layout =
             |reg: Reg, reg_state: &FxHashMap<Reg, ExactLayout>| reg_state.get(&reg).copied();
         match instr {
@@ -1248,12 +1201,11 @@ impl LiftedFunction {
                     .unwrap_or_default(),
             }),
             _ => {
-                if let Some(sm_instr) = map_jit_instr_to_sm(instr) {
-                    out.push(sm_instr);
-                }
+                out.push(map_jit_instr_to_sm(instr)?);
             }
         }
         self.update_layout_tracking(reg_state, local_state, global_state, instr);
+        Ok(())
     }
 }
 
@@ -1322,42 +1274,37 @@ impl AotCompilable for LiftedFunction {
                 self.func_index, self.name, block_entry_states
             );
         }
-        Ok(self
-            .jit_func
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(idx, jit_block)| {
-                let mut instructions = Vec::new();
-                let mut next_temp = self.jit_func.next_reg + 100 + (idx as u32 * 32);
-                let mut reg_state = FxHashMap::default();
-                let mut local_state = block_entry_states
-                    .get(idx)
-                    .cloned()
-                    .unwrap_or_else(|| LocalLayoutState::new(self.local_slot_count()));
-                let mut global_state = FxHashMap::default();
+        let mut blocks = Vec::with_capacity(self.jit_func.blocks.len());
+        for (idx, jit_block) in self.jit_func.blocks.iter().enumerate() {
+            let mut instructions = Vec::new();
+            let mut next_temp = self.jit_func.next_reg + 100 + (idx as u32 * 32);
+            let mut reg_state = FxHashMap::default();
+            let mut local_state = block_entry_states
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| LocalLayoutState::new(self.local_slot_count()));
+            let mut global_state = FxHashMap::default();
 
-                for instr in &jit_block.instrs {
-                    self.emit_instrs_for_block(
-                        &mut instructions,
-                        instr,
-                        &mut next_temp,
-                        &mut reg_state,
-                        &mut local_state,
-                        &mut global_state,
-                    );
-                }
+            for instr in &jit_block.instrs {
+                self.emit_instrs_for_block(
+                    &mut instructions,
+                    instr,
+                    &mut next_temp,
+                    &mut reg_state,
+                    &mut local_state,
+                    &mut global_state,
+                )?;
+            }
 
-                let terminator = map_jit_terminator(&jit_block.terminator);
-
-                SmBlock {
-                    id: SmBlockId(idx as u32),
-                    kind: SmBlockKind::Body,
-                    instructions,
-                    terminator,
-                }
-            })
-            .collect())
+            let terminator = map_jit_terminator(&jit_block.terminator);
+            blocks.push(SmBlock {
+                id: SmBlockId(idx as u32),
+                kind: SmBlockKind::Body,
+                instructions,
+                terminator,
+            });
+        }
+        Ok(blocks)
     }
 
     #[cfg(not(all(feature = "aot", feature = "jit")))]
@@ -1432,8 +1379,8 @@ fn sm_block_successors(block: &SmBlock) -> Vec<SmBlockId> {
 
 /// Map a JitInstr to SmInstr (when JIT feature is enabled)
 #[cfg(all(feature = "aot", feature = "jit"))]
-fn map_jit_instr_to_sm(instr: &JitInstr) -> Option<SmInstr> {
-    Some(match instr {
+fn map_jit_instr_to_sm(instr: &JitInstr) -> Result<SmInstr, AotError> {
+    Ok(match instr {
         // Constants
         JitInstr::ConstI32 { dest, value } => SmInstr::ConstI32 {
             dest: dest.0,
@@ -1480,6 +1427,12 @@ fn map_jit_instr_to_sm(instr: &JitInstr) -> Option<SmInstr> {
             left: left.0,
             right: right.0,
         },
+        JitInstr::IPow { dest, left, right } => SmInstr::I32BinOp {
+            dest: dest.0,
+            op: SmI32BinOp::Pow,
+            left: left.0,
+            right: right.0,
+        },
 
         // Float arithmetic
         JitInstr::FAdd { dest, left, right } => SmInstr::F64BinOp {
@@ -1491,6 +1444,18 @@ fn map_jit_instr_to_sm(instr: &JitInstr) -> Option<SmInstr> {
         JitInstr::FSub { dest, left, right } => SmInstr::F64BinOp {
             dest: dest.0,
             op: SmF64BinOp::Sub,
+            left: left.0,
+            right: right.0,
+        },
+        JitInstr::FMod { dest, left, right } => SmInstr::F64BinOp {
+            dest: dest.0,
+            op: SmF64BinOp::Mod,
+            left: left.0,
+            right: right.0,
+        },
+        JitInstr::FPow { dest, left, right } => SmInstr::F64BinOp {
+            dest: dest.0,
+            op: SmF64BinOp::Pow,
             left: left.0,
             right: right.0,
         },
@@ -1579,8 +1544,11 @@ fn map_jit_instr_to_sm(instr: &JitInstr) -> Option<SmInstr> {
             src: src.0,
         },
 
-        // For other instructions, use helper calls or stub with Unreachable
-        _ => return None, // Skip unsupported instructions for now
+        _ => {
+            return Err(AotError::UnsupportedInstruction(format!(
+                "unsupported lifted JIT instruction: {instr:?}"
+            )))
+        }
     })
 }
 
@@ -1732,6 +1700,54 @@ mod tests {
             &blocks[0].instructions[1],
             SmInstr::CallHelper {
                 helper: HelperCall::ObjectGetField,
+                ..
+            }
+        ));
+    }
+
+    #[cfg(all(feature = "aot", feature = "jit"))]
+    #[test]
+    fn test_map_jit_numeric_intrinsics_to_exact_sm_ops() {
+        use crate::jit::ir::instr::Reg;
+
+        let ipow = map_jit_instr_to_sm(&JitInstr::IPow {
+            dest: Reg(0),
+            left: Reg(1),
+            right: Reg(2),
+        })
+        .expect("ipow should map");
+        assert!(matches!(
+            ipow,
+            SmInstr::I32BinOp {
+                op: SmI32BinOp::Pow,
+                ..
+            }
+        ));
+
+        let fpow = map_jit_instr_to_sm(&JitInstr::FPow {
+            dest: Reg(0),
+            left: Reg(1),
+            right: Reg(2),
+        })
+        .expect("fpow should map");
+        assert!(matches!(
+            fpow,
+            SmInstr::F64BinOp {
+                op: SmF64BinOp::Pow,
+                ..
+            }
+        ));
+
+        let fmod = map_jit_instr_to_sm(&JitInstr::FMod {
+            dest: Reg(0),
+            left: Reg(1),
+            right: Reg(2),
+        })
+        .expect("fmod should map");
+        assert!(matches!(
+            fmod,
+            SmInstr::F64BinOp {
+                op: SmF64BinOp::Mod,
                 ..
             }
         ));

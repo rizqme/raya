@@ -21,9 +21,12 @@ use std::sync::OnceLock;
 
 use super::abi;
 use super::frame::{AotEntryFn, AotFrame, AotHelperTable, AotTaskContext};
+use crate::compiler::compiled_support::CompiledNumericIntrinsicOp;
 use crate::compiler::ir::{decode_kernel_op_id, KernelOp};
 use crate::compiler::Opcode;
-use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
+use crate::vm::abi::{
+    dispatch_compiled_numeric_intrinsic, native_to_value, value_to_native, EngineContext,
+};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::SharedVmState;
 use crate::vm::json::view::{js_classify, JSView};
@@ -1698,6 +1701,13 @@ unsafe extern "C" fn helper_load_f64_constant(value: f64) -> u64 {
     }
 }
 
+unsafe extern "C" fn helper_numeric_intrinsic(op_raw: u16, lhs_raw: u64, rhs_raw: u64) -> u64 {
+    let Some(op) = CompiledNumericIntrinsicOp::from_u16(op_raw) else {
+        return 0;
+    };
+    dispatch_compiled_numeric_intrinsic(op, lhs_raw, rhs_raw)
+}
+
 // =============================================================================
 // Helper table construction
 // =============================================================================
@@ -1745,6 +1755,7 @@ pub fn create_default_helper_table() -> AotHelperTable {
         load_string_constant: helper_load_string_constant,
         load_i32_constant: helper_load_i32_constant,
         load_f64_constant: helper_load_f64_constant,
+        numeric_intrinsic: helper_numeric_intrinsic,
     }
 }
 
@@ -1755,6 +1766,7 @@ pub fn create_default_helper_table() -> AotHelperTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::compiled_support::CompiledNumericIntrinsicOp;
     use crate::compiler::bytecode::{ClassDef, Module};
     use crate::vm::interpreter::SafepointCoordinator;
     use crate::vm::interpreter::SharedVmState;
@@ -1854,6 +1866,32 @@ mod tests {
 
             let eq = (table.generic_equals)(100, 100);
             assert_eq!(eq, 1);
+
+            let pow = (table.numeric_intrinsic)(CompiledNumericIntrinsicOp::I32Pow as u16, 2, 5);
+            assert_eq!(pow as i32, 32);
+        }
+    }
+
+    #[test]
+    fn test_numeric_intrinsic_helper_matches_runtime_semantics() {
+        unsafe {
+            let i32_pow =
+                helper_numeric_intrinsic(CompiledNumericIntrinsicOp::I32Pow as u16, 7, -1i64 as u64);
+            assert_eq!(i32_pow as i32, 0);
+
+            let f64_pow = helper_numeric_intrinsic(
+                CompiledNumericIntrinsicOp::F64Pow as u16,
+                9.0f64.to_bits(),
+                0.5f64.to_bits(),
+            );
+            assert_eq!(f64::from_bits(f64_pow), 3.0);
+
+            let f64_mod = helper_numeric_intrinsic(
+                CompiledNumericIntrinsicOp::F64Mod as u16,
+                7.5f64.to_bits(),
+                2.0f64.to_bits(),
+            );
+            assert_eq!(f64::from_bits(f64_mod), 1.5);
         }
     }
 

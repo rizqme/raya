@@ -4,10 +4,13 @@
 //! - wire safepoint + preemption helpers used by lowered machine-code branches
 //! - provide conservative runtime helpers for lowered machine-code branches
 
+use crate::compiler::compiled_support::{bytecode_function_support, CompiledBackendKind, CompiledNumericIntrinsicOp};
 use crate::compiler::ir::{decode_kernel_op_id, KernelOp};
 use crate::compiler::{Module, Opcode};
 use crate::jit::runtime::trampoline::{RuntimeContext, RuntimeHelperTable};
-use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
+use crate::vm::abi::{
+    dispatch_compiled_numeric_intrinsic, native_to_value, value_to_native, EngineContext,
+};
 use crate::vm::gc::GarbageCollector;
 use crate::vm::interpreter::{
     ClassRegistry, ExecutionFrame, Interpreter, ModuleRuntimeLayout, ReturnAction,
@@ -28,7 +31,7 @@ use crate::vm::value::Value;
 use crate::vm::VmError;
 use crossbeam_deque::Injector;
 use raya_sdk::NativeCallResult;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -214,6 +217,7 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
         object_get_shape_field: helper_object_get_shape_field,
         object_set_shape_field: helper_object_set_shape_field,
         string_len: helper_string_len,
+        numeric_intrinsic: helper_numeric_intrinsic,
     }
 }
 
@@ -669,64 +673,6 @@ fn jit_restore_task_state(
     jit_restore_task_exceptions(task, current_exception, snapshot.caught_exception);
 }
 
-fn jit_function_is_sync_safe(
-    module: &Module,
-    func_id: usize,
-    visiting: &mut FxHashSet<([u8; 32], usize)>,
-) -> bool {
-    let key = (module.checksum, func_id);
-    if !visiting.insert(key) {
-        return true;
-    }
-    let Some(func) = module.functions.get(func_id) else {
-        return false;
-    };
-    let Ok(instrs) = crate::jit::analysis::decoder::decode_function(&func.code) else {
-        return false;
-    };
-    for instr in instrs {
-        use crate::jit::analysis::decoder::Operands;
-        match instr.opcode {
-            Opcode::Await
-            | Opcode::WaitAll
-            | Opcode::Sleep
-            | Opcode::Yield
-            | Opcode::KernelCall
-            | Opcode::Spawn
-            | Opcode::SpawnClosure => return false,
-            Opcode::Call => match instr.operands {
-                Operands::Call {
-                    func_index: 0xFFFF_FFFF,
-                    ..
-                } => return false,
-                Operands::Call { func_index, .. } => {
-                    if !jit_function_is_sync_safe(module, func_index as usize, visiting) {
-                        return false;
-                    }
-                }
-                _ => return false,
-            },
-            Opcode::CallStatic => match instr.operands {
-                Operands::Call { func_index, .. } => {
-                    if !jit_function_is_sync_safe(module, func_index as usize, visiting) {
-                        return false;
-                    }
-                }
-                _ => return false,
-            },
-            Opcode::CallMethodExact
-            | Opcode::OptionalCallMethodExact
-            | Opcode::CallMethodShape
-            | Opcode::OptionalCallMethodShape
-            | Opcode::CallConstructor
-            | Opcode::ConstructType
-            | Opcode::CallSuper => return false,
-            _ => {}
-        }
-    }
-    true
-}
-
 enum JitNestedCallResult {
     Value(Value),
     Fallback,
@@ -936,11 +882,13 @@ fn jit_execute_sync_frame(
                 return_action,
             } => {
                 let callee_module = callee_module.unwrap_or_else(|| module.clone());
-                if !jit_function_is_sync_safe(
+                if !bytecode_function_support(
+                    CompiledBackendKind::Jit,
                     callee_module.as_ref(),
                     func_id,
-                    &mut FxHashSet::default(),
-                ) {
+                )
+                .is_sync_safe
+                {
                     finish_nested_call!(JitNestedCallResult::Fallback, false);
                 }
 
@@ -1311,6 +1259,13 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
     BackendCallResult::completed(Value::null())
 }
 
+unsafe extern "C" fn helper_numeric_intrinsic(op_raw: u16, lhs_raw: u64, rhs_raw: u64) -> u64 {
+    let Some(op) = CompiledNumericIntrinsicOp::from_u16(op_raw) else {
+        return 0;
+    };
+    dispatch_compiled_numeric_intrinsic(op, lhs_raw, rhs_raw)
+}
+
 unsafe extern "C" fn helper_interpreter_call(
     opcode_raw: u8,
     operand_u64: u64,
@@ -1477,11 +1432,13 @@ unsafe extern "C" fn helper_interpreter_call(
             return_action,
         } => {
             let callee_module = callee_module.unwrap_or_else(|| Arc::new(module.clone()));
-            if !jit_function_is_sync_safe(
+            if !bytecode_function_support(
+                CompiledBackendKind::Jit,
                 callee_module.as_ref(),
                 func_id,
-                &mut FxHashSet::default(),
-            ) {
+            )
+            .is_sync_safe
+            {
                 jit_raise_vm_error(
                     bridge,
                     VmError::RuntimeError(format!(
@@ -1830,6 +1787,7 @@ unsafe extern "C" fn helper_object_set_shape_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::compiled_support::CompiledNumericIntrinsicOp;
     use crate::compiler::bytecode::ClassDef;
     use crossbeam::channel::unbounded;
     use crossbeam_deque::Injector;
@@ -1907,6 +1865,29 @@ mod tests {
         };
         assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Completed);
         assert_eq!(result.payload, Value::i32(88).raw());
+    }
+
+    #[test]
+    fn jit_helper_numeric_intrinsic_matches_runtime_semantics() {
+        unsafe {
+            let i32_pow =
+                helper_numeric_intrinsic(CompiledNumericIntrinsicOp::I32Pow as u16, 3, 4);
+            assert_eq!(i32_pow as i32, 81);
+
+            let f64_pow = helper_numeric_intrinsic(
+                CompiledNumericIntrinsicOp::F64Pow as u16,
+                16.0f64.to_bits(),
+                0.5f64.to_bits(),
+            );
+            assert_eq!(f64::from_bits(f64_pow), 4.0);
+
+            let f64_mod = helper_numeric_intrinsic(
+                CompiledNumericIntrinsicOp::F64Mod as u16,
+                9.5f64.to_bits(),
+                2.0f64.to_bits(),
+            );
+            assert_eq!(f64::from_bits(f64_mod), 1.5);
+        }
     }
 
     #[test]

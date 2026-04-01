@@ -545,19 +545,17 @@ fn lift_instruction(
                 .push(JitInstr::StoreLocal { index: 1, value });
         }
         Opcode::GetArgCount => {
-            // GetArgCount doesn't have any runtime effect in JIT (it reads from call frame)
-            // For now, we'll treat it as a no-op since JIT has different semantics
-            // TODO: Implement proper GetArgCount support in JIT
+            return Err(LiftError::UnsupportedOpcode {
+                opcode: instr.opcode,
+                offset: instr.offset,
+            });
         }
         Opcode::LoadArgLocal => {
-            // LoadArgLocal loads from a dynamic local index
-            // For now, just push 0 as a placeholder
             let _index = stack.pop(instr.offset)?;
-            let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::ConstI32 { dest, value: 0 });
-            stack.push(dest);
+            return Err(LiftError::UnsupportedOpcode {
+                opcode: instr.opcode,
+                offset: instr.offset,
+            });
         }
 
         // ===== Integer Arithmetic =====

@@ -23,6 +23,7 @@ use super::statemachine::{
     HelperCall, SmBlock, SmBlockId, SmCmpOp, SmF64BinOp, SmI32BinOp, SmInstr, SmTerminator,
     StateMachineFunction,
 };
+use crate::compiler::compiled_support::CompiledNumericIntrinsicOp;
 
 // =============================================================================
 // Public API
@@ -461,6 +462,15 @@ impl LoweringCtx {
         Some(fn_ptr)
     }
 
+    fn load_numeric_intrinsic_fn_ptr(&self, builder: &mut FunctionBuilder<'_>) -> Value {
+        let combined_offset =
+            ctx_offsets::HELPERS + std::mem::offset_of!(AotHelperTable, numeric_intrinsic) as i32;
+        let cp = self.ctx_ptr(builder);
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), cp, combined_offset)
+    }
+
     /// Import a helper call signature and emit call_indirect.
     fn call_helper_indirect(
         &self,
@@ -471,6 +481,24 @@ impl LoweringCtx {
     ) -> ir::Inst {
         let sig_ref = builder.import_signature(sig);
         builder.ins().call_indirect(sig_ref, fn_ptr, args)
+    }
+
+    fn call_numeric_intrinsic(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        op: CompiledNumericIntrinsicOp,
+        lhs_raw: Value,
+        rhs_raw: Value,
+    ) -> Value {
+        let mut sig = ir::Signature::new(self.call_conv);
+        sig.params.push(AbiParam::new(types::I16));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let fn_ptr = self.load_numeric_intrinsic_fn_ptr(builder);
+        let op_raw = builder.ins().iconst(types::I16, op as i64);
+        let inst = self.call_helper_indirect(builder, fn_ptr, sig, &[op_raw, lhs_raw, rhs_raw]);
+        builder.inst_results(inst)[0]
     }
 
     // ---- Block lowering ----
@@ -961,10 +989,15 @@ impl LoweringCtx {
             SmI32BinOp::Div => builder.ins().sdiv(l, r),
             SmI32BinOp::Mod => builder.ins().srem(l, r),
             SmI32BinOp::Pow => {
-                // Integer pow: fall back to multiplication loop
-                // TODO: Call runtime helper for i32 pow
-                // For now, return left (placeholder)
-                l
+                let lhs_raw = builder.ins().sextend(types::I64, l);
+                let rhs_raw = builder.ins().sextend(types::I64, r);
+                let raw = self.call_numeric_intrinsic(
+                    builder,
+                    CompiledNumericIntrinsicOp::I32Pow,
+                    lhs_raw,
+                    rhs_raw,
+                );
+                builder.ins().ireduce(types::I32, raw)
             }
             SmI32BinOp::Shl => builder.ins().ishl(l, r),
             SmI32BinOp::Shr => builder.ins().sshr(l, r),
@@ -990,16 +1023,26 @@ impl LoweringCtx {
             SmF64BinOp::Mul => builder.ins().fmul(l, r),
             SmF64BinOp::Div => builder.ins().fdiv(l, r),
             SmF64BinOp::Mod => {
-                // f64 fmod: a - floor(a / b) * b
-                let div = builder.ins().fdiv(l, r);
-                let floored = builder.ins().floor(div);
-                let product = builder.ins().fmul(floored, r);
-                builder.ins().fsub(l, product)
+                let lhs_raw = builder.ins().bitcast(types::I64, MemFlags::new(), l);
+                let rhs_raw = builder.ins().bitcast(types::I64, MemFlags::new(), r);
+                let raw = self.call_numeric_intrinsic(
+                    builder,
+                    CompiledNumericIntrinsicOp::F64Mod,
+                    lhs_raw,
+                    rhs_raw,
+                );
+                builder.ins().bitcast(types::F64, MemFlags::new(), raw)
             }
             SmF64BinOp::Pow => {
-                // TODO: Call runtime libm pow helper
-                // For now, return left (placeholder)
-                l
+                let lhs_raw = builder.ins().bitcast(types::I64, MemFlags::new(), l);
+                let rhs_raw = builder.ins().bitcast(types::I64, MemFlags::new(), r);
+                let raw = self.call_numeric_intrinsic(
+                    builder,
+                    CompiledNumericIntrinsicOp::F64Pow,
+                    lhs_raw,
+                    rhs_raw,
+                );
+                builder.ins().bitcast(types::F64, MemFlags::new(), raw)
             }
         }
     }
@@ -1035,7 +1078,7 @@ impl LoweringCtx {
             return Ok(());
         }
 
-        // Compound operations: emit specialized code or placeholder
+        // Compound operations must either be lowered exactly or rejected.
         match helper {
             HelperCall::GenericAdd
             | HelperCall::GenericSub
@@ -1068,6 +1111,8 @@ impl LoweringCtx {
             | HelperCall::ConstructType
             | HelperCall::Typeof
             | HelperCall::StringCompare
+            | HelperCall::GetArgCount
+            | HelperCall::LoadArgLocal
             | HelperCall::AwaitTask
             | HelperCall::AwaitAll
             | HelperCall::YieldTask
@@ -1075,13 +1120,9 @@ impl LoweringCtx {
             | HelperCall::SpawnClosure
             | HelperCall::SetupTry
             | HelperCall::EndTry => {
-                // TODO: Implement compound operations via extended helper table
-                // For now, produce null for dest
-                if let Some(d) = dest {
-                    self.ensure_reg(builder, d, types::I64);
-                    let null = abi::emit_null(builder);
-                    self.def_reg(builder, d, null);
-                }
+                return Err(LoweringError::Unsupported(format!(
+                    "compound helper requires exact compiled support: {helper:?}"
+                )));
             }
 
             // Direct table entries are handled above
@@ -1808,11 +1849,11 @@ pub mod ctx_offsets {
 }
 
 /// Number of entries in the AotHelperTable.
-pub const HELPER_TABLE_ENTRY_COUNT: usize = 38;
+pub const HELPER_TABLE_ENTRY_COUNT: usize = 39;
 
 /// Size of the AotHelperTable in bytes (for computing offsets after it).
 pub const fn helper_table_size() -> usize {
-    // 38 function pointers × 8 bytes each
+    // 39 function pointers × 8 bytes each
     HELPER_TABLE_ENTRY_COUNT * 8
 }
 

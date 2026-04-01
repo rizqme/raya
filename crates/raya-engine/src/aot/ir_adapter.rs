@@ -745,22 +745,16 @@ impl<'a> IrFunctionAdapter<'a> {
                 });
             }
             IrInstr::LoadArgCount { dest } => {
-                // LoadArgCount reads the argument count from the call frame
-                // For AOT, this needs to call a helper to read from the frame
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::GetArgCount,
-                    args: vec![],
-                });
+                return Err(AotError::UnsupportedInstruction(format!(
+                    "LoadArgCount is unsupported in compiled backends (dest r{})",
+                    dest.id.0
+                )));
             }
             IrInstr::LoadArgLocal { dest, index } => {
-                // LoadArgLocal loads from a dynamic local index
-                // For AOT, this needs to call a helper
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::LoadArgLocal,
-                    args: vec![Self::reg(index)],
-                });
+                return Err(AotError::UnsupportedInstruction(format!(
+                    "LoadArgLocal is unsupported in compiled backends (dest r{}, index r{})",
+                    dest.id.0, index.id.0
+                )));
             }
             IrInstr::PopToLocal { index } => {
                 // PopToLocal is for catch parameters — load resume value

@@ -152,4 +152,6 @@ pub struct RuntimeHelperTable {
         unsafe extern "C" fn(u64, u64, u32, u64, u32, *const (), *mut ()) -> i8,
     /// String length: (string_val, shared_state) -> len or i32::MIN fallback sentinel
     pub string_len: unsafe extern "C" fn(u64, *mut ()) -> i32,
+    /// Execute an exact numeric intrinsic for compiled backends.
+    pub numeric_intrinsic: unsafe extern "C" fn(u16, u64, u64) -> u64,
 }

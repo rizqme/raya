@@ -223,6 +223,9 @@ pub struct AotHelperTable {
 
     /// Load an f64 constant: (value) -> NaN-boxed f64
     pub load_f64_constant: unsafe extern "C" fn(f64) -> u64,
+
+    /// Execute an exact numeric intrinsic for compiled backends.
+    pub numeric_intrinsic: unsafe extern "C" fn(u16, u64, u64) -> u64,
 }
 
 // Safety: AotFrame is allocated per-task and only accessed from a single worker thread at a time.

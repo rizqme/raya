@@ -13,12 +13,15 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::abi;
+use crate::compiler::compiled_support::CompiledNumericIntrinsicOp;
 use crate::compiler::Opcode;
 use crate::jit::ir::instr::{JitBlockId, JitFunction, JitInstr, JitTerminator, Reg};
 use crate::jit::runtime::helpers::{
     JIT_SHAPE_FIELD_FALLBACK_SENTINEL, JIT_STRING_LEN_FALLBACK_SENTINEL,
 };
-use crate::jit::runtime::trampoline::{JitExitKind, JIT_EXIT_MAX_NATIVE_ARGS};
+use crate::jit::runtime::trampoline::{
+    JitExitKind, RuntimeHelperTable, JIT_EXIT_MAX_NATIVE_ARGS,
+};
 use crate::vm::suspend::{BackendCallStatus, SuspendTag};
 
 /// State maintained during lowering of a single function
@@ -59,6 +62,8 @@ pub struct LoweringContext<'a> {
     sig_interpreter_call: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.string_len
     sig_string_len: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.numeric_intrinsic
+    sig_numeric_intrinsic: Option<ir::SigRef>,
 }
 
 /// The five parameters of the JIT entry function ABI
@@ -174,6 +179,7 @@ impl<'a> LoweringContext<'a> {
             sig_object_is_nominal: None,
             sig_interpreter_call: None,
             sig_string_len: None,
+            sig_numeric_intrinsic: None,
         };
 
         // Declare all registers as Cranelift variables
@@ -402,11 +408,25 @@ impl<'a> LoweringContext<'a> {
                 self.def_reg(builder, *dest, result);
             }
             JitInstr::IPow { dest, left, right } => {
-                // No native pow for integers in Cranelift; emit a loop.
-                // For now, just pass through as multiply (placeholder)
                 let l = self.use_reg(builder, *left);
                 let r = self.use_reg(builder, *right);
-                let result = builder.ins().imul(l, r);
+                let lhs_raw = builder.ins().sextend(types::I64, l);
+                let rhs_raw = builder.ins().sextend(types::I64, r);
+                let fn_ptr = builder.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    self.params.ctx_ptr,
+                    24 + std::mem::offset_of!(RuntimeHelperTable, numeric_intrinsic) as i32,
+                );
+                let sig = self.numeric_intrinsic_sig(builder);
+                let op = builder
+                    .ins()
+                    .iconst(types::I16, CompiledNumericIntrinsicOp::I32Pow as i64);
+                let call = builder
+                    .ins()
+                    .call_indirect(sig, fn_ptr, &[op, lhs_raw, rhs_raw]);
+                let raw = builder.inst_results(call)[0];
+                let result = builder.ins().ireduce(types::I32, raw);
                 self.def_reg(builder, *dest, result);
             }
 
@@ -484,17 +504,48 @@ impl<'a> LoweringContext<'a> {
                 self.def_reg(builder, *dest, result);
             }
             JitInstr::FPow { dest, left, right } => {
-                // No native fpow in Cranelift; placeholder — would call runtime
                 let l = self.use_reg(builder, *left);
                 let r = self.use_reg(builder, *right);
-                let result = builder.ins().fmul(l, r);
+                let lhs_raw = builder.ins().bitcast(types::I64, MemFlags::new(), l);
+                let rhs_raw = builder.ins().bitcast(types::I64, MemFlags::new(), r);
+                let fn_ptr = builder.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    self.params.ctx_ptr,
+                    24 + std::mem::offset_of!(RuntimeHelperTable, numeric_intrinsic) as i32,
+                );
+                let sig = self.numeric_intrinsic_sig(builder);
+                let op = builder
+                    .ins()
+                    .iconst(types::I16, CompiledNumericIntrinsicOp::F64Pow as i64);
+                let call = builder
+                    .ins()
+                    .call_indirect(sig, fn_ptr, &[op, lhs_raw, rhs_raw]);
+                let raw = builder.inst_results(call)[0];
+                let result = builder.ins().bitcast(types::F64, MemFlags::new(), raw);
                 self.def_reg(builder, *dest, result);
             }
             JitInstr::FMod { dest, left, right } => {
-                // No native fmod in Cranelift; placeholder — would call runtime fmod
                 let l = self.use_reg(builder, *left);
-                let _r = self.use_reg(builder, *right);
-                self.def_reg(builder, *dest, l);
+                let r = self.use_reg(builder, *right);
+                let lhs_raw = builder.ins().bitcast(types::I64, MemFlags::new(), l);
+                let rhs_raw = builder.ins().bitcast(types::I64, MemFlags::new(), r);
+                let fn_ptr = builder.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    self.params.ctx_ptr,
+                    24 + std::mem::offset_of!(RuntimeHelperTable, numeric_intrinsic) as i32,
+                );
+                let sig = self.numeric_intrinsic_sig(builder);
+                let op = builder
+                    .ins()
+                    .iconst(types::I16, CompiledNumericIntrinsicOp::F64Mod as i64);
+                let call = builder
+                    .ins()
+                    .call_indirect(sig, fn_ptr, &[op, lhs_raw, rhs_raw]);
+                let raw = builder.inst_results(call)[0];
+                let result = builder.ins().bitcast(types::F64, MemFlags::new(), raw);
+                self.def_reg(builder, *dest, result);
             }
 
             // ===== Integer Comparison =====
@@ -2062,10 +2113,8 @@ impl<'a> LoweringContext<'a> {
                 }
             }
 
-            // ===== Everything else: unsupported for now =====
+            // ===== Everything else: unsupported =====
             _ => {
-                // Unsupported instructions get a placeholder
-                // These helper results are handled explicitly by the compiled runtime ABI.
                 return Err(LowerError::UnsupportedInstruction(format!("{:?}", instr)));
             }
         }
@@ -2183,6 +2232,20 @@ impl<'a> LoweringContext<'a> {
         sig.returns.push(AbiParam::new(types::I32)); // string len or fallback sentinel
         let sig_ref = builder.func.import_signature(sig);
         self.sig_string_len = Some(sig_ref);
+        sig_ref
+    }
+
+    fn numeric_intrinsic_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_numeric_intrinsic {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I16));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_numeric_intrinsic = Some(sig_ref);
         sig_ref
     }
 
