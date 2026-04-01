@@ -102,7 +102,11 @@ pub fn prewarm_module<B: CodegenBackend>(
 mod tests {
     use super::*;
     use crate::compiler::bytecode::{ConstantPool, Function, Metadata, Opcode};
-    use crate::jit::backend::StubBackend;
+    use crate::jit::backend::CraneliftBackend;
+
+    fn test_backend() -> CraneliftBackend {
+        CraneliftBackend::host().expect("host cranelift backend")
+    }
 
     fn make_module(functions: Vec<Function>) -> Module {
         Module {
@@ -189,7 +193,7 @@ mod tests {
             },
         ]);
 
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
         // Straight-line arithmetic scores ~15.8: 12 ConstI32(1.2) + 4 Iadd(4.0) + 4 Imul(4.0) + 3 Iadd(3.0) + Return
         let mut config = PrewarmConfig::default();
         config.analyzer.min_score = 5.0;
@@ -204,7 +208,7 @@ mod tests {
     #[test]
     fn test_prewarm_empty_module() {
         let module = make_module(vec![]);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
         let config = PrewarmConfig::default();
         let result = prewarm_module(&module, &config, &pipeline);
 
@@ -243,7 +247,7 @@ mod tests {
         }
 
         let module = make_module(functions);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
         let mut config = PrewarmConfig::default();
         config.max_functions = 5;
 

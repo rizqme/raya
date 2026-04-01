@@ -67,7 +67,6 @@ pub enum RuntimeHelper {
     NativeCallDispatch,
     InterpreterCall,
     ThrowException,
-    Deoptimize,
     SpawnTask,
     AwaitTask,
     StringConcat,
@@ -98,17 +97,6 @@ pub struct StackMapEntry {
     pub live_pointers: Vec<PointerLocation>,
 }
 
-/// Information needed to resume the interpreter after deoptimization
-#[derive(Debug, Clone)]
-pub struct DeoptInfo {
-    /// Code offset where deopt can occur
-    pub code_offset: usize,
-    /// Bytecode offset to resume at
-    pub bytecode_offset: usize,
-    /// Map from machine locations to local variable indices
-    pub register_map: Vec<(PointerLocation, u16)>,
-}
-
 /// Context information about the module being compiled
 pub struct ModuleContext<'a> {
     /// The bytecode module
@@ -126,8 +114,6 @@ pub struct CompiledCode {
     pub entry_offset: usize,
     /// GC stack maps for safepoints
     pub stack_maps: Vec<StackMapEntry>,
-    /// Deoptimization state at potential deopt points
-    pub deopt_info: Vec<DeoptInfo>,
     /// Relocations to patch
     pub relocations: Vec<Relocation>,
 }
@@ -142,8 +128,6 @@ pub struct ExecutableCode {
     pub entry_offset: usize,
     /// GC stack maps
     pub stack_maps: Vec<StackMapEntry>,
-    /// Deoptimization info
-    pub deopt_info: Vec<DeoptInfo>,
 }
 
 // Safety: ExecutableCode is Send+Sync because the code_ptr points to

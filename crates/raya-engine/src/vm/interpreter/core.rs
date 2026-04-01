@@ -2148,16 +2148,6 @@ impl<'a> Interpreter<'a> {
                                     can_resume = true;
                                 }
                             }
-                            x if x == SuspendTag::InterpreterBoundary as u32 =>
-                            {
-                                if let Some(vals) =
-                                    Self::materialize_interpreter_resume_stack(&exit_info)
-                                {
-                                    resume_ip = Some(exit_info.bytecode_offset as usize);
-                                    operand_values = Some(vals);
-                                    can_resume = true;
-                                }
-                            }
                             _ => {}
                         }
                     }
@@ -2713,20 +2703,6 @@ impl<'a> Interpreter<'a> {
                                                     &self.jit_telemetry,
                                                     resumed,
                                                 );
-                                            }
-                                            x if x == SuspendTag::InterpreterBoundary as u32 =>
-                                            {
-                                                if let Some(vals) =
-                                                    Self::materialize_interpreter_resume_stack(
-                                                        &exit_info,
-                                                    )
-                                                {
-                                                    forced_callee_ip =
-                                                        Some(exit_info.bytecode_offset as usize);
-                                                    forced_callee_extra_locals =
-                                                        Some(locals_buf.clone());
-                                                    forced_callee_operand_values = Some(vals);
-                                                }
                                             }
                                             _ => {}
                                         }

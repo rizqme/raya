@@ -297,12 +297,6 @@ fn replace_reg_uses(instr: &mut JitInstr, subs: &rustc_hash::FxHashMap<Reg, Reg>
             }
         }
 
-        JitInstr::InterpreterBoundary { stack, .. } => {
-            for reg in stack.iter_mut() {
-                sub(reg, subs);
-            }
-        }
-
         // For remaining complex instructions, we skip replacement for simplicity.
         // A production optimizer would handle all instruction variants.
         _ => {}

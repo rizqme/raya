@@ -342,28 +342,6 @@ impl fmt::Display for JitInstr {
             JitInstr::SLen { dest, string, .. } => write!(f, "{} = slen {}", dest, string),
             JitInstr::ToString { dest, value } => write!(f, "{} = tostring {}", dest, value),
 
-            // Interpreter boundary
-            JitInstr::InterpreterBoundary {
-                dest,
-                stack,
-                bytecode_offset,
-            } => {
-                let rendered = stack
-                    .iter()
-                    .map(|reg| reg.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if let Some(dest) = dest {
-                    write!(
-                        f,
-                        "{} = boundary.resume @{} [{}]",
-                        dest, bytecode_offset, rendered
-                    )
-                } else {
-                    write!(f, "boundary.resume @{} [{}]", bytecode_offset, rendered)
-                }
-            }
-
             // Calls
             JitInstr::Call {
                 dest,
@@ -689,9 +667,6 @@ impl fmt::Display for JitTerminator {
             JitTerminator::Return(None) => write!(f, "ret void"),
             JitTerminator::Throw(reg) => write!(f, "throw {}", reg),
             JitTerminator::Unreachable => write!(f, "unreachable"),
-            JitTerminator::Deoptimize { reason, state } => {
-                write!(f, "deoptimize {:?} @{}", reason, state.bytecode_offset)
-            }
             JitTerminator::None => write!(f, "<no terminator>"),
         }
     }

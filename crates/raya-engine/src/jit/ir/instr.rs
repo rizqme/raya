@@ -28,29 +28,9 @@ impl std::fmt::Display for JitBlockId {
     }
 }
 
-/// Mapping from a JIT register to a local variable slot (for deoptimization)
+/// Mapping from a JIT register to a local variable slot.
 #[derive(Debug, Clone, Copy)]
 pub struct LocalSlot(pub u16);
-
-/// Why we need to deoptimize back to the interpreter
-#[derive(Debug, Clone)]
-pub enum DeoptReason {
-    /// Unsupported opcode encountered during lifting
-    UnsupportedOpcode(u8),
-    /// Type assumption violated
-    TypeGuardFailed,
-    /// Concurrency operation (must exit to scheduler)
-    ConcurrencyOp,
-}
-
-/// State needed to resume interpretation after deoptimization
-#[derive(Debug, Clone)]
-pub struct DeoptState {
-    /// Bytecode offset to resume at
-    pub bytecode_offset: usize,
-    /// Map JIT registers back to local variable slots
-    pub register_map: Vec<(Reg, LocalSlot)>,
-}
 
 /// A JIT IR instruction
 #[derive(Debug, Clone)]
@@ -498,13 +478,6 @@ pub enum JitInstr {
         value: Reg,
     },
 
-    // ===== Interpreter Resume Boundary =====
-    InterpreterBoundary {
-        dest: Option<Reg>,
-        stack: Vec<Reg>,
-        bytecode_offset: u32,
-    },
-
     // ===== Function Calls =====
     Call {
         dest: Option<Reg>,
@@ -868,9 +841,6 @@ impl JitInstr {
             | JitInstr::SLen { dest, .. }
             | JitInstr::ToString { dest, .. } => Some(*dest),
 
-            // Interpreter boundary
-            JitInstr::InterpreterBoundary { dest, .. } => *dest,
-
             // Calls
             JitInstr::Call { dest, .. }
             | JitInstr::CallMethodExact { dest, .. }
@@ -1068,11 +1038,6 @@ pub enum JitTerminator {
     Throw(Reg),
     /// Unreachable code (after trap, etc.)
     Unreachable,
-    /// Exit to interpreter for unsupported operations
-    Deoptimize {
-        reason: DeoptReason,
-        state: DeoptState,
-    },
     /// Placeholder terminator (not yet assigned)
     None,
 }

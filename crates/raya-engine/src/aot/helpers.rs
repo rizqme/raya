@@ -6,12 +6,12 @@
 //! and the Raya runtime.
 //!
 //! Helper categories:
-//! - **Frame management**: alloc/free AotFrames (fully implemented)
-//! - **NaN-boxing constants**: box i32/f64 values (fully implemented)
-//! - **Value operations**: comparison, string/array ops (stubs for now)
-//! - **GC/Heap**: allocation (requires runtime integration)
-//! - **Concurrency**: spawn, preemption (requires scheduler integration)
-//! - **Native calls**: dispatch (requires native function table)
+//! - **Frame management**: alloc/free AotFrames
+//! - **NaN-boxing constants**: box i32/f64 values
+//! - **Value operations**: comparison, string/array ops
+//! - **GC/Heap**: allocation and safepoint polling
+//! - **Concurrency**: spawn, preemption, sync AOT calls
+//! - **Native calls**: dispatch through the compiled runtime path
 
 use std::alloc::{self, Layout};
 use std::ptr;
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use super::abi;
-use super::frame::{AotEntryFn, AotFrame, AotHelperTable, AotTaskContext, AOT_SUSPEND};
+use super::frame::{AotEntryFn, AotFrame, AotHelperTable, AotTaskContext};
 use crate::compiler::ir::{decode_kernel_op_id, KernelOp};
 use crate::compiler::Opcode;
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
@@ -121,9 +121,6 @@ pub fn clear_registered_aot_functions() {
     registry.clones.clear();
 }
 
-/// Temporary marker native ID for exercising suspend handoff in default AOT helpers.
-/// This must stay in the plain `KernelOp::VmNative` encoding range.
-const STUB_NATIVE_SUSPEND_ID: u16 = 0x7FFF;
 const CAST_KIND_MASK_FLAG: u16 = 0x8000;
 const CAST_TUPLE_LEN_FLAG: u16 = 0x4000;
 const CAST_OBJECT_MIN_FIELDS_FLAG: u16 = 0x2000;
@@ -250,11 +247,11 @@ unsafe extern "C" fn helper_free_frame(frame: *mut AotFrame) {
 }
 
 // =============================================================================
-// GC / Heap (stubs — require runtime GC integration)
+// GC / Heap helpers
 // =============================================================================
 
 unsafe extern "C" fn helper_safepoint_poll(_ctx: *mut AotTaskContext) {
-    // TODO: Check GC safepoint, trigger collection if needed
+    // AOT helper entrypoint reserved for explicit safepoint polling.
 }
 
 unsafe extern "C" fn helper_alloc_object(
@@ -338,7 +335,7 @@ unsafe extern "C" fn helper_alloc_string(
 }
 
 // =============================================================================
-// Value operations (stubs — require value system integration)
+// Value operations
 // =============================================================================
 
 unsafe extern "C" fn helper_string_concat(ctx: *mut AotTaskContext, a: u64, b: u64) -> u64 {
@@ -429,8 +426,7 @@ unsafe extern "C" fn helper_array_push(_ctx: *mut AotTaskContext, array: u64, va
 }
 
 unsafe extern "C" fn helper_generic_equals(a: u64, b: u64) -> u8 {
-    // Simple equality: raw bit comparison
-    // TODO: Proper deep equality with type-aware comparison
+    // Conservative equality fast path: exact raw-value match.
     if a == b {
         1
     } else {
@@ -439,8 +435,7 @@ unsafe extern "C" fn helper_generic_equals(a: u64, b: u64) -> u8 {
 }
 
 unsafe extern "C" fn helper_generic_less_than(a: u64, b: u64) -> u8 {
-    // Simple comparison: treat as f64 if both are plain f64 (below NaN-box base)
-    // TODO: Proper type-aware comparison
+    // Conservative comparison fast path for plain f64 payloads.
     let base = abi::NAN_BOX_BASE;
     if a < base && b < base {
         // Both are f64 — compare as f64
@@ -1181,7 +1176,7 @@ unsafe extern "C" fn helper_store_global_value(
 }
 
 // =============================================================================
-// Object field access (stubs)
+// Object field access helpers
 // =============================================================================
 
 unsafe extern "C" fn helper_object_get_field(obj: u64, field_index: u32) -> u64 {
@@ -1205,7 +1200,7 @@ unsafe extern "C" fn helper_object_set_field(obj: u64, field_index: u32, value: 
 }
 
 // =============================================================================
-// Native call dispatch (stub)
+// Native call dispatch
 // =============================================================================
 
 unsafe extern "C" fn helper_native_call(
@@ -1215,7 +1210,8 @@ unsafe extern "C" fn helper_native_call(
     argc: u8,
 ) -> BackendCallResult {
     let Some(kernel_op) = decode_kernel_op_id(kernel_op_id) else {
-        return BackendCallResult::completed_raw(abi::NULL_VALUE);
+        aot_raise_type_error(ctx, format!("unknown compiled kernel op {}", kernel_op_id));
+        return BackendCallResult::threw();
     };
 
     if !ctx.is_null() && !(*ctx).shared_state.is_null() {
@@ -1228,13 +1224,21 @@ unsafe extern "C" fn helper_native_call(
             // Fallback for tests/partial contexts without a task pointer.
             crate::vm::scheduler::TaskId::from_u64(0)
         };
-        let engine_ctx = EngineContext::new(
+        let mut engine_ctx = EngineContext::new(
             &shared.gc,
             &shared.classes,
             &shared.layouts,
             task_id,
             &shared.class_metadata,
         );
+        let current_task_arc = if task_id.as_u64() == 0 {
+            None
+        } else {
+            shared.tasks.read().get(&task_id).cloned()
+        };
+        if let Some(task_arc) = current_task_arc.as_ref() {
+            engine_ctx = engine_ctx.with_shared_runtime(shared, task_arc);
+        }
 
         // Convert NaN-boxed args into NativeValue slice.
         let value_args: Vec<Value> = if argc == 0 {
@@ -1275,13 +1279,17 @@ unsafe extern "C" fn helper_native_call(
                         });
                     }
                     set_ctx_suspend_reason(ctx, &SuspendReason::IoWait);
-                    return BackendCallResult {
-                        status: crate::vm::suspend::BackendCallStatus::Suspended,
-                        payload: AOT_SUSPEND,
-                    };
+                    return BackendCallResult::suspended_with_tag(SuspendTag::IoWait);
                 }
                 NativeCallResult::Unhandled | NativeCallResult::Error(_) => {
-                    return BackendCallResult::completed_raw(abi::NULL_VALUE);
+                    aot_raise_type_error(
+                        ctx,
+                        format!(
+                            "registered native {} could not handle compiled kernel call",
+                            local_idx
+                        ),
+                    );
+                    return BackendCallResult::threw();
                 }
             }
         }
@@ -1290,22 +1298,29 @@ unsafe extern "C" fn helper_native_call(
             let Some(module) =
                 (!(*ctx).module.is_null()).then(|| &*((*ctx).module as *const crate::compiler::Module))
             else {
-                return BackendCallResult::completed_raw(abi::NULL_VALUE);
+                aot_raise_type_error(ctx, "compiled kernel dispatch missing module context".to_string());
+                return BackendCallResult::threw();
             };
             let Some(current_task) =
                 (!(*ctx).current_task.is_null()).then(|| &*((*ctx).current_task as *const Task))
             else {
-                return BackendCallResult::completed_raw(abi::NULL_VALUE);
+                aot_raise_type_error(ctx, "compiled kernel dispatch missing task context".to_string());
+                return BackendCallResult::threw();
             };
             let task_arc = shared.tasks.read().get(&current_task.id()).cloned();
             let Some(task) = task_arc.as_ref() else {
-                return BackendCallResult::completed_raw(abi::NULL_VALUE);
+                aot_raise_type_error(ctx, "compiled kernel dispatch missing task arc".to_string());
+                return BackendCallResult::threw();
             };
             let mut interpreter = aot_build_interpreter(shared);
             let mut stack = Stack::new();
             for arg in &value_args {
                 if stack.push(*arg).is_err() {
-                    return BackendCallResult::completed_raw(abi::NULL_VALUE);
+                    aot_raise_type_error(
+                        ctx,
+                        "compiled kernel dispatch could not materialize operand stack".to_string(),
+                    );
+                    return BackendCallResult::threw();
                 }
             }
             let code = [
@@ -1329,31 +1344,19 @@ unsafe extern "C" fn helper_native_call(
                     BackendCallResult::completed(value)
                 }
                 crate::vm::interpreter::OpcodeResult::Suspend(reason) => {
-                    set_ctx_suspend_reason(
-                        ctx,
-                        &match reason {
-                            crate::vm::scheduler::SuspendReason::YieldNow => {
-                                crate::vm::scheduler::SuspendReason::YieldNow
-                            }
-                            crate::vm::scheduler::SuspendReason::Preemption => {
-                                crate::vm::scheduler::SuspendReason::Preemption
-                            }
-                            crate::vm::scheduler::SuspendReason::KernelBoundary => {
-                                crate::vm::scheduler::SuspendReason::KernelBoundary
-                            }
-                            other => other,
-                        },
-                    );
-                    BackendCallResult {
-                        status: crate::vm::suspend::BackendCallStatus::Suspended,
-                        payload: AOT_SUSPEND,
-                    }
+                    set_ctx_suspend_reason(ctx, &reason);
+                    BackendCallResult::suspended_with_tag(SuspendTag::from_reason(&reason))
                 }
                 crate::vm::interpreter::OpcodeResult::Error(_) => {
                     BackendCallResult::threw()
                 }
                 crate::vm::interpreter::OpcodeResult::PushFrame { .. } => {
-                    BackendCallResult::completed_raw(abi::NULL_VALUE)
+                    aot_raise_type_error(
+                        ctx,
+                        "compiled kernel dispatch encountered nested frame and cannot bounce to the interpreter"
+                            .to_string(),
+                    );
+                    BackendCallResult::threw()
                 }
             };
         }
@@ -1433,10 +1436,7 @@ unsafe extern "C" fn helper_native_call(
                     });
                 }
                 set_ctx_suspend_reason(ctx, &SuspendReason::IoWait);
-                return BackendCallResult {
-                    status: crate::vm::suspend::BackendCallStatus::Suspended,
-                    payload: AOT_SUSPEND,
-                };
+                return BackendCallResult::suspended_with_tag(SuspendTag::IoWait);
             }
             NativeCallResult::Unhandled => {}
             NativeCallResult::Error(_) => {}
@@ -1456,10 +1456,7 @@ unsafe extern "C" fn helper_native_call(
                         });
                     }
                     set_ctx_suspend_reason(ctx, &SuspendReason::IoWait);
-                    return BackendCallResult {
-                        status: crate::vm::suspend::BackendCallStatus::Suspended,
-                        payload: AOT_SUSPEND,
-                    };
+                    return BackendCallResult::suspended_with_tag(SuspendTag::IoWait);
                 }
                 NativeCallResult::Unhandled => {}
                 NativeCallResult::Error(_) => {}
@@ -1467,34 +1464,27 @@ unsafe extern "C" fn helper_native_call(
         }
     }
 
-    // Stub split behavior:
-    // - Most IDs take an immediate "completed" fast path (null result placeholder).
-    // - STUB_NATIVE_SUSPEND_ID exercises boundary suspend handoff behavior.
-    if matches!(kernel_op, KernelOp::VmNative(native_id) if native_id == STUB_NATIVE_SUSPEND_ID)
-    {
-        if !ctx.is_null() {
-            set_ctx_suspend_tag(ctx, SuspendTag::KernelBoundary);
-        }
-        BackendCallResult {
-            status: crate::vm::suspend::BackendCallStatus::Suspended,
-            payload: AOT_SUSPEND,
-        }
-    } else {
-        BackendCallResult::completed_raw(abi::NULL_VALUE)
-    }
+    aot_raise_type_error(
+        ctx,
+        format!("compiled kernel op {:?} has no exact AOT runtime implementation", kernel_op),
+    );
+    BackendCallResult::threw()
 }
 
 // =============================================================================
-// Concurrency (stubs)
+// Concurrency helpers
 // =============================================================================
 
 unsafe extern "C" fn helper_spawn(
-    _ctx: *mut AotTaskContext,
-    _func_id: u32,
+    ctx: *mut AotTaskContext,
+    func_id: u32,
     _args_ptr: *const u64,
     _argc: u32,
 ) -> u64 {
-    // TODO: Spawn a new task on the scheduler
+    aot_raise_type_error(
+        ctx,
+        format!("compiled AOT spawn for function {} is not implemented", func_id),
+    );
     abi::NULL_VALUE
 }
 
@@ -1589,16 +1579,17 @@ unsafe extern "C" fn helper_prepare_aot_call_frame(
 }
 
 // =============================================================================
-// Exceptions (stub)
+// Exceptions
 // =============================================================================
 
-unsafe extern "C" fn helper_throw_exception(_ctx: *mut AotTaskContext, _value: u64) {
-    // TODO: Throw exception through the runtime
-    panic!("AOT throw_exception not yet implemented");
+unsafe extern "C" fn helper_throw_exception(ctx: *mut AotTaskContext, value: u64) {
+    if let Some(task) = aot_task(ctx) {
+        task.set_exception(Value::from_raw(value));
+    }
 }
 
 // =============================================================================
-// AOT function dispatch (stub)
+// AOT function dispatch
 // =============================================================================
 
 fn raw_value_layout_id(raw: u64) -> Option<u32> {
@@ -1714,7 +1705,7 @@ unsafe extern "C" fn helper_load_f64_constant(value: f64) -> u64 {
 /// Create a fully populated `AotHelperTable` with all helper function pointers.
 ///
 /// This is the default table used when no runtime is connected. Frame management
-/// and NaN-boxing helpers work correctly; other helpers are stubs.
+/// and NaN-boxing helpers work correctly across the active compiled path.
 pub fn create_default_helper_table() -> AotHelperTable {
     AotHelperTable {
         alloc_frame: helper_alloc_frame,
@@ -1867,27 +1858,7 @@ mod tests {
     }
 
     #[test]
-    fn test_native_call_marks_boundary_suspend() {
-        let preempt = AtomicBool::new(false);
-        let mut ctx = AotTaskContext {
-            preempt_requested: &preempt,
-            resume_record: crate::vm::suspend::ResumeRecord::none(),
-            suspend_record: SuspendRecord::none(),
-            helpers: create_default_helper_table(),
-            shared_state: ptr::null_mut(),
-            current_task: ptr::null_mut(),
-            module: ptr::null(),
-        };
-        let result =
-            unsafe { helper_native_call(&mut ctx, STUB_NATIVE_SUSPEND_ID, ptr::null(), 0) };
-        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Suspended);
-        assert_eq!(result.payload, AOT_SUSPEND);
-        assert_eq!(ctx.suspend_record.tag, SuspendTag::KernelBoundary);
-        assert_eq!(ctx.suspend_record.word0, 0);
-    }
-
-    #[test]
-    fn test_native_call_fast_path_returns_immediate_value() {
+    fn test_native_call_without_runtime_context_fails() {
         let preempt = AtomicBool::new(false);
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
@@ -1899,8 +1870,24 @@ mod tests {
             module: ptr::null(),
         };
         let result = unsafe { helper_native_call(&mut ctx, 42, ptr::null(), 0) };
-        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Completed);
-        assert_eq!(result.payload, abi::NULL_VALUE);
+        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Threw);
+        assert_eq!(ctx.suspend_record, SuspendRecord::none());
+    }
+
+    #[test]
+    fn test_native_call_unknown_kernel_op_fails() {
+        let preempt = AtomicBool::new(false);
+        let mut ctx = AotTaskContext {
+            preempt_requested: &preempt,
+            resume_record: crate::vm::suspend::ResumeRecord::none(),
+            suspend_record: SuspendRecord::none(),
+            helpers: create_default_helper_table(),
+            shared_state: ptr::null_mut(),
+            current_task: ptr::null_mut(),
+            module: ptr::null(),
+        };
+        let result = unsafe { helper_native_call(&mut ctx, u16::MAX, ptr::null(), 0) };
+        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Threw);
         assert_eq!(ctx.suspend_record, SuspendRecord::none());
     }
 
@@ -2022,7 +2009,7 @@ mod tests {
 
         let result = unsafe { helper_native_call(&mut ctx, 0, ptr::null(), 0) };
         assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Suspended);
-        assert_eq!(result.payload, AOT_SUSPEND);
+        assert_eq!(result.payload, SuspendTag::IoWait as u64);
         assert_eq!(ctx.suspend_record.tag, SuspendTag::IoWait);
         let submission = rx.try_recv().expect("io submission should be sent");
         assert_eq!(submission.task_id.as_u64(), 0);

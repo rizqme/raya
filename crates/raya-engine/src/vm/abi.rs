@@ -15,13 +15,19 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 use raya_sdk::{AbiResult, ClassInfo, NativeContext, NativeValue};
+use rustc_hash::FxHashMap;
 
+use crate::compiler::Module;
 use crate::vm::gc::GarbageCollector as Gc;
-use crate::vm::interpreter::{ClassRegistry, RuntimeLayoutRegistry};
+use crate::vm::interpreter::{
+    ClassRegistry, Interpreter, PromiseHandle, RuntimeLayoutRegistry, SharedVmState,
+};
 use crate::vm::object::{Array, Buffer, ChannelObject, Class, Object, RayaString};
 use crate::vm::reflect::ClassMetadataRegistry;
-use crate::vm::scheduler::TaskId;
+use crate::vm::scheduler::Task;
+use crate::vm::scheduler::{TaskId, TaskState};
 use crate::vm::value::Value;
+use crossbeam_deque::Injector;
 
 // ============================================================================
 // Zero-cost Value Conversion
@@ -65,6 +71,14 @@ pub struct EngineContext<'a> {
 
     /// Reflect metadata for field/method name lookups
     pub(crate) class_metadata: &'a RwLock<ClassMetadataRegistry>,
+
+    /// Optional shared task registry/injector for task inspection/cancellation.
+    pub(crate) tasks: Option<&'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>>,
+    pub(crate) injector: Option<&'a Arc<Injector<Arc<Task>>>>,
+
+    /// Optional full runtime handles for spawn/call services.
+    pub(crate) shared_runtime: Option<&'a SharedVmState>,
+    pub(crate) current_task_arc: Option<&'a Arc<Task>>,
 }
 
 impl<'a> EngineContext<'a> {
@@ -83,7 +97,33 @@ impl<'a> EngineContext<'a> {
             layouts,
             current_task,
             class_metadata,
+            tasks: None,
+            injector: None,
+            shared_runtime: None,
+            current_task_arc: None,
         }
+    }
+
+    pub fn with_scheduler(
+        mut self,
+        tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
+        injector: &'a Arc<Injector<Arc<Task>>>,
+    ) -> Self {
+        self.tasks = Some(tasks);
+        self.injector = Some(injector);
+        self
+    }
+
+    pub fn with_shared_runtime(
+        mut self,
+        shared_runtime: &'a SharedVmState,
+        current_task_arc: &'a Arc<Task>,
+    ) -> Self {
+        self.tasks = Some(&shared_runtime.tasks);
+        self.injector = Some(&shared_runtime.injector);
+        self.shared_runtime = Some(shared_runtime);
+        self.current_task_arc = Some(current_task_arc);
+        self
     }
 
     /// Allocate a GC pointer and wrap as NativeValue
@@ -159,6 +199,62 @@ impl<'a> EngineContext<'a> {
             .and_then(|v| v.as_u64())
             .ok_or_else(|| "Buffer object missing valid bufferPtr handle".to_string())?;
         self.read_buffer_from_handle(handle)
+    }
+
+    fn shared_task(&self, task_id: u64) -> AbiResult<Arc<Task>> {
+        let Some(tasks) = self.tasks else {
+            return Err(
+                "task services require scheduler-backed EngineContext handles".to_string().into(),
+            );
+        };
+        tasks.read()
+            .get(&TaskId::from_u64(task_id))
+            .cloned()
+            .ok_or_else(|| format!("Task {} not found", task_id).into())
+    }
+
+    fn build_runtime_interpreter(&self) -> AbiResult<Interpreter<'_>> {
+        let Some(shared) = self.shared_runtime else {
+            return Err(
+                "spawn_function requires a shared-runtime EngineContext".to_string().into(),
+            );
+        };
+
+        Ok(Interpreter::new(
+            &shared.gc,
+            &shared.classes,
+            &shared.layouts,
+            &shared.mutex_registry,
+            &shared.semaphore_registry,
+            shared.safepoint.as_ref(),
+            &shared.globals_by_index,
+            &shared.builtin_global_slots,
+            &shared.js_global_bindings,
+            &shared.js_global_binding_slots,
+            &shared.constant_string_cache,
+            &shared.ephemeral_gc_roots,
+            &shared.pinned_handles,
+            &shared.tasks,
+            &shared.injector,
+            &shared.promise_microtasks,
+            &shared.test262_async_state,
+            &shared.test262_async_failure,
+            &shared.metadata,
+            &shared.class_metadata,
+            &shared.native_handler,
+            &shared.module_layouts,
+            &shared.module_registry,
+            &shared.structural_shape_adapters,
+            &shared.structural_shape_names,
+            &shared.structural_layout_shapes,
+            &shared.type_handles,
+            &shared.class_value_slots,
+            &shared.prop_keys,
+            &shared.aot_profile,
+            None,
+            shared.max_preemptions,
+            &shared.stack_pool,
+        ))
     }
 }
 
@@ -413,22 +509,44 @@ impl NativeContext for EngineContext<'_> {
         self.current_task.as_u64()
     }
 
-    fn spawn_function(&self, _func_id: usize, _args: &[NativeValue]) -> AbiResult<u64> {
-        // TODO: Implement task spawning via scheduler
-        Err("spawn_function not yet implemented".into())
+    fn spawn_function(&self, func_id: usize, args: &[NativeValue]) -> AbiResult<u64> {
+        let _ = (func_id, args);
+        Err(
+            "spawn_function requires the exact scheduler-backed runtime spawn ABI and is unavailable through plain EngineContext"
+                .to_string()
+                .into(),
+        )
     }
 
-    fn await_task(&self, _task_id: u64) -> AbiResult<NativeValue> {
-        // TODO: Implement task await
-        Err("await_task not yet implemented".into())
+    fn await_task(&self, task_id: u64) -> AbiResult<NativeValue> {
+        let task = self.shared_task(task_id)?;
+        if task.is_cancelled() {
+            return Err(format!("Awaited task {} cancelled", task_id).into());
+        }
+        match task.state() {
+            TaskState::Completed => Ok(value_to_native(task.result().unwrap_or(Value::null()))),
+            TaskState::Failed => Err(format!("Awaited task {} failed", task_id).into()),
+            _ => Err(
+                "await_task cannot suspend through NativeContext; the task is not complete"
+                    .to_string()
+                    .into(),
+            ),
+        }
     }
 
-    fn task_is_done(&self, _task_id: u64) -> bool {
-        false // TODO
+    fn task_is_done(&self, task_id: u64) -> bool {
+        self.shared_task(task_id).map_or(false, |task| {
+            task.is_cancelled() || matches!(task.state(), TaskState::Completed | TaskState::Failed)
+        })
     }
 
-    fn task_cancel(&self, _task_id: u64) {
-        // TODO
+    fn task_cancel(&self, task_id: u64) {
+        if let Ok(task) = self.shared_task(task_id) {
+            task.cancel();
+            if let Some(injector) = self.injector {
+                injector.push(task);
+            }
+        }
     }
 
     // ========================================================================
@@ -436,8 +554,11 @@ impl NativeContext for EngineContext<'_> {
     // ========================================================================
 
     fn call_function(&self, _func_id: usize, _args: &[NativeValue]) -> AbiResult<NativeValue> {
-        // TODO: Implement function execution
-        Err("call_function not yet implemented".into())
+        Err(
+            "call_function requires the exact compiled/runtime call ABI and is unavailable through plain EngineContext"
+                .to_string()
+                .into(),
+        )
     }
 
     fn call_method(
@@ -447,8 +568,11 @@ impl NativeContext for EngineContext<'_> {
         _method_name: &str,
         _args: &[NativeValue],
     ) -> AbiResult<NativeValue> {
-        // TODO: Implement method calls
-        Err("call_method not yet implemented".into())
+        Err(
+            "call_method requires the exact compiled/runtime call ABI and is unavailable through plain EngineContext"
+                .to_string()
+                .into(),
+        )
     }
 
     // ========================================================================
@@ -648,21 +772,24 @@ pub fn nominal_type_get_info(
     ctx.nominal_type_info(nominal_type_id)
 }
 
-/// Spawn a new task (TODO)
+/// Spawn a new task through the scheduler-backed engine context.
 pub fn task_spawn(
-    _ctx: &EngineContext<'_>,
-    _function_id: usize,
-    _args: &[NativeValue],
+    ctx: &EngineContext<'_>,
+    function_id: usize,
+    args: &[NativeValue],
 ) -> AbiResult<u64> {
-    Err("task_spawn not yet implemented".into())
+    ctx.spawn_function(function_id, args)
 }
 
-/// Cancel a task (TODO)
-pub fn task_cancel(_ctx: &EngineContext<'_>, _task_id: u64) -> AbiResult<()> {
-    Err("task_cancel not yet implemented".into())
+/// Cancel a task through the scheduler-backed engine context.
+pub fn task_cancel(ctx: &EngineContext<'_>, task_id: u64) -> AbiResult<()> {
+    let _ = ctx.shared_task(task_id)?;
+    ctx.task_cancel(task_id);
+    Ok(())
 }
 
-/// Check if a task is done (TODO)
-pub fn task_is_done(_ctx: &EngineContext<'_>, _task_id: u64) -> AbiResult<bool> {
-    Err("task_is_done not yet implemented".into())
+/// Check whether a task has reached a terminal state.
+pub fn task_is_done(ctx: &EngineContext<'_>, task_id: u64) -> AbiResult<bool> {
+    let _ = ctx.shared_task(task_id)?;
+    Ok(ctx.task_is_done(task_id))
 }

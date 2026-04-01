@@ -2,7 +2,7 @@
 //!
 //! Phase 3 focus:
 //! - wire safepoint + preemption helpers used by lowered machine-code branches
-//! - provide conservative stubs for not-yet-lowered runtime helpers
+//! - provide conservative runtime helpers for lowered machine-code branches
 
 use crate::compiler::ir::{decode_kernel_op_id, KernelOp};
 use crate::compiler::{Module, Opcode};
@@ -22,6 +22,7 @@ use crate::vm::scheduler::IoSubmission;
 use crate::vm::scheduler::{Task, TaskId};
 use crate::vm::stack::Stack;
 use crate::vm::suspend::BackendCallResult;
+use crate::vm::suspend::{SuspendReason, SuspendTag};
 use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -203,7 +204,7 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
         kernel_call_dispatch: helper_kernel_call_dispatch,
         interpreter_call: helper_interpreter_call,
         throw_exception: helper_throw_exception,
-        deoptimize: helper_deoptimize,
+        reserved0: 0,
         string_concat: helper_string_concat,
         generic_equals: helper_generic_equals,
         object_get_field: helper_object_get_field,
@@ -553,6 +554,14 @@ fn jit_raise_vm_error(bridge: &JitRuntimeBridgeContext, error: VmError) {
     let gc_ptr = unsafe { &*bridge.gc }.lock().allocate(raya_string);
     let exc_val = unsafe { Value::from_ptr(NonNull::new(gc_ptr.as_ptr()).unwrap()) };
     task.set_exception(exc_val);
+}
+
+fn jit_suspend_task(bridge: &JitRuntimeBridgeContext, reason: SuspendReason) -> BackendCallResult {
+    if !bridge.task.is_null() {
+        let task = unsafe { &*bridge.task };
+        task.suspend(reason.clone());
+    }
+    BackendCallResult::suspended_with_tag(SuspendTag::from_reason(&reason))
 }
 
 #[derive(Clone, Copy)]
@@ -1168,13 +1177,16 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                 crate::vm::scheduler::TaskId::from_u64(0)
             };
 
-            let ctx = EngineContext::new(
+            let mut ctx = EngineContext::new(
                 &*bridge.gc,
                 &*bridge.classes,
                 &*bridge.layouts,
                 task_id,
                 &*bridge.class_metadata,
             );
+            if !bridge.tasks.is_null() && !bridge.injector.is_null() {
+                ctx = ctx.with_scheduler(&*bridge.tasks, &*bridge.injector);
+            }
 
             let native_args: Vec<raya_sdk::NativeValue> =
                 value_args.iter().map(|v| value_to_native(*v)).collect();
@@ -1194,7 +1206,7 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                                     request: io_request,
                                 });
                             }
-                            return BackendCallResult::suspended();
+                            return jit_suspend_task(bridge, SuspendReason::IoWait);
                         }
                         NativeCallResult::Unhandled | NativeCallResult::Error(_) => {}
                     }
@@ -1222,7 +1234,7 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                                     request: io_request,
                                 });
                             }
-                            return BackendCallResult::suspended();
+                            return jit_suspend_task(bridge, SuspendReason::IoWait);
                         }
                         NativeCallResult::Unhandled | NativeCallResult::Error(_) => {}
                     }
@@ -1232,13 +1244,25 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
         }
 
         let Some(module) = (!module_ptr.is_null()).then(|| &*(module_ptr.cast::<Module>())) else {
-            return BackendCallResult::interpreter_boundary();
+            jit_raise_vm_error(
+                bridge,
+                VmError::RuntimeError("JIT kernel dispatch missing module context".to_string()),
+            );
+            return BackendCallResult::threw();
         };
         let Some(task) = (!bridge.task_arc.is_null()).then(|| &*bridge.task_arc) else {
-            return BackendCallResult::interpreter_boundary();
+            jit_raise_vm_error(
+                bridge,
+                VmError::RuntimeError("JIT kernel dispatch missing task context".to_string()),
+            );
+            return BackendCallResult::threw();
         };
         let Some(mut interpreter) = jit_build_interpreter(bridge) else {
-            return BackendCallResult::interpreter_boundary();
+            jit_raise_vm_error(
+                bridge,
+                VmError::RuntimeError("JIT kernel dispatch could not build interpreter".to_string()),
+            );
+            return BackendCallResult::threw();
         };
 
         let mut stack = Stack::new();
@@ -1265,13 +1289,22 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                 BackendCallResult::completed(stack.pop().unwrap_or_else(|_| Value::null()))
             }
             crate::vm::interpreter::OpcodeResult::Return(value) => BackendCallResult::completed(value),
-            crate::vm::interpreter::OpcodeResult::Suspend(_) => BackendCallResult::suspended(),
+            crate::vm::interpreter::OpcodeResult::Suspend(reason) => {
+                jit_suspend_task(bridge, reason)
+            }
             crate::vm::interpreter::OpcodeResult::Error(error) => {
                 jit_raise_vm_error(bridge, error);
                 BackendCallResult::threw()
             }
             crate::vm::interpreter::OpcodeResult::PushFrame { .. } => {
-                BackendCallResult::interpreter_boundary()
+                jit_raise_vm_error(
+                    bridge,
+                    VmError::RuntimeError(
+                        "JIT kernel dispatch encountered nested frame and cannot bounce to the interpreter"
+                            .to_string(),
+                    ),
+                );
+                BackendCallResult::threw()
             }
         };
     }
@@ -1289,18 +1322,30 @@ unsafe extern "C" fn helper_interpreter_call(
     shared_state: *mut (),
 ) -> BackendCallResult {
     if shared_state.is_null() || module_ptr.is_null() {
-        return BackendCallResult::interpreter_boundary();
+        return BackendCallResult::threw();
     }
     let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
     let Some(opcode) = Opcode::from_u8(opcode_raw) else {
-        return BackendCallResult::interpreter_boundary();
+        jit_raise_vm_error(
+            bridge,
+            VmError::RuntimeError(format!("JIT helper received unknown call opcode {}", opcode_raw)),
+        );
+        return BackendCallResult::threw();
     };
     let module = &*(module_ptr.cast::<Module>());
     let Some(task) = (!bridge.task_arc.is_null()).then(|| unsafe { &*bridge.task_arc }) else {
-        return BackendCallResult::interpreter_boundary();
+        jit_raise_vm_error(
+            bridge,
+            VmError::RuntimeError("JIT call helper missing task context".to_string()),
+        );
+        return BackendCallResult::threw();
     };
     let Some(mut interpreter) = jit_build_interpreter(bridge) else {
-        return BackendCallResult::interpreter_boundary();
+        jit_raise_vm_error(
+            bridge,
+            VmError::RuntimeError("JIT call helper could not build interpreter".to_string()),
+        );
+        return BackendCallResult::threw();
     };
 
     let args: Vec<Value> = if arg_count == 0 || args_ptr.is_null() {
@@ -1355,7 +1400,14 @@ unsafe extern "C" fn helper_interpreter_call(
             }
         }
         _ => {
-            return BackendCallResult::interpreter_boundary();
+            jit_raise_vm_error(
+                bridge,
+                VmError::RuntimeError(format!(
+                    "JIT call helper does not support opcode {:?} without an exact compiled ABI path",
+                    opcode
+                )),
+            );
+            return BackendCallResult::threw();
         }
     }
 
@@ -1399,8 +1451,15 @@ unsafe extern "C" fn helper_interpreter_call(
             }
             BackendCallResult::completed(value)
         }
-        crate::vm::interpreter::OpcodeResult::Suspend(_) => {
-            BackendCallResult::interpreter_boundary()
+        crate::vm::interpreter::OpcodeResult::Suspend(reason) => {
+            jit_raise_vm_error(
+                bridge,
+                VmError::RuntimeError(format!(
+                    "JIT call helper encountered unsupported suspension {:?} without a resumable compiled frame",
+                    reason
+                )),
+            );
+            BackendCallResult::threw()
         }
         crate::vm::interpreter::OpcodeResult::Error(error) => {
             if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
@@ -1423,7 +1482,14 @@ unsafe extern "C" fn helper_interpreter_call(
                 func_id,
                 &mut FxHashSet::default(),
             ) {
-                return BackendCallResult::interpreter_boundary();
+                jit_raise_vm_error(
+                    bridge,
+                    VmError::RuntimeError(format!(
+                        "JIT call helper cannot execute non-sync-safe nested call to function {} without an interpreter boundary",
+                        func_id
+                    )),
+                );
+                return BackendCallResult::threw();
             }
             match jit_execute_sync_frame(
                 &mut interpreter,
@@ -1446,9 +1512,18 @@ unsafe extern "C" fn helper_interpreter_call(
                 }
                 JitNestedCallResult::Fallback => {
                     if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
-                        eprintln!("jit interpreter_call nested fallback: opcode={opcode:?}");
+                        eprintln!(
+                            "jit interpreter_call nested fallback became hard failure: opcode={opcode:?}"
+                        );
                     }
-                    BackendCallResult::interpreter_boundary()
+                    jit_raise_vm_error(
+                        bridge,
+                        VmError::RuntimeError(format!(
+                            "JIT nested call {:?} required removed interpreter fallback",
+                            opcode
+                        )),
+                    );
+                    BackendCallResult::threw()
                 }
                 JitNestedCallResult::Exception => {
                     if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
@@ -1461,12 +1536,16 @@ unsafe extern "C" fn helper_interpreter_call(
     }
 }
 
-unsafe extern "C" fn helper_throw_exception(_exception_value: u64, _shared_state: *mut ()) {
-    panic!("helper_throw_exception is not wired yet")
-}
-
-unsafe extern "C" fn helper_deoptimize(_bytecode_offset: u32, _shared_state: *mut ()) {
-    panic!("helper_deoptimize is not wired yet")
+unsafe extern "C" fn helper_throw_exception(exception_value: u64, shared_state: *mut ()) {
+    if shared_state.is_null() {
+        return;
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    if bridge.task.is_null() {
+        return;
+    }
+    let task = &*bridge.task;
+    task.set_exception(Value::from_raw(exception_value));
 }
 
 unsafe extern "C" fn helper_string_concat(_left: u64, _right: u64, _shared_state: *mut ()) -> u64 {

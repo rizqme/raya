@@ -177,7 +177,7 @@ impl CodeCache {
         Some(unsafe { std::mem::transmute::<*const u8, JitEntryFn>(fn_ptr) })
     }
 
-    /// Invalidate a cached function (e.g., when deoptimizing)
+    /// Invalidate a cached function.
     pub fn invalidate(&self, module_id: u64, func_index: u32) {
         let key = (module_id, func_index);
         let entries = self.entries.read();
@@ -245,7 +245,6 @@ mod tests {
             code_size: size,
             entry_offset: 0,
             stack_maps: vec![],
-            deopt_info: vec![],
         }
     }
 

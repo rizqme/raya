@@ -46,7 +46,6 @@ pub enum ExecutionSuspendKind {
     MutexAcquire,
     SemaphoreAcquire,
     KernelBoundary,
-    InterpreterBoundary,
     AotCall,
     Preemption,
     GeneratorYield,
@@ -185,7 +184,6 @@ pub enum BackendCallStatus {
     Completed = 0,
     Suspended = 1,
     Threw = 2,
-    InterpreterBoundary = 3,
 }
 
 /// Shared helper-call result transport for compiled backends.
@@ -215,16 +213,16 @@ impl BackendCallResult {
         }
     }
 
-    pub const fn threw() -> Self {
+    pub const fn suspended_with_tag(tag: SuspendTag) -> Self {
         Self {
-            status: BackendCallStatus::Threw,
-            payload: 0,
+            status: BackendCallStatus::Suspended,
+            payload: tag as u32 as u64,
         }
     }
 
-    pub const fn interpreter_boundary() -> Self {
+    pub const fn threw() -> Self {
         Self {
-            status: BackendCallStatus::InterpreterBoundary,
+            status: BackendCallStatus::Threw,
             payload: 0,
         }
     }
@@ -248,10 +246,27 @@ pub enum SuspendTag {
     Preemption = 10,
     JsGeneratorYield = 11,
     JsGeneratorInit = 12,
-    InterpreterBoundary = 13,
 }
 
 impl SuspendTag {
+    pub fn from_u32(raw: u32) -> Self {
+        match raw {
+            1 => SuspendTag::AwaitTask,
+            2 => SuspendTag::YieldNow,
+            3 => SuspendTag::Sleep,
+            4 => SuspendTag::IoWait,
+            5 => SuspendTag::ChannelReceive,
+            6 => SuspendTag::ChannelSend,
+            7 => SuspendTag::MutexAcquire,
+            8 => SuspendTag::SemaphoreAcquire,
+            9 => SuspendTag::KernelBoundary,
+            10 => SuspendTag::Preemption,
+            11 => SuspendTag::JsGeneratorYield,
+            12 => SuspendTag::JsGeneratorInit,
+            _ => SuspendTag::None,
+        }
+    }
+
     pub fn from_reason(reason: &SuspendReason) -> Self {
         match reason {
             SuspendReason::AwaitTask(_) => SuspendTag::AwaitTask,
@@ -372,7 +387,6 @@ impl SuspendRecord {
                 value: unsafe { Value::from_raw(self.word0) },
             }),
             SuspendTag::JsGeneratorInit => Some(SuspendReason::JsGeneratorInit),
-            SuspendTag::InterpreterBoundary => None,
         }
     }
 }

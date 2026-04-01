@@ -984,21 +984,10 @@ fn lift_instruction(
             }
         }
         Opcode::StoreFieldExact => {
-            if let Operands::U16(offset) = instr.operands {
-                let pre_stack = stack.clone_state();
-                let value = stack.pop(instr.offset)?;
-                let object = stack.pop(instr.offset)?;
-                let _ = offset;
-                let _ = value;
-                let _ = object;
-                func.block_mut(block)
-                    .instrs
-                    .push(JitInstr::InterpreterBoundary {
-                        dest: None,
-                        stack: pre_stack,
-                        bytecode_offset: instr.offset as u32,
-                    });
-            }
+            return Err(LiftError::UnsupportedOpcode {
+                opcode: Opcode::StoreFieldExact,
+                offset: instr.offset,
+            });
         }
         Opcode::LoadFieldShape | Opcode::OptionalFieldShape => {
             if let Operands::ShapeSlot { shape_id, slot } = instr.operands {

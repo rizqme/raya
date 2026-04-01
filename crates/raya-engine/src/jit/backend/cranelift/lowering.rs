@@ -260,35 +260,6 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    fn emit_interpreter_boundary_exit(
-        &self,
-        builder: &mut FunctionBuilder<'_>,
-        regs: &[Reg],
-        bytecode_offset: u32,
-    ) {
-        let count = regs.len().min(JIT_EXIT_MAX_NATIVE_ARGS) as i64;
-        let count_val = builder.ins().iconst(types::I32, count);
-        builder.ins().store(
-            MemFlags::trusted(),
-            count_val,
-            self.params.exit_info_ptr,
-            40,
-        );
-        for (i, reg) in regs.iter().take(JIT_EXIT_MAX_NATIVE_ARGS).enumerate() {
-            let boxed = self.boxed_reg_value(builder, *reg);
-            let off = 48 + (i as i32) * 8;
-            builder
-                .ins()
-                .store(MemFlags::trusted(), boxed, self.params.exit_info_ptr, off);
-        }
-        self.emit_exit_return(
-            builder,
-            JitExitKind::Suspended as i64,
-            SuspendTag::InterpreterBoundary as i64,
-            bytecode_offset as i64,
-        );
-    }
-
     fn emit_failed_exit(
         &self,
         builder: &mut FunctionBuilder<'_>,
@@ -431,7 +402,7 @@ impl<'a> LoweringContext<'a> {
                 self.def_reg(builder, *dest, result);
             }
             JitInstr::IPow { dest, left, right } => {
-                // No native pow for integers in Cranelift; emit a loop or deopt
+                // No native pow for integers in Cranelift; emit a loop.
                 // For now, just pass through as multiply (placeholder)
                 let l = self.use_reg(builder, *left);
                 let r = self.use_reg(builder, *right);
@@ -739,7 +710,7 @@ impl<'a> LoweringContext<'a> {
 
                 builder.seal_block(fallback_block);
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
 
                 builder.seal_block(done);
                 builder.switch_to_block(done);
@@ -869,7 +840,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(done);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
 
                 builder.switch_to_block(done);
                 let merged = builder.block_params(done)[0];
@@ -912,7 +883,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, &[], *bytecode_offset);
+                self.emit_failed_exit(builder, &[], *bytecode_offset);
 
                 builder.switch_to_block(success_block);
                 self.def_reg(builder, *dest, object_ptr);
@@ -1000,7 +971,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, &[*object], *bytecode_offset);
+                self.emit_failed_exit(builder, &[*object], *bytecode_offset);
 
                 builder.switch_to_block(success_block);
                 let object_val = self.boxed_reg_value(builder, *object);
@@ -1088,7 +1059,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, &[*object], *bytecode_offset);
+                self.emit_failed_exit(builder, &[*object], *bytecode_offset);
 
                 builder.switch_to_block(success_block);
                 let object_val = self.boxed_reg_value(builder, *object);
@@ -1148,7 +1119,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
 
                 builder.switch_to_block(success_block);
             }
@@ -1216,7 +1187,7 @@ impl<'a> LoweringContext<'a> {
                 let payload = builder.inst_results(call)[1];
                 let boundary = builder
                     .ins()
-                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
                 let threw = builder
                     .ins()
                     .iconst(types::I64, BackendCallStatus::Threw as i64);
@@ -1240,7 +1211,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
 
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
@@ -1325,7 +1296,7 @@ impl<'a> LoweringContext<'a> {
                 let payload = builder.inst_results(call)[1];
                 let boundary = builder
                     .ins()
-                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
                 let threw = builder
                     .ins()
                     .iconst(types::I64, BackendCallStatus::Threw as i64);
@@ -1349,7 +1320,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
@@ -1432,7 +1403,7 @@ impl<'a> LoweringContext<'a> {
                 let payload = builder.inst_results(call)[1];
                 let boundary = builder
                     .ins()
-                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
                 let threw = builder
                     .ins()
                     .iconst(types::I64, BackendCallStatus::Threw as i64);
@@ -1456,7 +1427,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
@@ -1531,7 +1502,7 @@ impl<'a> LoweringContext<'a> {
                 let payload = builder.inst_results(call)[1];
                 let boundary = builder
                     .ins()
-                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
                 let threw = builder
                     .ins()
                     .iconst(types::I64, BackendCallStatus::Threw as i64);
@@ -1555,7 +1526,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
@@ -1639,7 +1610,7 @@ impl<'a> LoweringContext<'a> {
                 let payload = builder.inst_results(call)[1];
                 let boundary = builder
                     .ins()
-                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
                 let threw = builder
                     .ins()
                     .iconst(types::I64, BackendCallStatus::Threw as i64);
@@ -1663,7 +1634,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
@@ -1737,7 +1708,7 @@ impl<'a> LoweringContext<'a> {
                 let payload = builder.inst_results(call)[1];
                 let boundary = builder
                     .ins()
-                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
                 let threw = builder
                     .ins()
                     .iconst(types::I64, BackendCallStatus::Threw as i64);
@@ -1761,7 +1732,7 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
@@ -1772,15 +1743,6 @@ impl<'a> LoweringContext<'a> {
                     let merged = builder.block_params(done)[0];
                     self.def_reg(builder, *dest, merged);
                 }
-            }
-
-            JitInstr::InterpreterBoundary {
-                bytecode_offset,
-                stack,
-                ..
-            } => {
-                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
-                return Ok(true);
             }
 
             // ===== Move / Phi =====
@@ -1893,7 +1855,7 @@ impl<'a> LoweringContext<'a> {
                         .iconst(types::I64, BackendCallStatus::Suspended as i64);
                     let boundary = builder
                         .ins()
-                        .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                        .iconst(types::I64, BackendCallStatus::Threw as i64);
                     let threw = builder
                         .ins()
                         .iconst(types::I64, BackendCallStatus::Threw as i64);
@@ -1945,7 +1907,7 @@ impl<'a> LoweringContext<'a> {
                     );
 
                     builder.switch_to_block(fallback_exit);
-                    self.emit_interpreter_boundary_exit(builder, &[], *bytecode_offset);
+                    self.emit_failed_exit(builder, &[], *bytecode_offset);
 
                     builder.switch_to_block(exception_exit);
                     self.emit_failed_exit(builder, &[], *bytecode_offset);
@@ -2015,7 +1977,7 @@ impl<'a> LoweringContext<'a> {
                         .iconst(types::I64, BackendCallStatus::Suspended as i64);
                     let boundary = builder
                         .ins()
-                        .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                        .iconst(types::I64, BackendCallStatus::Threw as i64);
                     let threw = builder
                         .ins()
                         .iconst(types::I64, BackendCallStatus::Threw as i64);
@@ -2087,7 +2049,7 @@ impl<'a> LoweringContext<'a> {
                     );
 
                     builder.switch_to_block(fallback_exit);
-                    self.emit_interpreter_boundary_exit(builder, args, *bytecode_offset);
+                    self.emit_failed_exit(builder, args, *bytecode_offset);
 
                     builder.switch_to_block(exception_exit);
                     self.emit_failed_exit(builder, args, *bytecode_offset);
@@ -2103,7 +2065,7 @@ impl<'a> LoweringContext<'a> {
             // ===== Everything else: unsupported for now =====
             _ => {
                 // Unsupported instructions get a placeholder
-                // In a real implementation, these would deoptimize to the interpreter
+                // These helper results are handled explicitly by the compiled runtime ABI.
                 return Err(LowerError::UnsupportedInstruction(format!("{:?}", instr)));
             }
         }
@@ -2435,9 +2397,7 @@ impl<'a> LoweringContext<'a> {
                 // Should not happen in a well-formed IR
                 builder.ins().trap(ir::TrapCode::user(1).unwrap());
             }
-            JitTerminator::Throw(_)
-            | JitTerminator::Deoptimize { .. }
-            | JitTerminator::BranchNull { .. } => {
+            JitTerminator::Throw(_) | JitTerminator::BranchNull { .. } => {
                 // These paths are not lowered yet; fail compilation so runtime
                 // stays on interpreter for this function instead of emitting a
                 // compiled trap that can SIGTRAP the process.

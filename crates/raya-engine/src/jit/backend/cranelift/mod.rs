@@ -98,7 +98,6 @@ impl CodegenBackend for CraneliftBackend {
             code: code_bytes,
             entry_offset: 0,
             stack_maps: vec![],
-            deopt_info: vec![],
             relocations: vec![],
         })
     }

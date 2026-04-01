@@ -111,7 +111,11 @@ impl<B: CodegenBackend> JitPipeline<B> {
 mod tests {
     use super::*;
     use crate::compiler::bytecode::{ConstantPool, Metadata, Opcode};
-    use crate::jit::backend::StubBackend;
+    use crate::jit::backend::CraneliftBackend;
+
+    fn test_backend() -> CraneliftBackend {
+        CraneliftBackend::host().expect("host cranelift backend")
+    }
 
     fn make_module_with_func(code: Vec<u8>, param_count: usize, local_count: usize) -> Module {
         Module {
@@ -182,7 +186,7 @@ mod tests {
         emit(&mut code, Opcode::Return);
 
         let module = make_module_with_func(code, 0, 0);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
 
         let (jit_func, compiled) = pipeline
             .compile_function(&module.functions[0], &module, 0)
@@ -202,7 +206,7 @@ mod tests {
         emit(&mut code, Opcode::Return);
 
         let module = make_module_with_func(code, 0, 0);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
 
         let (jit_func, _) = pipeline
             .compile_function(&module.functions[0], &module, 0)
@@ -223,7 +227,7 @@ mod tests {
         emit(&mut code, Opcode::Return);
 
         let module = make_module_with_func(code, 0, 1);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
 
         let (jit_func, compiled) = pipeline
             .compile_function(&module.functions[0], &module, 0)
@@ -243,7 +247,7 @@ mod tests {
         emit(&mut code, Opcode::Return);
 
         let module = make_module_with_func(code, 0, 0);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
 
         let (jit_func, _) = pipeline
             .compile_function(&module.functions[0], &module, 0)
@@ -265,7 +269,7 @@ mod tests {
         emit(&mut code, Opcode::Return); // offset 17
 
         let module = make_module_with_func(code, 0, 0);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
 
         let (jit_func, _) = pipeline
             .compile_function(&module.functions[0], &module, 0)
@@ -326,7 +330,7 @@ mod tests {
             jit_hints: vec![],
         };
 
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
         let results = pipeline.compile_module(&module).unwrap();
 
         assert_eq!(results.len(), 2);
@@ -337,7 +341,7 @@ mod tests {
     #[test]
     fn test_pipeline_empty_function() {
         let module = make_module_with_func(vec![], 0, 0);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
 
         let result = pipeline.compile_function(&module.functions[0], &module, 0);
         assert!(result.is_ok());
@@ -357,7 +361,7 @@ mod tests {
         emit(&mut code, Opcode::ReturnVoid);
 
         let module = make_module_with_func(code, 0, 0);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
 
         let result = pipeline.compile_function(&module.functions[0], &module, 0);
         assert!(
@@ -389,7 +393,7 @@ mod tests {
         emit(&mut code, Opcode::Return); // offset 42
 
         let module = make_module_with_func(code, 0, 1);
-        let pipeline = JitPipeline::new(StubBackend);
+        let pipeline = JitPipeline::new(test_backend());
 
         let result = pipeline.compile_function(&module.functions[0], &module, 0);
         assert!(
@@ -412,7 +416,7 @@ mod tests {
         emit(&mut code, Opcode::Return);
 
         let module = make_module_with_func(code, 0, 0);
-        let pipeline = JitPipeline::with_optimizer(StubBackend, JitOptimizer::empty());
+        let pipeline = JitPipeline::with_optimizer(test_backend(), JitOptimizer::empty());
 
         let (jit_func, _) = pipeline
             .compile_function(&module.functions[0], &module, 0)

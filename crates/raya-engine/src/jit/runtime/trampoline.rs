@@ -25,11 +25,10 @@ pub type JitEntryFn = unsafe extern "C" fn(
 pub enum JitExitKind {
     Completed = 0,
     Suspended = 1,
-    Deoptimized = 2,
-    Failed = 3,
+    Failed = 2,
 }
 
-/// Minimal native-frame snapshot to support resume/deopt plumbing.
+/// Minimal native-frame snapshot to support resume plumbing.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JitMachineFrameSnapshot {
@@ -52,13 +51,13 @@ pub struct JitExitInfo {
     pub kind: u32,
     /// Suspension tag discriminator (VM-specific; 0 = none).
     pub suspend_tag: u32,
-    /// Bytecode offset for deopt/resume (if relevant).
+    /// Bytecode offset for resume (if relevant).
     pub bytecode_offset: u32,
     /// Reserved for alignment/extension.
     pub _reserved: u32,
     /// Captured native frame metadata.
     pub frame: JitMachineFrameSnapshot,
-    /// Materialized operand count for interpreter-boundary resume handoff.
+    /// Materialized operand count for compiled suspend/resume handoff.
     pub native_arg_count: u32,
     /// Reserved for alignment/extension.
     pub _native_reserved: u32,
@@ -129,10 +128,10 @@ pub struct RuntimeHelperTable {
             *const (),
             *mut (),
         ) -> BackendCallResult,
-    /// Throw an exception: (exception_value, shared_state) -> !
+    /// Throw an exception through the shared runtime ABI.
     pub throw_exception: unsafe extern "C" fn(u64, *mut ()),
-    /// Deoptimize: (bytecode_offset, shared_state) -> !
-    pub deoptimize: unsafe extern "C" fn(u32, *mut ()),
+    /// Reserved helper slot kept only for table layout stability.
+    pub reserved0: usize,
     /// String concatenation: (left_val, right_val, shared_state) -> result_val
     pub string_concat: unsafe extern "C" fn(u64, u64, *mut ()) -> u64,
     /// Generic equality: (left_val, right_val, shared_state) -> bool

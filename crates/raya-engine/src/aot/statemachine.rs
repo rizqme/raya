@@ -986,7 +986,6 @@ impl<'a> StateMachineTransformer<'a> {
                 ExecutionSuspendKind::IoWait => SuspendTag::IoWait as i32,
                 ExecutionSuspendKind::GeneratorYield => SuspendTag::JsGeneratorYield as i32,
                 ExecutionSuspendKind::GeneratorInit => SuspendTag::JsGeneratorInit as i32,
-                ExecutionSuspendKind::InterpreterBoundary => SuspendTag::InterpreterBoundary as i32,
             };
             save_instrs.push(SmInstr::ConstI32 {
                 dest: reason_const,

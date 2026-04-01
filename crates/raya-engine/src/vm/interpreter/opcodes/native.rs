@@ -16619,7 +16619,8 @@ impl<'a> Interpreter<'a> {
                             self.layouts,
                             task.id(),
                             self.class_metadata,
-                        );
+                        )
+                        .with_scheduler(self.tasks, self.injector);
                         let native_args: Vec<raya_sdk::NativeValue> =
                             args.iter().map(|v| value_to_native(*v)).collect();
                         let resolved = self.module_resolved_natives(module);

@@ -299,7 +299,6 @@ impl JitEngine {
             code_size,
             entry_offset: 0,
             stack_maps: vec![],
-            deopt_info: vec![],
         };
 
         let layout_dependencies = self.collect_layout_dependencies(module, func_idx);
