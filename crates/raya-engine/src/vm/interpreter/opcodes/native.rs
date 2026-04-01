@@ -16579,11 +16579,18 @@ impl<'a> Interpreter<'a> {
                     )));
                 };
 
-                let mut dispatch_native = |this: &mut Self, native_id: u16| {
+                fn dispatch_native_kernel(
+                    this: &mut Interpreter<'_>,
+                    stack: &mut Stack,
+                    module: &Module,
+                    task: &Arc<Task>,
+                    native_id: u16,
+                    native_argc: u8,
+                ) -> OpcodeResult {
                     let fake_code = [
                         (native_id & 0x00FF) as u8,
                         ((native_id >> 8) & 0x00FF) as u8,
-                        arg_count,
+                        native_argc,
                     ];
                     let mut nested_ip = 0usize;
                     this.exec_native_ops(
@@ -16594,11 +16601,22 @@ impl<'a> Interpreter<'a> {
                         task,
                         Opcode::Nop,
                     )
-                };
+                }
+
+                fn dispatch_type_kernel(
+                    this: &mut Interpreter<'_>,
+                    stack: &mut Stack,
+                    module: &Module,
+                    task: &Arc<Task>,
+                    opcode: Opcode,
+                ) -> OpcodeResult {
+                    let mut nested_ip = 0usize;
+                    this.exec_type_ops(stack, &mut nested_ip, &[], module, task, opcode)
+                }
 
                 match kernel_op {
                     crate::compiler::ir::KernelOp::VmNative(native_id) => {
-                        dispatch_native(self, native_id)
+                        dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
                     }
                     crate::compiler::ir::KernelOp::RegisteredNative(local_idx) => {
                         use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
@@ -16703,7 +16721,7 @@ impl<'a> Interpreter<'a> {
                                 crate::compiler::native_id::REFLECT_CONSTRUCT
                             }
                         };
-                        dispatch_native(self, native_id)
+                        dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
                     }
                     crate::compiler::ir::KernelOp::Iterator(kind) => {
                         let native_id = match kind {
@@ -16744,8 +16762,227 @@ impl<'a> Interpreter<'a> {
                                 crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY
                             }
                         };
-                        dispatch_native(self, native_id)
+                        dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
                     }
+                    crate::compiler::ir::KernelOp::Js(kind) => match kind {
+                        crate::semantics::JsOpKind::GetNamed
+                        | crate::semantics::JsOpKind::GetKeyed => {
+                            dispatch_type_kernel(self, stack, module, task, Opcode::DynGetKeyed)
+                        }
+                        crate::semantics::JsOpKind::SetNamed { strict }
+                        | crate::semantics::JsOpKind::SetKeyed { strict } => {
+                            let native_id = if strict {
+                                crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT
+                            } else {
+                                crate::compiler::native_id::OBJECT_SET_PROPERTY
+                            };
+                            dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
+                        }
+                        crate::semantics::JsOpKind::BindMethod => {
+                            let key = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            let receiver = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            if let Err(e) = stack.push(receiver) {
+                                return OpcodeResult::Error(e);
+                            }
+                            if let Err(e) = stack.push(key) {
+                                return OpcodeResult::Error(e);
+                            }
+                            match dispatch_type_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                Opcode::DynGetKeyed,
+                            ) {
+                                OpcodeResult::Continue => {}
+                                other => return other,
+                            }
+                            let closure = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            if let Err(e) = stack.push(closure) {
+                                return OpcodeResult::Error(e);
+                            }
+                            if let Err(e) = stack.push(receiver) {
+                                return OpcodeResult::Error(e);
+                            }
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::FUNCTION_BIND_HELPER,
+                                2,
+                            )
+                        }
+                        crate::semantics::JsOpKind::ResolveIdentifier { non_throwing } => {
+                            let native_id = if non_throwing {
+                                crate::compiler::native_id::OBJECT_JS_TRY_GET_IDENTIFIER
+                            } else {
+                                crate::compiler::native_id::OBJECT_JS_GET_IDENTIFIER
+                            };
+                            dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
+                        }
+                        crate::semantics::JsOpKind::AssignIdentifier { .. } => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::OBJECT_JS_SET_IDENTIFIER,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::JsOpKind::CallValue => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::FUNCTION_CALL_HELPER,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::JsOpKind::CallMemberNamed
+                        | crate::semantics::JsOpKind::CallMemberKeyed => {
+                            let args_array = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            let key = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            let receiver = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            if let Err(e) = stack.push(receiver) {
+                                return OpcodeResult::Error(e);
+                            }
+                            if let Err(e) = stack.push(key) {
+                                return OpcodeResult::Error(e);
+                            }
+                            match dispatch_type_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                Opcode::DynGetKeyed,
+                            ) {
+                                OpcodeResult::Continue => {}
+                                other => return other,
+                            }
+                            let closure = match stack.pop() {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                            if let Err(e) = stack.push(closure) {
+                                return OpcodeResult::Error(e);
+                            }
+                            if let Err(e) = stack.push(receiver) {
+                                return OpcodeResult::Error(e);
+                            }
+                            if let Err(e) = stack.push(args_array) {
+                                return OpcodeResult::Error(e);
+                            }
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::FUNCTION_CALL_HELPER,
+                                3,
+                            )
+                        }
+                        crate::semantics::JsOpKind::ConstructValue => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::OBJECT_CONSTRUCT_APPLY_HELPER,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::JsOpKind::PushWithEnv => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::OBJECT_PUSH_WITH_ENV,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::JsOpKind::PopWithEnv => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::OBJECT_POP_WITH_ENV,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::JsOpKind::PushDeclarativeEnv => dispatch_native_kernel(
+                            self,
+                            stack,
+                            module,
+                            task,
+                            crate::compiler::native_id::OBJECT_PUSH_DECLARATIVE_ENV,
+                            arg_count,
+                        ),
+                        crate::semantics::JsOpKind::PopDeclarativeEnv => dispatch_native_kernel(
+                            self,
+                            stack,
+                            module,
+                            task,
+                            crate::compiler::native_id::OBJECT_POP_DECLARATIVE_ENV,
+                            arg_count,
+                        ),
+                        crate::semantics::JsOpKind::ReplaceDeclarativeEnv => dispatch_native_kernel(
+                            self,
+                            stack,
+                            module,
+                            task,
+                            crate::compiler::native_id::OBJECT_REPLACE_DECLARATIVE_ENV,
+                            arg_count,
+                        ),
+                        crate::semantics::JsOpKind::DirectEval => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::FUNCTION_EVAL_HELPER,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::JsOpKind::EvalGetCompletion => dispatch_native_kernel(
+                            self,
+                            stack,
+                            module,
+                            task,
+                            crate::compiler::native_id::OBJECT_EVAL_GET_COMPLETION,
+                            arg_count,
+                        ),
+                        crate::semantics::JsOpKind::EvalSetCompletion => dispatch_native_kernel(
+                            self,
+                            stack,
+                            module,
+                            task,
+                            crate::compiler::native_id::OBJECT_EVAL_SET_COMPLETION,
+                            arg_count,
+                        ),
+                    },
                     crate::compiler::ir::KernelOp::HostHandle(kind) => match kind {
                         crate::semantics::HostHandleOpKind::ChannelConstructor => {
                             self.safepoint.poll();
@@ -16874,10 +17111,24 @@ impl<'a> Interpreter<'a> {
                                 .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
                         }
                         crate::semantics::HostHandleOpKind::TaskIsDone => {
-                            dispatch_native(self, crate::compiler::native_id::TASK_IS_DONE)
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::TASK_IS_DONE,
+                                arg_count,
+                            )
                         }
                         crate::semantics::HostHandleOpKind::TaskIsCancelled => {
-                            dispatch_native(self, crate::compiler::native_id::TASK_IS_CANCELLED)
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::TASK_IS_CANCELLED,
+                                arg_count,
+                            )
                         }
                     },
                 }

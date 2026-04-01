@@ -381,103 +381,16 @@ fn is_structural_slot_safe_type(
     }
 }
 
-/// Resolve any `LateBoundMember` instructions in the IR module.
+/// Legacy hook kept for pipeline compatibility after removing `LateBoundMember`.
 ///
-/// After monomorphization, TypeVar registers have been substituted with concrete types.
-/// This pass replaces `LateBoundMember` instructions with the correct concrete opcodes
-/// (e.g., ArrayLen, StringLen, LoadFieldExact) based on the now-known object type.
+/// Dynamic JS member access now lowers directly to explicit runtime/kernel ops,
+/// so there is nothing left to rewrite here after monomorphization.
 pub fn resolve_late_bound_members(
     ir_module: &mut IrModule,
     type_registry: &TypeRegistry,
     type_ctx: &TypeContext,
 ) {
-    for func in &mut ir_module.functions {
-        for block in &mut func.blocks {
-            for instr in &mut block.instructions {
-                if let IrInstr::LateBoundMember {
-                    dest,
-                    object,
-                    property,
-                } = instr
-                {
-                    let obj_ty = object.ty;
-                    let dispatch_ty = type_registry
-                        .normalize_type(obj_ty.as_u32(), type_ctx)
-                        .unwrap_or(crate::compiler::type_registry::UNRESOLVED_TYPE_ID);
-
-                    if dispatch_ty == crate::compiler::type_registry::UNRESOLVED_TYPE_ID {
-                        let mut visited = FxHashSet::default();
-                        if is_structural_slot_safe_type(type_ctx, obj_ty, &mut visited) {
-                            if let Some(field) =
-                                structural_slot_index_for_property(type_ctx, obj_ty, property)
-                            {
-                                *instr = IrInstr::LoadFieldExact {
-                                    dest: dest.clone(),
-                                    object: object.clone(),
-                                    field,
-                                    optional: false,
-                                };
-                                continue;
-                            }
-                        }
-
-                        // Still unresolved after substitution: keep name-based dynamic lookup.
-                        *instr = IrInstr::DynGetProp {
-                            dest: dest.clone(),
-                            object: object.clone(),
-                            property: property.clone(),
-                        };
-                        continue;
-                    }
-
-                    // Try property dispatch (e.g., .length → ArrayLen/StringLen)
-                    if let Some(action) = type_registry.lookup_property(dispatch_ty, property) {
-                        use crate::compiler::type_registry::{DispatchAction, OpcodeKind};
-                        match action {
-                            DispatchAction::Opcode(OpcodeKind::ArrayLen) => {
-                                *instr = IrInstr::ArrayLen {
-                                    dest: dest.clone(),
-                                    array: object.clone(),
-                                };
-                                continue;
-                            }
-                            DispatchAction::Opcode(OpcodeKind::StringLen) => {
-                                *instr = IrInstr::StringLen {
-                                    dest: dest.clone(),
-                                    string: object.clone(),
-                                };
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    let mut visited = FxHashSet::default();
-                    if is_structural_slot_safe_type(type_ctx, obj_ty, &mut visited) {
-                        if let Some(field) =
-                            structural_slot_index_for_property(type_ctx, obj_ty, property)
-                        {
-                            *instr = IrInstr::LoadFieldExact {
-                                dest: dest.clone(),
-                                object: object.clone(),
-                                field,
-                                optional: false,
-                            };
-                            continue;
-                        }
-                    }
-
-                    // Conservative dynamic fallback: preserve property-name dispatch.
-                    // Avoid unsafe slot-0 field assumptions for unresolved layouts.
-                    *instr = IrInstr::DynGetProp {
-                        dest: dest.clone(),
-                        object: object.clone(),
-                        property: property.clone(),
-                    };
-                }
-            }
-        }
-    }
+    let _ = (ir_module, type_registry, type_ctx);
 }
 
 /// Collect generic template metadata from IR module.
@@ -606,67 +519,4 @@ mod tests {
         assert_eq!(ctx.pending.len(), 1);
     }
 
-    fn make_reg(id: u32, ty_id: u32) -> Register {
-        Register::new(RegisterId::new(id), TypeId::new(ty_id))
-    }
-
-    #[test]
-    fn test_resolve_late_bound_member_uses_structural_load_field() {
-        let mut type_ctx = TypeContext::new();
-        let number_ty = TypeId::new(TypeContext::NUMBER_TYPE_ID);
-        let string_ty = TypeId::new(TypeContext::STRING_TYPE_ID);
-        let object_ty = type_ctx.object_type(vec![
-            PropertySignature {
-                name: "b".to_string(),
-                ty: string_ty,
-                optional: false,
-                readonly: false,
-                visibility: Visibility::Public,
-            },
-            PropertySignature {
-                name: "a".to_string(),
-                ty: number_ty,
-                optional: false,
-                readonly: false,
-                visibility: Visibility::Public,
-            },
-        ]);
-
-        let object = make_reg(0, object_ty.as_u32());
-        let dest = make_reg(1, number_ty.as_u32());
-        let mut block = BasicBlock::new(BasicBlockId::new(0));
-        block.add_instr(IrInstr::LateBoundMember {
-            dest: dest.clone(),
-            object: object.clone(),
-            property: "a".to_string(),
-        });
-        block.set_terminator(Terminator::Return(Some(dest.clone())));
-
-        let mut func = IrFunction::new("main", vec![], number_ty);
-        func.add_block(block);
-
-        let mut module = IrModule::new("test");
-        module.add_function(func);
-
-        let type_registry = TypeRegistry::new(
-            &type_ctx,
-            crate::compiler::module::builtin_surface_manifest_for_mode(
-                crate::compiler::module::BuiltinSurfaceMode::RayaStrict,
-            ),
-        );
-        resolve_late_bound_members(&mut module, &type_registry, &type_ctx);
-
-        match &module.functions[0].blocks[0].instructions[0] {
-            IrInstr::LoadFieldExact {
-                field, optional, ..
-            } => {
-                assert_eq!(
-                    *field, 0,
-                    "sorted structural layout should map 'a' to slot 0"
-                );
-                assert!(!optional);
-            }
-            other => panic!("expected LoadFieldExact after late-bound resolution, got {other:?}"),
-        }
-    }
 }

@@ -586,12 +586,16 @@ impl<'a> Lowerer<'a> {
 
     fn lower_with(&mut self, with_stmt: &ast::WithStatement) {
         let object = self.lower_expr(&with_stmt.object);
-        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_PUSH_WITH_ENV, vec![object]);
+        self.emit_js_kernel_call(
+            None,
+            crate::semantics::JsOpKind::PushWithEnv,
+            vec![object],
+        );
         self.active_with_env_depth += 1;
         self.lower_stmt(&with_stmt.body);
         self.active_with_env_depth = self.active_with_env_depth.saturating_sub(1);
         if !self.current_block_is_terminated() {
-            self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_POP_WITH_ENV, vec![]);
+            self.emit_js_kernel_call(None, crate::semantics::JsOpKind::PopWithEnv, vec![]);
         }
     }
 

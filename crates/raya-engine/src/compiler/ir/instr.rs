@@ -75,6 +75,7 @@ pub enum KernelOp {
     Metaobject(crate::semantics::MetaobjectOpKind),
     Iterator(crate::semantics::IteratorOpKind),
     HostHandle(crate::semantics::HostHandleOpKind),
+    Js(crate::semantics::JsOpKind),
     RegisteredNative(u16),
 }
 
@@ -86,6 +87,7 @@ const KERNEL_PROPERTY_BASE: KernelOpId = 0xF100;
 const KERNEL_METAOBJECT_BASE: KernelOpId = 0xF200;
 const KERNEL_ITERATOR_BASE: KernelOpId = 0xF300;
 const KERNEL_HOST_HANDLE_BASE: KernelOpId = 0xF400;
+const KERNEL_JS_BASE: KernelOpId = 0xF500;
 
 pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
     match op {
@@ -148,10 +150,66 @@ pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
                     crate::semantics::HostHandleOpKind::TaskIsCancelled => 6,
                 }
         }
+        KernelOp::Js(kind) => {
+            KERNEL_JS_BASE
+                + match kind {
+                    crate::semantics::JsOpKind::GetNamed => 0,
+                    crate::semantics::JsOpKind::GetKeyed => 1,
+                    crate::semantics::JsOpKind::SetNamed { strict: false } => 2,
+                    crate::semantics::JsOpKind::SetNamed { strict: true } => 3,
+                    crate::semantics::JsOpKind::SetKeyed { strict: false } => 4,
+                    crate::semantics::JsOpKind::SetKeyed { strict: true } => 5,
+                    crate::semantics::JsOpKind::BindMethod => 6,
+                    crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: false } => 7,
+                    crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: true } => 8,
+                    crate::semantics::JsOpKind::AssignIdentifier { strict: false } => 9,
+                    crate::semantics::JsOpKind::AssignIdentifier { strict: true } => 10,
+                    crate::semantics::JsOpKind::CallValue => 11,
+                    crate::semantics::JsOpKind::CallMemberNamed => 12,
+                    crate::semantics::JsOpKind::CallMemberKeyed => 13,
+                    crate::semantics::JsOpKind::ConstructValue => 14,
+                    crate::semantics::JsOpKind::PushWithEnv => 15,
+                    crate::semantics::JsOpKind::PopWithEnv => 16,
+                    crate::semantics::JsOpKind::PushDeclarativeEnv => 17,
+                    crate::semantics::JsOpKind::PopDeclarativeEnv => 18,
+                    crate::semantics::JsOpKind::ReplaceDeclarativeEnv => 19,
+                    crate::semantics::JsOpKind::DirectEval => 20,
+                    crate::semantics::JsOpKind::EvalGetCompletion => 21,
+                    crate::semantics::JsOpKind::EvalSetCompletion => 22,
+                }
+        }
     }
 }
 
 pub fn decode_kernel_op_id(id: KernelOpId) -> Option<KernelOp> {
+    if id >= KERNEL_JS_BASE {
+        return Some(KernelOp::Js(match id - KERNEL_JS_BASE {
+            0 => crate::semantics::JsOpKind::GetNamed,
+            1 => crate::semantics::JsOpKind::GetKeyed,
+            2 => crate::semantics::JsOpKind::SetNamed { strict: false },
+            3 => crate::semantics::JsOpKind::SetNamed { strict: true },
+            4 => crate::semantics::JsOpKind::SetKeyed { strict: false },
+            5 => crate::semantics::JsOpKind::SetKeyed { strict: true },
+            6 => crate::semantics::JsOpKind::BindMethod,
+            7 => crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: false },
+            8 => crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: true },
+            9 => crate::semantics::JsOpKind::AssignIdentifier { strict: false },
+            10 => crate::semantics::JsOpKind::AssignIdentifier { strict: true },
+            11 => crate::semantics::JsOpKind::CallValue,
+            12 => crate::semantics::JsOpKind::CallMemberNamed,
+            13 => crate::semantics::JsOpKind::CallMemberKeyed,
+            14 => crate::semantics::JsOpKind::ConstructValue,
+            15 => crate::semantics::JsOpKind::PushWithEnv,
+            16 => crate::semantics::JsOpKind::PopWithEnv,
+            17 => crate::semantics::JsOpKind::PushDeclarativeEnv,
+            18 => crate::semantics::JsOpKind::PopDeclarativeEnv,
+            19 => crate::semantics::JsOpKind::ReplaceDeclarativeEnv,
+            20 => crate::semantics::JsOpKind::DirectEval,
+            21 => crate::semantics::JsOpKind::EvalGetCompletion,
+            22 => crate::semantics::JsOpKind::EvalSetCompletion,
+            _ => return None,
+        }));
+    }
     if id >= KERNEL_HOST_HANDLE_BASE {
         return Some(KernelOp::HostHandle(match id - KERNEL_HOST_HANDLE_BASE {
             0 => crate::semantics::HostHandleOpKind::ChannelConstructor,
@@ -428,16 +486,6 @@ pub enum IrInstr {
         value: Register,
     },
 
-    /// Late-bound member access: dest = object.property
-    /// Emitted when the object type is a TypeVar (generic constraint).
-    /// Resolved to a concrete opcode (ArrayLen, StringLen, LoadFieldExact, etc.)
-    /// after monomorphization substitutes the TypeVar with a concrete type.
-    LateBoundMember {
-        dest: Register,
-        object: Register,
-        property: String,
-    },
-
     /// Load array element: dest = array[index]
     LoadElement {
         dest: Register,
@@ -651,7 +699,6 @@ impl IrInstr {
             | IrInstr::CastObjectMinFields { dest, .. }
             | IrInstr::CastArrayElemKind { dest, .. }
             | IrInstr::CastKindMask { dest, .. }
-            | IrInstr::LateBoundMember { dest, .. }
             | IrInstr::BindMethod { dest, .. } => Some(dest),
             IrInstr::ConstructType { dest, .. } => Some(dest),
             IrInstr::Call { dest, .. }
@@ -693,7 +740,6 @@ impl IrInstr {
                 | IrInstr::CallClosure { .. }
                 | IrInstr::DynGetProp { .. }
                 | IrInstr::DynGetKeyed { .. }
-                | IrInstr::LateBoundMember { .. }
                 | IrInstr::StoreLocal { .. }
                 | IrInstr::PopToLocal { .. }
                 | IrInstr::StoreGlobal { .. }

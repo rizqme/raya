@@ -144,9 +144,6 @@ impl DeadCodeEliminator {
                 used.insert(key.id);
                 used.insert(value.id);
             }
-            IrInstr::LateBoundMember { object, .. } => {
-                used.insert(object.id);
-            }
             IrInstr::LoadElement { array, index, .. } => {
                 used.insert(array.id);
                 used.insert(index.id);

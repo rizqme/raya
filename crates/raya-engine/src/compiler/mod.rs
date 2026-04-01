@@ -332,11 +332,12 @@ impl<'a> Compiler<'a> {
         let type_registry = type_registry::TypeRegistry::new(&self.type_ctx, builtin_surface);
         monomorphize::resolve_late_bound_members(&mut ir_module, &type_registry, &self.type_ctx);
 
-        // Strict no-fallback invariant: DynSetProp must not survive lowering
-        // when disabled.  DynGetProp and LateBoundMember may legitimately appear
-        // for imported class instances whose methods are checker-validated but
-        // require runtime dispatch (no local nominal type ID).
-        if !self.semantic_profile.allow_unresolved_runtime_fallback {
+        // Strict dynamic-JS invariant: dynamic JS property writes must not survive
+        // lowering when JS dynamic semantics are disabled.
+        if matches!(
+            self.semantic_profile.js_dynamic_semantics,
+            crate::semantics::JsDynamicSemantics::Disabled
+        ) {
             for func in &ir_module.functions {
                 for block in &func.blocks {
                     for instr in &block.instructions {

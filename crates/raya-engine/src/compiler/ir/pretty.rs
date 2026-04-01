@@ -233,6 +233,9 @@ fn format_instr(instr: &IrInstr) -> String {
                 crate::compiler::ir::KernelOp::HostHandle(kind) => {
                     format!("host:{kind:?}")
                 }
+                crate::compiler::ir::KernelOp::Js(kind) => {
+                    format!("js:{kind:?}")
+                }
             };
             if let Some(d) = dest {
                 format!(
@@ -397,13 +400,6 @@ fn format_instr(instr: &IrInstr) -> String {
         }
         IrInstr::DynSetKeyed { object, key, value } => {
             format!("dyn_set_keyed {}[{}] = {}", object, key, value)
-        }
-        IrInstr::LateBoundMember {
-            dest,
-            object,
-            property,
-        } => {
-            format!("{} = late_bound {}.{}", dest, object, property)
         }
         IrInstr::LoadElement { dest, array, index } => {
             format!("{} = load_elem {}[{}]", dest, array, index)

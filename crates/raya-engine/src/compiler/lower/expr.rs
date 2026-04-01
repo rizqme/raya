@@ -981,11 +981,7 @@ impl<'a> Lowerer<'a> {
                     .clone()
                     .unwrap_or_else(|| self.lower_expr(&member.object));
                 let closure = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::LateBoundMember {
-                    dest: closure.clone(),
-                    object: object.clone(),
-                    property: method_name.to_string(),
-                });
+                self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
                 self.emit_member_closure_invoke(
                     dest.clone(),
                     object,
@@ -1180,11 +1176,7 @@ impl<'a> Lowerer<'a> {
             }
             crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty => {
                 let dest = self.alloc_register(member_ty);
-                self.emit(IrInstr::LateBoundMember {
-                    dest: dest.clone(),
-                    object,
-                    property: property_name.to_string(),
-                });
+                self.emit_dyn_get_named(dest.clone(), object, property_name);
                 Some(dest)
             }
             crate::semantics::PropertyDispatchKind::DynamicProperty => {
@@ -2449,7 +2441,7 @@ impl<'a> Lowerer<'a> {
             });
         }
 
-        if self.allow_unresolved_runtime_fallback {
+        if self.js_dynamic_semantics_enabled() {
             return Some(super::ResolvedBinding::AmbientGlobal {
                 env: self.env_handle_for_binding(false, true, false),
                 symbol,
@@ -2598,12 +2590,14 @@ impl<'a> Lowerer<'a> {
             super::ResolvedBinding::AmbientGlobal { symbol, .. } => {
                 let name = self.interner.resolve(symbol);
                 let dest = self.alloc_register(UNRESOLVED);
-                let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                self.emit(IrInstr::Assign {
-                    dest: name_reg.clone(),
-                    value: IrValue::Constant(IrConstant::String(name.to_string())),
-                });
-                self.emit_vm_native_call(Some(dest.clone()), crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL, vec![name_reg]);
+                let name_reg = self.emit_direct_eval_name_reg(name);
+                self.emit_js_kernel_call(
+                    Some(dest.clone()),
+                    crate::semantics::JsOpKind::ResolveIdentifier {
+                        non_throwing: false,
+                    },
+                    vec![name_reg],
+                );
                 dest
             }
         }
@@ -3157,11 +3151,11 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let dest = self.alloc_register(UNRESOLVED);
         let name_reg = self.emit_direct_eval_name_reg(name);
-        self.emit_vm_native_call(Some(dest.clone()), if non_throwing {
-                crate::compiler::native_id::OBJECT_JS_TRY_GET_IDENTIFIER
-            } else {
-                crate::compiler::native_id::OBJECT_JS_GET_IDENTIFIER
-            }, vec![name_reg]);
+        self.emit_js_kernel_call(
+            Some(dest.clone()),
+            crate::semantics::JsOpKind::ResolveIdentifier { non_throwing },
+            vec![name_reg],
+        );
         dest
     }
 
@@ -3183,7 +3177,13 @@ impl<'a> Lowerer<'a> {
 
     pub(super) fn emit_direct_eval_binding_set(&mut self, name: &str, value: Register) {
         let name_reg = self.emit_direct_eval_name_reg(name);
-        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_JS_SET_IDENTIFIER, vec![name_reg, value]);
+        self.emit_js_kernel_call(
+            None,
+            crate::semantics::JsOpKind::AssignIdentifier {
+                strict: self.js_strict_context,
+            },
+            vec![name_reg, value],
+        );
     }
 
     pub(super) fn emit_direct_eval_binding_declare_function(
@@ -3201,11 +3201,19 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn emit_push_declarative_env(&mut self) {
-        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_PUSH_DECLARATIVE_ENV, vec![]);
+        self.emit_js_kernel_call(
+            None,
+            crate::semantics::JsOpKind::PushDeclarativeEnv,
+            vec![],
+        );
     }
 
     pub(super) fn emit_pop_declarative_env(&mut self) {
-        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_POP_DECLARATIVE_ENV, vec![]);
+        self.emit_js_kernel_call(
+            None,
+            crate::semantics::JsOpKind::PopDeclarativeEnv,
+            vec![],
+        );
     }
 
     pub(super) fn emit_replace_declarative_env(&mut self, binding_names: &[String]) {
@@ -3213,16 +3221,20 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|name| self.emit_direct_eval_name_reg(name))
             .collect();
-        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_REPLACE_DECLARATIVE_ENV,
+        self.emit_js_kernel_call(
+            None,
+            crate::semantics::JsOpKind::ReplaceDeclarativeEnv,
             args,
         );
     }
 
     fn emit_unresolved_js_assignment(&mut self, name: &str, value: Register) {
         let name_reg = self.emit_direct_eval_name_reg(name);
-        self.emit_vm_native_call(
+        self.emit_js_kernel_call(
             None,
-            crate::compiler::native_id::OBJECT_JS_SET_IDENTIFIER,
+            crate::semantics::JsOpKind::AssignIdentifier {
+                strict: self.js_strict_context,
+            },
             vec![name_reg, value],
         );
     }
@@ -4002,17 +4014,28 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn emit_dyn_get_named(&mut self, dest: Register, object: Register, property: &str) {
-        // TODO Phase 2 completion: emit JsGetNamed when js_this_binding_compat is true
-        // and handlers are fully wired to the property kernel. For now, DynGetKeyed
-        // handles both Raya and JS semantics through the existing mature handler.
         let key = self.emit_named_key_register(property);
-        self.emit(IrInstr::DynGetKeyed { dest, object, key });
+        if self.js_dynamic_semantics_enabled() {
+            self.emit_js_kernel_call(
+                Some(dest),
+                crate::semantics::JsOpKind::GetNamed,
+                vec![object, key],
+            );
+        } else {
+            self.emit(IrInstr::DynGetKeyed { dest, object, key });
+        }
     }
 
     fn emit_dyn_set_named(&mut self, object: Register, property: &str, value: Register) {
         let key = self.emit_named_key_register(property);
-        if self.js_this_binding_compat {
-            self.emit_vm_native_call(None, crate::compiler::native_id::REFLECT_SET, vec![object, key, value]);
+        if self.js_dynamic_semantics_enabled() {
+            self.emit_js_kernel_call(
+                None,
+                crate::semantics::JsOpKind::SetNamed {
+                    strict: self.js_strict_context,
+                },
+                vec![object, key, value],
+            );
         } else {
             self.emit(IrInstr::DynSetKeyed { object, key, value });
         }
@@ -4235,12 +4258,14 @@ impl<'a> Lowerer<'a> {
         // objects instead of raw native handles.
         let dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
         let ctor_value = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
-        let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-        self.emit(IrInstr::Assign {
-            dest: name_reg.clone(),
-            value: IrValue::Constant(IrConstant::String(TC::REGEXP_TYPE_NAME.to_string())),
-        });
-        self.emit_vm_native_call(Some(ctor_value.clone()), crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL, vec![name_reg]);
+        let name_reg = self.emit_direct_eval_name_reg(TC::REGEXP_TYPE_NAME);
+        self.emit_js_kernel_call(
+            Some(ctor_value.clone()),
+            crate::semantics::JsOpKind::ResolveIdentifier {
+                non_throwing: false,
+            },
+            vec![name_reg],
+        );
         self.emit_vm_native_call(Some(dest.clone()), crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS, vec![ctor_value, pattern_reg, flags_reg]);
         dest
     }
@@ -4467,7 +4492,7 @@ impl<'a> Lowerer<'a> {
             let is_refcell = self.captures[idx].is_refcell;
             let capture_idx = self.captures[idx].capture_idx;
 
-            if self.allow_unresolved_runtime_fallback && self.js_this_binding_compat {
+            if self.js_dynamic_semantics_enabled() && self.js_this_binding_compat {
                 return self.lower_eval_shadowable_identifier(name, |this| {
                     if is_refcell {
                         let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
@@ -4551,7 +4576,7 @@ impl<'a> Lowerer<'a> {
                     is_immutable,
                 });
 
-                if self.allow_unresolved_runtime_fallback && self.js_this_binding_compat {
+                if self.js_dynamic_semantics_enabled() && self.js_this_binding_compat {
                     return self.lower_eval_shadowable_identifier(name, |this| {
                         if is_refcell {
                             let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
@@ -4750,12 +4775,14 @@ impl<'a> Lowerer<'a> {
                 .unwrap_or(UNRESOLVED);
             self.seed_constructor_projection_binding_from_type(ident.name, Some(expr_ty));
             let dest = self.alloc_register(expr_ty);
-            let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-            self.emit(IrInstr::Assign {
-                dest: name_reg.clone(),
-                value: IrValue::Constant(IrConstant::String(name.to_string())),
-            });
-            self.emit_vm_native_call(Some(dest.clone()), crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL, vec![name_reg]);
+            let name_reg = self.emit_direct_eval_name_reg(name);
+            self.emit_js_kernel_call(
+                Some(dest.clone()),
+                crate::semantics::JsOpKind::ResolveIdentifier {
+                    non_throwing: false,
+                },
+                vec![name_reg],
+            );
             return dest;
         }
 
@@ -4814,10 +4841,10 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // In JS-compat mode with runtime fallback, emit a dynamic global lookup
-        // instead of a hard compile error.  The runtime will throw ReferenceError if
-        // the identifier is truly absent.
-        if self.allow_unresolved_runtime_fallback {
+        // In JS-compat mode, emit an explicit dynamic JS identifier lookup
+        // instead of a hard compile error. The runtime will throw ReferenceError
+        // if the identifier is truly absent.
+        if self.js_dynamic_semantics_enabled() {
             if std::env::var("RAYA_DEBUG_UNRESOLVED_IDENT").is_ok() {
                 let fn_name = self
                     .current_function
@@ -4847,12 +4874,14 @@ impl<'a> Lowerer<'a> {
                 return self.emit_direct_eval_binding_get(name, false);
             }
             let dest = self.alloc_register(UNRESOLVED);
-            let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-            self.emit(IrInstr::Assign {
-                dest: name_reg.clone(),
-                value: IrValue::Constant(IrConstant::String(name.to_string())),
-            });
-            self.emit_vm_native_call(Some(dest.clone()), crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL, vec![name_reg]);
+            let name_reg = self.emit_direct_eval_name_reg(name);
+            self.emit_js_kernel_call(
+                Some(dest.clone()),
+                crate::semantics::JsOpKind::ResolveIdentifier {
+                    non_throwing: false,
+                },
+                vec![name_reg],
+            );
             return dest;
         }
 
@@ -5562,13 +5591,17 @@ impl<'a> Lowerer<'a> {
                     dest: uses_script_global_bindings_reg.clone(),
                     value: IrValue::Constant(IrConstant::Boolean(uses_script_global_bindings)),
                 });
-                self.emit_vm_native_call(Some(dest.clone()), crate::compiler::native_id::FUNCTION_EVAL_HELPER, vec![
+                self.emit_js_kernel_call(
+                    Some(dest.clone()),
+                    crate::semantics::JsOpKind::DirectEval,
+                    vec![
                         source,
                         env_object.clone(),
                         eval_context_reg,
                         in_parameter_initializer_reg,
                         uses_script_global_bindings_reg,
-                    ]);
+                    ],
+                );
                 let result_local = self.allocate_anonymous_local();
                 self.emit(IrInstr::StoreLocal {
                     index: result_local,
@@ -5583,12 +5616,14 @@ impl<'a> Lowerer<'a> {
 
             if self.js_this_binding_compat && name == "Symbol" {
                 let closure = self.alloc_register(UNRESOLVED);
-                let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                self.emit(IrInstr::Assign {
-                    dest: name_reg.clone(),
-                    value: IrValue::Constant(IrConstant::String("Symbol".to_string())),
-                });
-                self.emit_vm_native_call(Some(closure.clone()), crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL, vec![name_reg]);
+                let name_reg = self.emit_direct_eval_name_reg("Symbol");
+                self.emit_js_kernel_call(
+                    Some(closure.clone()),
+                    crate::semantics::JsOpKind::ResolveIdentifier {
+                        non_throwing: false,
+                    },
+                    vec![name_reg],
+                );
                 let receiver = self.lower_undefined_literal();
                 self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
                 self.propagate_type_projection_to_register(call_ty, &dest);
@@ -5975,7 +6010,7 @@ impl<'a> Lowerer<'a> {
                         && !self.type_is_callable(callee_ty)
                         && !self.runtime_call_may_be_callable(callee_ty)
                     {
-                        if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
+                        if self.js_this_binding_compat && self.js_dynamic_semantics_enabled() {
                             let receiver = self.lower_undefined_literal();
                             let plan = self.plan_receiver_closure_invoke(
                                 receiver,
@@ -6121,7 +6156,7 @@ impl<'a> Lowerer<'a> {
                     && !self.type_is_callable(closure_ty)
                     && !self.runtime_call_may_be_callable(closure_ty)
                 {
-                    if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
+                    if self.js_this_binding_compat && self.js_dynamic_semantics_enabled() {
                         let closure = self.alloc_register(UNRESOLVED);
                         self.emit(IrInstr::LoadGlobal {
                             dest: closure.clone(),
@@ -6281,7 +6316,7 @@ impl<'a> Lowerer<'a> {
                     && !self.type_is_callable(callee_ty)
                     && !self.runtime_call_may_be_callable(callee_ty)
                 {
-                    if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
+                    if self.js_this_binding_compat && self.js_dynamic_semantics_enabled() {
                         let receiver = self.lower_undefined_literal();
                         let plan = self.plan_receiver_closure_invoke(
                             receiver,
@@ -6870,7 +6905,7 @@ impl<'a> Lowerer<'a> {
                 return closure;
             }
 
-            if self.allow_unresolved_runtime_fallback {
+            if self.js_dynamic_semantics_enabled() {
                 let member_ty = {
                     let member_expr = Expression::Member(member.clone());
                     let inferred = self.get_expr_type(&member_expr);
@@ -7376,18 +7411,23 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        // TypeVar receivers with unresolved dispatch but no structural slot mapping
-        // keep late-bound member dispatch for post-monomorphization resolution.
+        // TypeVar receivers with unresolved dispatch fall back to the explicit
+        // JS dynamic property kernel when that policy is enabled.
         if receiver_is_typevar {
-            // Resolve dest type from the constraint's property if possible
             let constraint_prop_ty = self.resolve_typevar_property_type(&member.object, prop_name);
             let dest_ty = constraint_prop_ty.unwrap_or(UNRESOLVED);
+            if !self.js_dynamic_semantics_enabled() {
+                self.errors
+                    .push(crate::compiler::CompileError::InternalError {
+                        message: format!(
+                            "strict mode forbids dynamic member resolution for unresolved property '{}'",
+                            prop_name
+                        ),
+                    });
+                return self.lower_unresolved_poison();
+            }
             let dest = self.alloc_register(dest_ty);
-            self.emit(IrInstr::LateBoundMember {
-                dest: dest.clone(),
-                object,
-                property: prop_name.to_string(),
-            });
+            self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
         }
 
@@ -7418,8 +7458,8 @@ impl<'a> Lowerer<'a> {
             })
             .unwrap_or_else(|| "unknown receiver type".to_string());
 
-        // Late-bound dispatch: imported objects without local metadata need
-        // deferred resolution via LateBoundMember (resolved after monomorphization).
+        // Imported/runtime-late-bound objects now go straight through the explicit
+        // JS dynamic property kernel instead of deferring via IR fallback.
         let receiver_requires_late_bound = semantic_property_dispatch_kind
             == Some(crate::semantics::PropertyDispatchKind::RuntimeLateBoundProperty);
         if nominal_type_id.is_none() && receiver_requires_late_bound {
@@ -7427,22 +7467,18 @@ impl<'a> Lowerer<'a> {
                 let obj_ty = self.get_expr_type(&member.object);
                 self.type_has_checker_validated_class_members(obj_ty)
             };
-            if !self.allow_unresolved_runtime_fallback && !checker_validated {
+            if !self.js_dynamic_semantics_enabled() && !checker_validated {
                 self.errors
                     .push(crate::compiler::CompileError::InternalError {
                         message: format!(
-                            "strict mode forbids runtime late-bound fallback for member property '{}.{}'",
+                            "strict mode forbids dynamic member resolution for '{}.{}'",
                             object_type, prop_name
                         ),
                     });
                 return self.lower_unresolved_poison();
             }
             let dest = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::LateBoundMember {
-                dest: dest.clone(),
-                object,
-                property: prop_name.to_string(),
-            });
+            self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
         }
 
@@ -7461,7 +7497,7 @@ impl<'a> Lowerer<'a> {
         // compiler cannot statically resolve.  At runtime, DynGetKeyed handles all
         // ES spec semantics (TypeError for null/undefined, property lookup for objects,
         // prototype chain traversal, etc.).
-        if self.allow_unresolved_runtime_fallback {
+        if self.js_dynamic_semantics_enabled() {
             let dest = self.alloc_register(UNRESOLVED);
             self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
@@ -9831,7 +9867,7 @@ impl<'a> Lowerer<'a> {
                                 assigned_value.clone(),
                             );
                             assigned_symbol = true;
-                        } else if self.allow_unresolved_runtime_fallback {
+                        } else if self.js_dynamic_semantics_enabled() {
                             self.emit_unresolved_js_assignment(
                                 self.interner.resolve(ident.name),
                                 assigned_value.clone(),
@@ -11794,15 +11830,15 @@ impl<'a> Lowerer<'a> {
         }
 
         // ES spec §13.5.1: typeof on an unresolvable reference returns "undefined"
-        // without throwing.  For identifiers that would use OBJECT_GET_AMBIENT_GLOBAL
-        // (which throws on missing names), use TRY_GET_GLOBAL instead (returns
-        // undefined on missing names), then apply Typeof normally.
+        // without throwing. For identifiers that require dynamic runtime
+        // resolution, use the non-throwing JS identifier kernel op first, then
+        // apply Typeof normally.
         if let Expression::Identifier(ident) = argument {
             let name = self.interner.resolve(ident.name);
             // Check if lower_identifier would fall through to the
             // ambient/global runtime path (the throwing one). `typeof` on an
             // unresolvable identifier must stay non-throwing even when normal
-            // unresolved-runtime fallback is disabled for this profile.
+            // dynamic JS semantics are disabled for this profile.
             let binding = self.resolve_identifier_binding(ident.name, ident.span.start);
             let semantic_kind = self.semantic_identifier_resolution_kind(ident.span.start);
             let needs_non_throwing_lookup = matches!(
@@ -11825,14 +11861,14 @@ impl<'a> Lowerer<'a> {
                     });
                     return dest;
                 }
-                // Use TRY_GET_GLOBAL (non-throwing) + Typeof
-                let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                self.emit(IrInstr::Assign {
-                    dest: name_reg.clone(),
-                    value: IrValue::Constant(IrConstant::String(name.to_string())),
-                });
+                // Use non-throwing JS identifier resolution + Typeof
+                let name_reg = self.emit_direct_eval_name_reg(name);
                 let operand = self.alloc_register(UNRESOLVED);
-                self.emit_vm_native_call(Some(operand.clone()), crate::compiler::native_id::TRY_GET_GLOBAL, vec![name_reg]);
+                self.emit_js_kernel_call(
+                    Some(operand.clone()),
+                    crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: true },
+                    vec![name_reg],
+                );
                 let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                 self.emit(IrInstr::Typeof {
                     dest: dest.clone(),
@@ -12336,12 +12372,14 @@ impl<'a> Lowerer<'a> {
                 .lookup_named_type("globalThis")
                 .unwrap_or(UNRESOLVED);
             let dest = self.alloc_register(expr_ty);
-            let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-            self.emit(IrInstr::Assign {
-                dest: name_reg.clone(),
-                value: IrValue::Constant(IrConstant::String("globalThis".to_string())),
-            });
-            self.emit_vm_native_call(Some(dest.clone()), crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL, vec![name_reg]);
+            let name_reg = self.emit_direct_eval_name_reg("globalThis");
+            self.emit_js_kernel_call(
+                Some(dest.clone()),
+                crate::semantics::JsOpKind::ResolveIdentifier {
+                    non_throwing: false,
+                },
+                vec![name_reg],
+            );
             return dest;
         }
 
@@ -13145,7 +13183,7 @@ impl<'a> Lowerer<'a> {
             Some(Type::Object(obj)) => !obj.call_signatures.is_empty(),
             Some(Type::Interface(iface)) => !iface.call_signatures.is_empty(),
             Some(Type::Any) | Some(Type::Unknown) | Some(Type::JSObject)
-                if self.allow_unresolved_runtime_fallback =>
+                if self.js_dynamic_semantics_enabled() =>
             {
                 true
             }
@@ -13206,7 +13244,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn runtime_call_may_be_callable(&self, ty_id: TypeId) -> bool {
-        self.allow_unresolved_runtime_fallback && self.type_is_runtime_dynamic_dispatch(ty_id)
+        self.js_dynamic_semantics_enabled() && self.type_is_runtime_dynamic_dispatch(ty_id)
     }
 
     fn expression_result_may_be_callable_at_runtime(
@@ -14475,17 +14513,17 @@ mod tests {
             lowerer.errors()
         );
 
-        let has_late_bound_member = ir.functions.iter().any(|func| {
+        let has_dynamic_member_fallback = ir.functions.iter().any(|func| {
             func.blocks.iter().any(|block| {
                 block
                     .instructions
                     .iter()
-                    .any(|instr| matches!(instr, IrInstr::LateBoundMember { .. }))
+                    .any(|instr| matches!(instr, IrInstr::DynGetProp { .. } | IrInstr::DynGetKeyed { .. }))
             })
         });
         assert!(
-            !has_late_bound_member,
-            "did not expect LateBoundMember when runtime fallback is disabled"
+            !has_dynamic_member_fallback,
+            "did not expect dynamic member fallback when JS dynamic semantics are disabled"
         );
     }
 
@@ -14516,17 +14554,17 @@ mod tests {
             lowerer.errors()
         );
 
-        let has_late_bound_member = ir.functions.iter().any(|func| {
+        let has_dynamic_member_fallback = ir.functions.iter().any(|func| {
             func.blocks.iter().any(|block| {
                 block
                     .instructions
                     .iter()
-                    .any(|instr| matches!(instr, IrInstr::LateBoundMember { .. }))
+                    .any(|instr| matches!(instr, IrInstr::DynGetProp { .. } | IrInstr::DynGetKeyed { .. }))
             })
         });
         assert!(
-            !has_late_bound_member,
-            "did not expect LateBoundMember when runtime fallback is disabled"
+            !has_dynamic_member_fallback,
+            "did not expect dynamic member fallback when JS dynamic semantics are disabled"
         );
     }
 

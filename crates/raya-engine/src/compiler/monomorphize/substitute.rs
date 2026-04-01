@@ -315,15 +315,6 @@ impl TypeSubstitution {
                 key: self.apply_register(key),
                 value: self.apply_register(value),
             },
-            IrInstr::LateBoundMember {
-                dest,
-                object,
-                property,
-            } => IrInstr::LateBoundMember {
-                dest: self.apply_register(dest),
-                object: self.apply_register(object),
-                property: property.clone(),
-            },
             IrInstr::LoadElement { dest, array, index } => IrInstr::LoadElement {
                 dest: self.apply_register(dest),
                 array: self.apply_register(array),

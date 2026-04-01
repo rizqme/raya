@@ -1409,26 +1409,6 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![],
                 });
             }
-
-            // === Late-bound member (should be resolved before AOT) ===
-            IrInstr::LateBoundMember {
-                dest,
-                object,
-                property,
-            } => {
-                let key_reg = *next_temp;
-                *next_temp = next_temp.saturating_add(1);
-                out.push(SmInstr::ConstString {
-                    dest: key_reg,
-                    value: property.clone(),
-                });
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::DynGetProp,
-                    args: vec![Self::reg(object), key_reg],
-                });
-            }
-
             // === Debug ===
             IrInstr::Debugger => {
                 // No-op in AOT — debugger breakpoints are not supported in compiled code

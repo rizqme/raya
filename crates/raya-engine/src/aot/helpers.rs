@@ -2279,7 +2279,7 @@ mod tests {
             let i32_val = (table.load_i32_constant)(42);
             assert_eq!(i32_val, abi::I32_TAG_BASE | 42);
 
-            let eq = (table.generic_equals)(100, 100);
+            let eq = (table.generic_equals)(ptr::null_mut(), 100, 100);
             assert_eq!(eq, 1);
 
             let pow = (table.numeric_intrinsic)(CompiledNumericIntrinsicOp::I32Pow as u16, 2, 5);

@@ -22,7 +22,8 @@ use crate::parser::ast::{
 use crate::parser::token::Span;
 use crate::parser::{Interner, Symbol, Type, TypeContext, TypeId};
 use crate::semantics::{
-    CallableKind, EnvHandle, EnvRecordKind, SemanticLoweringPlan, SemanticProfile,
+    CallableKind, EnvHandle, EnvRecordKind, JsDynamicSemantics, SemanticLoweringPlan,
+    SemanticProfile,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -888,8 +889,8 @@ pub struct Lowerer<'a> {
     js_strict_context: bool,
     /// Whether this module is a compiled builtin surface using ECMAScript builtin receiver rules.
     builtin_this_coercion_compat: bool,
-    /// Whether unresolved member/call paths may lower to runtime late-bound dispatch.
-    allow_unresolved_runtime_fallback: bool,
+    /// Whether JS runtime semantics may lower to explicit dynamic kernel ops.
+    js_dynamic_semantics: JsDynamicSemantics,
     /// Optional direct-eval wrapper function name for dynamic JS eval lowering.
     direct_eval_entry_function: Option<String>,
     /// Identifier names resolved through the active direct-eval environment.
@@ -1618,7 +1619,7 @@ impl<'a> Lowerer<'a> {
             js_this_binding_compat: false,
             js_strict_context: false,
             builtin_this_coercion_compat: false,
-            allow_unresolved_runtime_fallback: true,
+            js_dynamic_semantics: JsDynamicSemantics::EcmaScript,
             direct_eval_entry_function: None,
             direct_eval_binding_names: FxHashSet::default(),
             track_top_level_completion: false,
@@ -1674,11 +1675,15 @@ impl<'a> Lowerer<'a> {
         self.builtin_surface = builtin_surface;
         self.type_registry = super::type_registry::TypeRegistry::new(self.type_ctx, builtin_surface);
         self.js_this_binding_compat = lowering.js_this_binding_compat;
-        self.allow_unresolved_runtime_fallback = lowering.allow_unresolved_runtime_fallback;
+        self.js_dynamic_semantics = lowering.js_dynamic_semantics;
         self.track_top_level_completion = lowering.track_top_level_completion;
         self.emit_script_global_bindings = lowering.emit_script_global_bindings;
         self.script_global_bindings_configurable = lowering.script_global_bindings_configurable;
         self
+    }
+
+    pub(super) fn js_dynamic_semantics_enabled(&self) -> bool {
+        matches!(self.js_dynamic_semantics, JsDynamicSemantics::EcmaScript)
     }
 
     /// Enable builtin JS receiver coercion semantics for compiled builtin surfaces.
@@ -1954,7 +1959,11 @@ impl<'a> Lowerer<'a> {
     pub(super) fn emit_fallthrough_return(&mut self) {
         if self.in_direct_eval_function {
             let value = self.alloc_register(UNRESOLVED);
-            self.emit_vm_native_call(Some(value.clone()), crate::compiler::native_id::OBJECT_EVAL_GET_COMPLETION, vec![]);
+            self.emit_js_kernel_call(
+                Some(value.clone()),
+                crate::semantics::JsOpKind::EvalGetCompletion,
+                vec![],
+            );
             self.emit_function_return(Some(value));
             return;
         }
@@ -2008,7 +2017,11 @@ impl<'a> Lowerer<'a> {
 
     pub(super) fn record_eval_completion(&mut self, value: Register) {
         if self.in_direct_eval_function {
-            self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_EVAL_SET_COMPLETION, vec![value]);
+            self.emit_js_kernel_call(
+                None,
+                crate::semantics::JsOpKind::EvalSetCompletion,
+                vec![value],
+            );
             return;
         }
         if let Some(local_idx) = self.eval_completion_local {
@@ -4614,7 +4627,11 @@ impl<'a> Lowerer<'a> {
                 )),
             });
             let initial_value = self.alloc_register(UNRESOLVED);
-            self.emit_vm_native_call(Some(initial_value.clone()), crate::compiler::native_id::TRY_GET_GLOBAL, vec![prop_name]);
+            self.emit_js_kernel_call(
+                Some(initial_value.clone()),
+                crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: true },
+                vec![prop_name],
+            );
             self.global_type_map.insert(global_idx, initial_value.ty);
             self.emit(IrInstr::StoreGlobal {
                 index: global_idx,
@@ -6392,6 +6409,19 @@ impl<'a> Lowerer<'a> {
         self.emit(IrInstr::KernelCall {
             dest,
             op: KernelOp::VmNative(native_id),
+            args,
+        });
+    }
+
+    fn emit_js_kernel_call(
+        &mut self,
+        dest: Option<Register>,
+        op: crate::semantics::JsOpKind,
+        args: Vec<Register>,
+    ) {
+        self.emit(IrInstr::KernelCall {
+            dest,
+            op: KernelOp::Js(op),
             args,
         });
     }

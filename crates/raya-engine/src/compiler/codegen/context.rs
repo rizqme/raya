@@ -1296,15 +1296,6 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::StoreLocal);
                 ctx.emit_u16(*index);
             }
-
-            IrInstr::LateBoundMember { property, .. } => {
-                return Err(CompileError::InternalError {
-                    message: format!(
-                        "unresolved LateBoundMember for property '{}' reached codegen",
-                        property
-                    ),
-                });
-            }
         }
 
         Ok(())

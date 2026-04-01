@@ -82,6 +82,13 @@ pub enum OptimizationProfile {
     OptimizedCoroutineFirst,
 }
 
+/// Policy for dynamic JS runtime semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JsDynamicSemantics {
+    Disabled,
+    EcmaScript,
+}
+
 /// Shared semantic profile used across parse/check/lower stages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SemanticProfile {
@@ -97,8 +104,8 @@ pub struct SemanticProfile {
     pub optimization: OptimizationProfile,
     /// Whether method extraction follows JS unbound-receiver rules.
     pub js_this_binding_compat: bool,
-    /// Whether unresolved members may fall back to runtime dynamic lookup.
-    pub allow_unresolved_runtime_fallback: bool,
+    /// Whether JS runtime semantics may lower to explicit dynamic kernel ops.
+    pub js_dynamic_semantics: JsDynamicSemantics,
     /// Whether top-level completion values are observable.
     pub track_top_level_completion: bool,
     /// Whether top-level bindings publish to `globalThis`.
@@ -126,8 +133,8 @@ impl Default for SemanticProfile {
 pub struct LoweringSemantics {
     /// Whether method extraction follows JS unbound-receiver rules.
     pub js_this_binding_compat: bool,
-    /// Whether unresolved members may fall back to runtime dynamic lookup.
-    pub allow_unresolved_runtime_fallback: bool,
+    /// Whether JS runtime semantics may lower to explicit dynamic kernel ops.
+    pub js_dynamic_semantics: JsDynamicSemantics,
     /// Whether top-level completion values are observable.
     pub track_top_level_completion: bool,
     /// Whether top-level bindings publish to `globalThis`.
@@ -146,7 +153,7 @@ impl SemanticProfile {
             concurrency: ConcurrencySemantics::StandardJsAsync,
             optimization: OptimizationProfile::Compatibility,
             js_this_binding_compat: true,
-            allow_unresolved_runtime_fallback: true,
+            js_dynamic_semantics: JsDynamicSemantics::EcmaScript,
             track_top_level_completion: true,
             emit_script_global_bindings: true,
             script_global_bindings_configurable: false,
@@ -166,7 +173,7 @@ impl SemanticProfile {
             concurrency: ConcurrencySemantics::StandardJsAsync,
             optimization: OptimizationProfile::Compatibility,
             js_this_binding_compat: true,
-            allow_unresolved_runtime_fallback: true,
+            js_dynamic_semantics: JsDynamicSemantics::EcmaScript,
             track_top_level_completion: true,
             emit_script_global_bindings: true,
             script_global_bindings_configurable: false,
@@ -187,7 +194,7 @@ impl SemanticProfile {
             concurrency: ConcurrencySemantics::StandardJsAsync,
             optimization: OptimizationProfile::Compatibility,
             js_this_binding_compat: true,
-            allow_unresolved_runtime_fallback: true,
+            js_dynamic_semantics: JsDynamicSemantics::EcmaScript,
             track_top_level_completion: true,
             emit_script_global_bindings: true,
             script_global_bindings_configurable: false,
@@ -207,7 +214,7 @@ impl SemanticProfile {
             concurrency: ConcurrencySemantics::CoroutineFirst,
             optimization: OptimizationProfile::OptimizedCoroutineFirst,
             js_this_binding_compat: false,
-            allow_unresolved_runtime_fallback: false,
+            js_dynamic_semantics: JsDynamicSemantics::Disabled,
             track_top_level_completion: false,
             emit_script_global_bindings: false,
             script_global_bindings_configurable: false,
@@ -273,7 +280,7 @@ impl SemanticProfile {
     pub const fn lowering_semantics(self) -> LoweringSemantics {
         LoweringSemantics {
             js_this_binding_compat: self.js_this_binding_compat,
-            allow_unresolved_runtime_fallback: self.allow_unresolved_runtime_fallback,
+            js_dynamic_semantics: self.js_dynamic_semantics,
             track_top_level_completion: self.track_top_level_completion,
             emit_script_global_bindings: self.emit_script_global_bindings,
             script_global_bindings_configurable: self.script_global_bindings_configurable,
@@ -711,6 +718,29 @@ pub enum HostHandleOpKind {
     TaskCancel,
     TaskIsDone,
     TaskIsCancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JsOpKind {
+    GetNamed,
+    GetKeyed,
+    SetNamed { strict: bool },
+    SetKeyed { strict: bool },
+    BindMethod,
+    ResolveIdentifier { non_throwing: bool },
+    AssignIdentifier { strict: bool },
+    CallValue,
+    CallMemberNamed,
+    CallMemberKeyed,
+    ConstructValue,
+    PushWithEnv,
+    PopWithEnv,
+    PushDeclarativeEnv,
+    PopDeclarativeEnv,
+    ReplaceDeclarativeEnv,
+    DirectEval,
+    EvalGetCompletion,
+    EvalSetCompletion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
