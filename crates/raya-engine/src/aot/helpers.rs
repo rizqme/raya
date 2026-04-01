@@ -29,7 +29,7 @@ use crate::vm::interpreter::SharedVmState;
 use crate::vm::json::view::{js_classify, JSView};
 use crate::vm::object::{Array, DynProp, Object, RayaString};
 use crate::vm::scheduler::{IoSubmission, ResumePolicy, SuspendReason, Task};
-use crate::vm::suspend::{SuspendRecord, SuspendTag};
+use crate::vm::suspend::{BackendCallResult, SuspendRecord, SuspendTag};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use parking_lot::RwLock;
@@ -1213,9 +1213,9 @@ unsafe extern "C" fn helper_native_call(
     kernel_op_id: u16,
     args_ptr: *const u64,
     argc: u8,
-) -> u64 {
+) -> BackendCallResult {
     let Some(kernel_op) = decode_kernel_op_id(kernel_op_id) else {
-        return abi::NULL_VALUE;
+        return BackendCallResult::completed_raw(abi::NULL_VALUE);
     };
 
     if !ctx.is_null() && !(*ctx).shared_state.is_null() {
@@ -1264,7 +1264,9 @@ unsafe extern "C" fn helper_native_call(
                 shared.resolved_natives.read().clone()
             };
             match resolved.call(local_idx, &engine_ctx, &native_args) {
-                NativeCallResult::Value(val) => return native_to_value(val).raw(),
+                NativeCallResult::Value(val) => {
+                    return BackendCallResult::completed_raw(native_to_value(val).raw())
+                }
                 NativeCallResult::Suspend(io_request) => {
                     if let Some(tx) = shared.io_submit_tx.lock().as_ref() {
                         let _ = tx.send(IoSubmission {
@@ -1273,9 +1275,14 @@ unsafe extern "C" fn helper_native_call(
                         });
                     }
                     set_ctx_suspend_reason(ctx, &SuspendReason::IoWait);
-                    return AOT_SUSPEND;
+                    return BackendCallResult {
+                        status: crate::vm::suspend::BackendCallStatus::Suspended,
+                        payload: AOT_SUSPEND,
+                    };
                 }
-                NativeCallResult::Unhandled | NativeCallResult::Error(_) => return abi::NULL_VALUE,
+                NativeCallResult::Unhandled | NativeCallResult::Error(_) => {
+                    return BackendCallResult::completed_raw(abi::NULL_VALUE);
+                }
             }
         }
 
@@ -1283,22 +1290,22 @@ unsafe extern "C" fn helper_native_call(
             let Some(module) =
                 (!(*ctx).module.is_null()).then(|| &*((*ctx).module as *const crate::compiler::Module))
             else {
-                return abi::NULL_VALUE;
+                return BackendCallResult::completed_raw(abi::NULL_VALUE);
             };
             let Some(current_task) =
                 (!(*ctx).current_task.is_null()).then(|| &*((*ctx).current_task as *const Task))
             else {
-                return abi::NULL_VALUE;
+                return BackendCallResult::completed_raw(abi::NULL_VALUE);
             };
             let task_arc = shared.tasks.read().get(&current_task.id()).cloned();
             let Some(task) = task_arc.as_ref() else {
-                return abi::NULL_VALUE;
+                return BackendCallResult::completed_raw(abi::NULL_VALUE);
             };
             let mut interpreter = aot_build_interpreter(shared);
             let mut stack = Stack::new();
             for arg in &value_args {
                 if stack.push(*arg).is_err() {
-                    return abi::NULL_VALUE;
+                    return BackendCallResult::completed_raw(abi::NULL_VALUE);
                 }
             }
             let code = [
@@ -1316,9 +1323,11 @@ unsafe extern "C" fn helper_native_call(
                 Opcode::KernelCall,
             ) {
                 crate::vm::interpreter::OpcodeResult::Continue => {
-                    stack.pop().unwrap_or_else(|_| Value::null()).raw()
+                    BackendCallResult::completed(stack.pop().unwrap_or_else(|_| Value::null()))
                 }
-                crate::vm::interpreter::OpcodeResult::Return(value) => value.raw(),
+                crate::vm::interpreter::OpcodeResult::Return(value) => {
+                    BackendCallResult::completed(value)
+                }
                 crate::vm::interpreter::OpcodeResult::Suspend(reason) => {
                     set_ctx_suspend_reason(
                         ctx,
@@ -1335,10 +1344,17 @@ unsafe extern "C" fn helper_native_call(
                             other => other,
                         },
                     );
-                    AOT_SUSPEND
+                    BackendCallResult {
+                        status: crate::vm::suspend::BackendCallStatus::Suspended,
+                        payload: AOT_SUSPEND,
+                    }
                 }
-                crate::vm::interpreter::OpcodeResult::Error(_) => abi::NULL_VALUE,
-                crate::vm::interpreter::OpcodeResult::PushFrame { .. } => abi::NULL_VALUE,
+                crate::vm::interpreter::OpcodeResult::Error(_) => {
+                    BackendCallResult::threw()
+                }
+                crate::vm::interpreter::OpcodeResult::PushFrame { .. } => {
+                    BackendCallResult::completed_raw(abi::NULL_VALUE)
+                }
             };
         }
 
@@ -1352,10 +1368,10 @@ unsafe extern "C" fn helper_native_call(
                 use crate::vm::json;
 
                 if value_args.is_empty() {
-                    return abi::NULL_VALUE;
+                    return BackendCallResult::completed_raw(abi::NULL_VALUE);
                 }
                 let Some(s) = (unsafe { value_args[0].as_ptr::<RayaString>() }) else {
-                    return abi::NULL_VALUE;
+                    return BackendCallResult::completed_raw(abi::NULL_VALUE);
                 };
                 let json_str = unsafe { &*s.as_ptr() }.data.clone();
                 let mut gc = shared.gc.lock();
@@ -1365,15 +1381,15 @@ unsafe extern "C" fn helper_native_call(
                     &mut gc,
                     &mut |name| prop_keys.intern(name),
                 ) {
-                    Ok(v) => v.raw(),
-                    Err(_) => abi::NULL_VALUE,
+                    Ok(v) => BackendCallResult::completed(v),
+                    Err(_) => BackendCallResult::completed_raw(abi::NULL_VALUE),
                 };
             }
             crate::compiler::native_id::JSON_STRINGIFY => {
                 use crate::vm::json;
 
                 if value_args.is_empty() {
-                    return abi::NULL_VALUE;
+                    return BackendCallResult::completed_raw(abi::NULL_VALUE);
                 }
                 return match json::stringify::stringify_with_runtime_metadata(
                     value_args[0],
@@ -1382,9 +1398,11 @@ unsafe extern "C" fn helper_native_call(
                 ) {
                     Ok(json_str) => {
                         let gc_ptr = shared.gc.lock().allocate(RayaString::new(json_str));
-                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()).raw()
+                        BackendCallResult::completed(Value::from_ptr(
+                            std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
+                        ))
                     }
-                    Err(_) => abi::NULL_VALUE,
+                    Err(_) => BackendCallResult::completed_raw(abi::NULL_VALUE),
                 };
             }
             _ => {}
@@ -1404,7 +1422,9 @@ unsafe extern "C" fn helper_native_call(
             shared.resolved_natives.read().clone()
         };
         match resolved.call(native_id, &engine_ctx, &native_args) {
-            NativeCallResult::Value(val) => return native_to_value(val).raw(),
+            NativeCallResult::Value(val) => {
+                return BackendCallResult::completed_raw(native_to_value(val).raw())
+            }
             NativeCallResult::Suspend(io_request) => {
                 if let Some(tx) = shared.io_submit_tx.lock().as_ref() {
                     let _ = tx.send(IoSubmission {
@@ -1413,7 +1433,10 @@ unsafe extern "C" fn helper_native_call(
                     });
                 }
                 set_ctx_suspend_reason(ctx, &SuspendReason::IoWait);
-                return AOT_SUSPEND;
+                return BackendCallResult {
+                    status: crate::vm::suspend::BackendCallStatus::Suspended,
+                    payload: AOT_SUSPEND,
+                };
             }
             NativeCallResult::Unhandled => {}
             NativeCallResult::Error(_) => {}
@@ -1422,7 +1445,9 @@ unsafe extern "C" fn helper_native_call(
         let native_name = crate::compiler::native_id::native_name(native_id);
         if let Some(handler) = shared.native_registry.read().get(native_name) {
             match handler(&engine_ctx, &native_args) {
-                NativeCallResult::Value(val) => return native_to_value(val).raw(),
+                NativeCallResult::Value(val) => {
+                    return BackendCallResult::completed_raw(native_to_value(val).raw())
+                }
                 NativeCallResult::Suspend(io_request) => {
                     if let Some(tx) = shared.io_submit_tx.lock().as_ref() {
                         let _ = tx.send(IoSubmission {
@@ -1431,7 +1456,10 @@ unsafe extern "C" fn helper_native_call(
                         });
                     }
                     set_ctx_suspend_reason(ctx, &SuspendReason::IoWait);
-                    return AOT_SUSPEND;
+                    return BackendCallResult {
+                        status: crate::vm::suspend::BackendCallStatus::Suspended,
+                        payload: AOT_SUSPEND,
+                    };
                 }
                 NativeCallResult::Unhandled => {}
                 NativeCallResult::Error(_) => {}
@@ -1447,17 +1475,12 @@ unsafe extern "C" fn helper_native_call(
         if !ctx.is_null() {
             set_ctx_suspend_tag(ctx, SuspendTag::KernelBoundary);
         }
-        AOT_SUSPEND
+        BackendCallResult {
+            status: crate::vm::suspend::BackendCallStatus::Suspended,
+            payload: AOT_SUSPEND,
+        }
     } else {
-        abi::NULL_VALUE
-    }
-}
-
-unsafe extern "C" fn helper_is_native_suspend(result: u64) -> u8 {
-    if result == AOT_SUSPEND {
-        1
-    } else {
-        0
+        BackendCallResult::completed_raw(abi::NULL_VALUE)
     }
 }
 
@@ -1722,7 +1745,6 @@ pub fn create_default_helper_table() -> AotHelperTable {
         load_global_value: helper_load_global_value,
         store_global_value: helper_store_global_value,
         native_call: helper_native_call,
-        is_native_suspend: helper_is_native_suspend,
         spawn: helper_spawn,
         check_preemption: helper_check_preemption,
         run_sync_aot_call: helper_run_sync_aot_call,
@@ -1849,7 +1871,7 @@ mod tests {
         let preempt = AtomicBool::new(false);
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
-            resume_value: abi::NULL_VALUE,
+            resume_record: crate::vm::suspend::ResumeRecord::none(),
             suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: ptr::null_mut(),
@@ -1858,10 +1880,10 @@ mod tests {
         };
         let result =
             unsafe { helper_native_call(&mut ctx, STUB_NATIVE_SUSPEND_ID, ptr::null(), 0) };
-        assert_eq!(result, AOT_SUSPEND);
+        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Suspended);
+        assert_eq!(result.payload, AOT_SUSPEND);
         assert_eq!(ctx.suspend_record.tag, SuspendTag::KernelBoundary);
         assert_eq!(ctx.suspend_record.word0, 0);
-        assert_eq!(unsafe { helper_is_native_suspend(result) }, 1);
     }
 
     #[test]
@@ -1869,7 +1891,7 @@ mod tests {
         let preempt = AtomicBool::new(false);
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
-            resume_value: abi::NULL_VALUE,
+            resume_record: crate::vm::suspend::ResumeRecord::none(),
             suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: ptr::null_mut(),
@@ -1877,8 +1899,8 @@ mod tests {
             module: ptr::null(),
         };
         let result = unsafe { helper_native_call(&mut ctx, 42, ptr::null(), 0) };
-        assert_eq!(result, abi::NULL_VALUE);
-        assert_eq!(unsafe { helper_is_native_suspend(result) }, 0);
+        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Completed);
+        assert_eq!(result.payload, abi::NULL_VALUE);
         assert_eq!(ctx.suspend_record, SuspendRecord::none());
     }
 
@@ -1887,7 +1909,7 @@ mod tests {
         let preempt = AtomicBool::new(false);
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
-            resume_value: abi::NULL_VALUE,
+            resume_record: crate::vm::suspend::ResumeRecord::none(),
             suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: ptr::null_mut(),
@@ -1917,7 +1939,7 @@ mod tests {
         let preempt = AtomicBool::new(false);
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
-            resume_value: abi::NULL_VALUE,
+            resume_record: crate::vm::suspend::ResumeRecord::none(),
             suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: Arc::as_ptr(&shared) as *mut (),
@@ -1925,8 +1947,9 @@ mod tests {
             module: ptr::null(),
         };
 
-        let raw = unsafe { helper_native_call(&mut ctx, 0, ptr::null(), 0) };
-        assert_eq!(raw, Value::i32(77).raw());
+        let result = unsafe { helper_native_call(&mut ctx, 0, ptr::null(), 0) };
+        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Completed);
+        assert_eq!(result.payload, Value::i32(77).raw());
         assert_eq!(ctx.suspend_record, SuspendRecord::none());
     }
 
@@ -1952,7 +1975,7 @@ mod tests {
         let preempt = AtomicBool::new(false);
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
-            resume_value: abi::NULL_VALUE,
+            resume_record: crate::vm::suspend::ResumeRecord::none(),
             suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: Arc::as_ptr(&shared) as *mut (),
@@ -1961,8 +1984,9 @@ mod tests {
         };
 
         let args = [Value::i32(7).raw(), Value::i32(11).raw()];
-        let raw = unsafe { helper_native_call(&mut ctx, 0, args.as_ptr(), args.len() as u8) };
-        assert_eq!(raw, Value::i32(18).raw());
+        let result = unsafe { helper_native_call(&mut ctx, 0, args.as_ptr(), args.len() as u8) };
+        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Completed);
+        assert_eq!(result.payload, Value::i32(18).raw());
         assert_eq!(ctx.suspend_record, SuspendRecord::none());
     }
 
@@ -1988,7 +2012,7 @@ mod tests {
         let preempt = AtomicBool::new(false);
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
-            resume_value: abi::NULL_VALUE,
+            resume_record: crate::vm::suspend::ResumeRecord::none(),
             suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: Arc::as_ptr(&shared) as *mut (),
@@ -1996,8 +2020,9 @@ mod tests {
             module: ptr::null(),
         };
 
-        let raw = unsafe { helper_native_call(&mut ctx, 0, ptr::null(), 0) };
-        assert_eq!(raw, AOT_SUSPEND);
+        let result = unsafe { helper_native_call(&mut ctx, 0, ptr::null(), 0) };
+        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Suspended);
+        assert_eq!(result.payload, AOT_SUSPEND);
         assert_eq!(ctx.suspend_record.tag, SuspendTag::IoWait);
         let submission = rx.try_recv().expect("io submission should be sent");
         assert_eq!(submission.task_id.as_u64(), 0);
@@ -2056,7 +2081,7 @@ mod tests {
         let preempt = AtomicBool::new(false);
         let mut ctx = AotTaskContext {
             preempt_requested: &preempt,
-            resume_value: abi::NULL_VALUE,
+            resume_record: crate::vm::suspend::ResumeRecord::none(),
             suspend_record: SuspendRecord::none(),
             helpers: create_default_helper_table(),
             shared_state: Arc::as_ptr(&shared) as *mut (),

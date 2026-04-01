@@ -21,6 +21,7 @@ use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::IoSubmission;
 use crate::vm::scheduler::{Task, TaskId};
 use crate::vm::stack::Stack;
+use crate::vm::suspend::BackendCallResult;
 use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -31,11 +32,6 @@ use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-/// Sentinel returned by JIT native helper dispatch when the native call suspended.
-/// Distinct from valid NaN-boxed Values.
-pub const JIT_NATIVE_SUSPEND_SENTINEL: u64 = 0xFFFF_DEAD_0000_0001;
-pub const JIT_INTERPRETER_FALLBACK_SENTINEL: u64 = 0xFFFF_DEAD_0000_0002;
-pub const JIT_INTERPRETER_EXCEPTION_SENTINEL: u64 = 0xFFFF_DEAD_0000_0003;
 pub const JIT_SHAPE_FIELD_FALLBACK_SENTINEL: u64 = 0xFFFF_DEAD_0000_0004;
 pub const JIT_STRING_LEN_FALLBACK_SENTINEL: i32 = i32::MIN;
 const JIT_SHAPE_ADAPTER_PIC_CAPACITY: usize = 4;
@@ -1143,9 +1139,9 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
     arg_count: u8,
     module_ptr: *const (),
     shared_state: *mut (),
-) -> u64 {
+) -> BackendCallResult {
     let Some(kernel_op) = decode_kernel_op_id(kernel_op_id) else {
-        return Value::null().raw();
+        return BackendCallResult::completed(Value::null());
     };
 
     let value_args: Vec<Value> = if arg_count == 0 || args_ptr.is_null() {
@@ -1187,7 +1183,9 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                 KernelOp::VmNative(native_id) => {
                     let resolved = (&*bridge.resolved_natives).read();
                     match resolved.call(native_id, &ctx, &native_args) {
-                        NativeCallResult::Value(v) => return native_to_value(v).raw(),
+                        NativeCallResult::Value(v) => {
+                            return BackendCallResult::completed_raw(native_to_value(v).raw())
+                        }
                         NativeCallResult::Suspend(io_request) => {
                             if !bridge.io_submit_tx.is_null() {
                                 let tx = &*bridge.io_submit_tx;
@@ -1196,7 +1194,7 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                                     request: io_request,
                                 });
                             }
-                            return JIT_NATIVE_SUSPEND_SENTINEL;
+                            return BackendCallResult::suspended();
                         }
                         NativeCallResult::Unhandled | NativeCallResult::Error(_) => {}
                     }
@@ -1213,7 +1211,9 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                         (&*bridge.resolved_natives).read().clone()
                     };
                     match resolved.call(local_idx, &ctx, &native_args) {
-                        NativeCallResult::Value(v) => return native_to_value(v).raw(),
+                        NativeCallResult::Value(v) => {
+                            return BackendCallResult::completed_raw(native_to_value(v).raw())
+                        }
                         NativeCallResult::Suspend(io_request) => {
                             if !bridge.io_submit_tx.is_null() {
                                 let tx = &*bridge.io_submit_tx;
@@ -1222,7 +1222,7 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                                     request: io_request,
                                 });
                             }
-                            return JIT_NATIVE_SUSPEND_SENTINEL;
+                            return BackendCallResult::suspended();
                         }
                         NativeCallResult::Unhandled | NativeCallResult::Error(_) => {}
                     }
@@ -1232,19 +1232,19 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
         }
 
         let Some(module) = (!module_ptr.is_null()).then(|| &*(module_ptr.cast::<Module>())) else {
-            return JIT_INTERPRETER_FALLBACK_SENTINEL;
+            return BackendCallResult::interpreter_boundary();
         };
         let Some(task) = (!bridge.task_arc.is_null()).then(|| &*bridge.task_arc) else {
-            return JIT_INTERPRETER_FALLBACK_SENTINEL;
+            return BackendCallResult::interpreter_boundary();
         };
         let Some(mut interpreter) = jit_build_interpreter(bridge) else {
-            return JIT_INTERPRETER_FALLBACK_SENTINEL;
+            return BackendCallResult::interpreter_boundary();
         };
 
         let mut stack = Stack::new();
         for arg in &value_args {
             if stack.push(*arg).is_err() {
-                return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                return BackendCallResult::threw();
             }
         }
         let code = [
@@ -1262,20 +1262,20 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
             Opcode::KernelCall,
         ) {
             crate::vm::interpreter::OpcodeResult::Continue => {
-                stack.pop().unwrap_or_else(|_| Value::null()).raw()
+                BackendCallResult::completed(stack.pop().unwrap_or_else(|_| Value::null()))
             }
-            crate::vm::interpreter::OpcodeResult::Return(value) => value.raw(),
-            crate::vm::interpreter::OpcodeResult::Suspend(_) => JIT_NATIVE_SUSPEND_SENTINEL,
+            crate::vm::interpreter::OpcodeResult::Return(value) => BackendCallResult::completed(value),
+            crate::vm::interpreter::OpcodeResult::Suspend(_) => BackendCallResult::suspended(),
             crate::vm::interpreter::OpcodeResult::Error(error) => {
                 jit_raise_vm_error(bridge, error);
-                JIT_INTERPRETER_EXCEPTION_SENTINEL
+                BackendCallResult::threw()
             }
             crate::vm::interpreter::OpcodeResult::PushFrame { .. } => {
-                JIT_INTERPRETER_FALLBACK_SENTINEL
+                BackendCallResult::interpreter_boundary()
             }
         };
     }
-    Value::null().raw()
+    BackendCallResult::completed(Value::null())
 }
 
 unsafe extern "C" fn helper_interpreter_call(
@@ -1287,20 +1287,20 @@ unsafe extern "C" fn helper_interpreter_call(
     arg_count: u16,
     module_ptr: *const (),
     shared_state: *mut (),
-) -> u64 {
+) -> BackendCallResult {
     if shared_state.is_null() || module_ptr.is_null() {
-        return JIT_INTERPRETER_FALLBACK_SENTINEL;
+        return BackendCallResult::interpreter_boundary();
     }
     let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
     let Some(opcode) = Opcode::from_u8(opcode_raw) else {
-        return JIT_INTERPRETER_FALLBACK_SENTINEL;
+        return BackendCallResult::interpreter_boundary();
     };
     let module = &*(module_ptr.cast::<Module>());
     let Some(task) = (!bridge.task_arc.is_null()).then(|| unsafe { &*bridge.task_arc }) else {
-        return JIT_INTERPRETER_FALLBACK_SENTINEL;
+        return BackendCallResult::interpreter_boundary();
     };
     let Some(mut interpreter) = jit_build_interpreter(bridge) else {
-        return JIT_INTERPRETER_FALLBACK_SENTINEL;
+        return BackendCallResult::interpreter_boundary();
     };
 
     let args: Vec<Value> = if arg_count == 0 || args_ptr.is_null() {
@@ -1323,12 +1323,12 @@ unsafe extern "C" fn helper_interpreter_call(
         Opcode::Call => {
             if operand_u32 == 0xFFFF_FFFF {
                 if stack.push(Value::from_raw(receiver_raw)).is_err() {
-                    return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                    return BackendCallResult::threw();
                 }
             }
             for arg in &args {
                 if stack.push(*arg).is_err() {
-                    return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                    return BackendCallResult::threw();
                 }
             }
         }
@@ -1339,23 +1339,23 @@ unsafe extern "C" fn helper_interpreter_call(
         | Opcode::ConstructType
         | Opcode::CallSuper => {
             if stack.push(Value::from_raw(receiver_raw)).is_err() {
-                return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                return BackendCallResult::threw();
             }
             for arg in &args {
                 if stack.push(*arg).is_err() {
-                    return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                    return BackendCallResult::threw();
                 }
             }
         }
         Opcode::CallConstructor | Opcode::CallStatic => {
             for arg in &args {
                 if stack.push(*arg).is_err() {
-                    return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                    return BackendCallResult::threw();
                 }
             }
         }
         _ => {
-            return JIT_INTERPRETER_FALLBACK_SENTINEL;
+            return BackendCallResult::interpreter_boundary();
         }
     }
 
@@ -1391,21 +1391,23 @@ unsafe extern "C" fn helper_interpreter_call(
             if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
                 eprintln!("jit interpreter_call continue: opcode={opcode:?} result={value:?}");
             }
-            value.raw()
+            BackendCallResult::completed(value)
         }
         crate::vm::interpreter::OpcodeResult::Return(value) => {
             if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
                 eprintln!("jit interpreter_call return: opcode={opcode:?} result={value:?}");
             }
-            value.raw()
+            BackendCallResult::completed(value)
         }
-        crate::vm::interpreter::OpcodeResult::Suspend(_) => JIT_INTERPRETER_FALLBACK_SENTINEL,
+        crate::vm::interpreter::OpcodeResult::Suspend(_) => {
+            BackendCallResult::interpreter_boundary()
+        }
         crate::vm::interpreter::OpcodeResult::Error(error) => {
             if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
                 eprintln!("jit interpreter_call error: opcode={opcode:?} error={error}");
             }
             jit_raise_vm_error(bridge, error);
-            JIT_INTERPRETER_EXCEPTION_SENTINEL
+            BackendCallResult::threw()
         }
         crate::vm::interpreter::OpcodeResult::PushFrame {
             func_id,
@@ -1421,7 +1423,7 @@ unsafe extern "C" fn helper_interpreter_call(
                 func_id,
                 &mut FxHashSet::default(),
             ) {
-                return JIT_INTERPRETER_FALLBACK_SENTINEL;
+                return BackendCallResult::interpreter_boundary();
             }
             match jit_execute_sync_frame(
                 &mut interpreter,
@@ -1440,19 +1442,19 @@ unsafe extern "C" fn helper_interpreter_call(
                             "jit interpreter_call nested: opcode={opcode:?} result={value:?}"
                         );
                     }
-                    value.raw()
+                    BackendCallResult::completed(value)
                 }
                 JitNestedCallResult::Fallback => {
                     if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
                         eprintln!("jit interpreter_call nested fallback: opcode={opcode:?}");
                     }
-                    JIT_INTERPRETER_FALLBACK_SENTINEL
+                    BackendCallResult::interpreter_boundary()
                 }
                 JitNestedCallResult::Exception => {
                     if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
                         eprintln!("jit interpreter_call nested exception: opcode={opcode:?}");
                     }
-                    JIT_INTERPRETER_EXCEPTION_SENTINEL
+                    BackendCallResult::threw()
                 }
             }
         }
@@ -1815,7 +1817,7 @@ mod tests {
             None,
         );
 
-        let raw = unsafe {
+        let result = unsafe {
             helper_kernel_call_dispatch(
                 crate::compiler::ir::encode_kernel_op_id(KernelOp::VmNative(0)),
                 std::ptr::null(),
@@ -1824,7 +1826,8 @@ mod tests {
                 (&bridge as *const JitRuntimeBridgeContext) as *mut (),
             )
         };
-        assert_eq!(raw, Value::i32(88).raw());
+        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Completed);
+        assert_eq!(result.payload, Value::i32(88).raw());
     }
 
     #[test]
@@ -1890,7 +1893,7 @@ mod tests {
             Some(&tx),
         );
 
-        let raw = unsafe {
+        let result = unsafe {
             helper_kernel_call_dispatch(
                 crate::compiler::ir::encode_kernel_op_id(KernelOp::VmNative(0)),
                 std::ptr::null(),
@@ -1899,7 +1902,7 @@ mod tests {
                 (&bridge as *const JitRuntimeBridgeContext) as *mut (),
             )
         };
-        assert_eq!(raw, JIT_NATIVE_SUSPEND_SENTINEL);
+        assert_eq!(result.status, crate::vm::suspend::BackendCallStatus::Suspended);
         let submission = rx.try_recv().expect("expected io submission");
         assert_eq!(submission.task_id.as_u64(), task.id().as_u64());
         assert!(matches!(

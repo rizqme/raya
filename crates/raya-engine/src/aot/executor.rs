@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::vm::interpreter::{ExecutionResult, SharedVmState};
 use crate::vm::scheduler::{SuspendReason as SchedulerSuspendReason, Task};
-use crate::vm::suspend::{ResumePolicy, SuspendRecord, SuspendTag, TaskId};
+use crate::vm::suspend::{ResumePolicy, ResumeRecord, SuspendRecord, SuspendTag, TaskId};
 use crate::vm::value::Value;
 use crate::vm::VmError;
 
@@ -145,22 +145,8 @@ pub fn run_scheduled_aot_task(
 
     let frame = match task.take_aot_frame().filter(|frame| !frame.is_null()) {
         Some(saved_frame) => {
-            if task.has_exception() {
-                unsafe {
-                    free_frame_chain(saved_frame, &ctx.helpers);
-                }
-                task.store_aot_frame(std::ptr::null_mut());
-                return AotRunResult {
-                    result: ExecutionResult::Failed(VmError::RuntimeError(
-                        "AOT task resumed with a pending exception; AOT exception resume is not implemented yet"
-                            .to_string(),
-                    )),
-                    frame: std::ptr::null_mut(),
-                };
-            }
-
             unsafe {
-                prepare_resume(&mut ctx, task.take_resume_value());
+                prepare_resume(&mut ctx, task.take_resume_record());
             }
             saved_frame
         }
@@ -242,8 +228,8 @@ pub unsafe fn allocate_initial_frame(
 /// # Safety
 ///
 /// Caller must ensure `ctx` is a valid, non-null pointer to an initialized `AotTaskContext`.
-pub unsafe fn prepare_resume(ctx: *mut AotTaskContext, resume_value: Option<Value>) {
-    (*ctx).resume_value = resume_value.map_or(abi::NULL_VALUE, |v| v.raw());
+pub unsafe fn prepare_resume(ctx: *mut AotTaskContext, resume_record: ResumeRecord) {
+    (*ctx).resume_record = resume_record;
     (*ctx).suspend_record.clear();
 }
 
@@ -254,11 +240,11 @@ pub unsafe fn prepare_resume(ctx: *mut AotTaskContext, resume_value: Option<Valu
 pub fn build_task_context(
     preempt_flag: *const std::sync::atomic::AtomicBool,
     helpers: AotHelperTable,
-    resume_value: Option<Value>,
+    resume_record: Option<ResumeRecord>,
 ) -> AotTaskContext {
     AotTaskContext {
         preempt_requested: preempt_flag,
-        resume_value: resume_value.map_or(abi::NULL_VALUE, |v| v.raw()),
+        resume_record: resume_record.unwrap_or_else(ResumeRecord::none),
         suspend_record: SuspendRecord::none(),
         helpers,
         shared_state: std::ptr::null_mut(),
@@ -342,7 +328,7 @@ mod tests {
         AOT_SUSPEND
     }
 
-    /// A test AOT function that reads resume_value and returns it.
+    /// A test AOT function that reads the resume payload and returns it.
     unsafe extern "C" fn test_resume_returns_value(
         frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
@@ -356,7 +342,7 @@ mod tests {
             AOT_SUSPEND
         } else {
             // Resume — return the resume value
-            (*ctx).resume_value
+            (*ctx).resume_record.value
         }
     }
 
@@ -365,7 +351,7 @@ mod tests {
         _frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
     ) -> u64 {
-        ((*ctx).helpers.native_call)(ctx, 1, std::ptr::null(), 0)
+        ((*ctx).helpers.native_call)(ctx, 1, std::ptr::null(), 0).payload
     }
 
     /// Simulates compiled native-call path that returns suspend token.
@@ -373,7 +359,7 @@ mod tests {
         _frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
     ) -> u64 {
-        ((*ctx).helpers.native_call)(ctx, 0x7FFF, std::ptr::null(), 0)
+        ((*ctx).helpers.native_call)(ctx, 0x7FFF, std::ptr::null(), 0).payload
     }
 
     #[test]
@@ -507,7 +493,7 @@ mod tests {
 
             // Resume with value i32(99)
             let resume_frame = result.frame;
-            prepare_resume(&mut ctx, Some(Value::i32(99)));
+            prepare_resume(&mut ctx, ResumeRecord::with_value(Value::i32(99)));
             let result2 = run_aot_function(resume_frame, &mut ctx, 100);
 
             match result2.result {
@@ -602,12 +588,16 @@ mod tests {
         let helpers = create_default_helper_table();
         let preempt = AtomicBool::new(false);
 
-        let ctx = build_task_context(&preempt, helpers, Some(Value::i32(42)));
-        assert_eq!(ctx.resume_value, Value::i32(42).raw());
+        let ctx = build_task_context(
+            &preempt,
+            helpers,
+            Some(ResumeRecord::with_value(Value::i32(42))),
+        );
+        assert_eq!(ctx.resume_record.value, Value::i32(42).raw());
         assert_eq!(ctx.suspend_record, SuspendRecord::none());
 
         let ctx2 = build_task_context(&preempt, helpers, None);
-        assert_eq!(ctx2.resume_value, abi::NULL_VALUE);
+        assert!(ctx2.resume_record.is_none());
     }
 
     #[test]

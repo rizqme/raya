@@ -20,7 +20,7 @@ use rustc_hash::FxHashMap;
 
 use super::analysis::{ExecutionSuspendKind, SuspensionAnalysis, SuspensionPoint};
 use super::statemachine::*;
-use super::traits::AotCompilable;
+use super::traits::{AotCompilable, AotError};
 
 use crate::parser::TypeContext;
 
@@ -432,7 +432,7 @@ impl<'a> IrFunctionAdapter<'a> {
         next_temp: &mut u32,
         reg_state: &mut FxHashMap<u32, ExactLayout>,
         local_state: &mut LocalLayoutState,
-    ) {
+    ) -> Result<(), AotError> {
         let reg_layout =
             |reg: &crate::compiler::ir::value::Register,
              reg_state: &FxHashMap<u32, ExactLayout>|
@@ -603,7 +603,7 @@ impl<'a> IrFunctionAdapter<'a> {
                         }),
                         // Logical (should be on booleans, but emit generic)
                         BinaryOp::And | BinaryOp::Or | BinaryOp::Concat => {
-                            Self::emit_generic_binop(d, *op, l, r, out);
+                            Self::emit_generic_binop(d, *op, l, r, out)?;
                         }
                     }
                 } else if Self::is_number(left.ty) && Self::is_number(right.ty) {
@@ -680,11 +680,11 @@ impl<'a> IrFunctionAdapter<'a> {
                             left: l,
                             right: r,
                         }),
-                        _ => Self::emit_generic_binop(d, *op, l, r, out),
+                        _ => Self::emit_generic_binop(d, *op, l, r, out)?,
                     }
                 } else {
                     // Fall back to generic helpers
-                    Self::emit_generic_binop(d, *op, l, r, out);
+                    Self::emit_generic_binop(d, *op, l, r, out)?;
                 }
             }
 
@@ -1407,13 +1407,11 @@ impl<'a> IrFunctionAdapter<'a> {
 
             // === Late-bound member (should be resolved before AOT) ===
             IrInstr::LateBoundMember { dest, object, .. } => {
-                // LateBoundMember should be resolved by monomorphization before reaching AOT.
-                // Emit a generic field load as fallback.
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::ObjectGetField,
-                    args: vec![Self::reg(object), 0],
-                });
+                return Err(AotError::UnsupportedInstruction(format!(
+                    "LateBoundMember reached AOT for object r{} and dest r{}; compiled backends must not substitute ObjectGetField",
+                    object.id.as_u32(),
+                    dest.id.as_u32()
+                )));
             }
 
             // === Debug ===
@@ -1426,14 +1424,15 @@ impl<'a> IrFunctionAdapter<'a> {
                 object,
                 method,
             } => {
-                // Bound method creation requires GC allocation — stub as field load fallback
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::ObjectGetField,
-                    args: vec![Self::reg(object), *method as u32],
-                });
+                return Err(AotError::UnsupportedInstruction(format!(
+                    "BindMethod reached AOT for object r{} method slot {}; compiled backends must not substitute a field load for bound method allocation (dest r{})",
+                    object.id.as_u32(),
+                    method,
+                    dest.id.as_u32()
+                )));
             }
         }
+        Ok(())
     }
 
     /// Translate an IR Terminator to an SmTerminator.
@@ -1486,22 +1485,40 @@ impl<'a> IrFunctionAdapter<'a> {
     }
 
     /// Emit a generic (polymorphic) binary operation via helper call.
-    fn emit_generic_binop(dest: u32, op: BinaryOp, left: u32, right: u32, out: &mut Vec<SmInstr>) {
+    fn emit_generic_binop(
+        dest: u32,
+        op: BinaryOp,
+        left: u32,
+        right: u32,
+        out: &mut Vec<SmInstr>,
+    ) -> Result<(), AotError> {
         let helper = match op {
             BinaryOp::Add => HelperCall::GenericAdd,
             BinaryOp::Sub => HelperCall::GenericSub,
             BinaryOp::Mul => HelperCall::GenericMul,
             BinaryOp::Div => HelperCall::GenericDiv,
             BinaryOp::Mod => HelperCall::GenericMod,
-            BinaryOp::Pow => HelperCall::GenericMul, // TODO: GenericPow
+            BinaryOp::Pow => {
+                return Err(AotError::UnsupportedInstruction(
+                    "BinaryOp::Pow is not yet implemented for compiled backends".to_string(),
+                ));
+            }
             BinaryOp::Equal | BinaryOp::StrictEqual => HelperCall::GenericEquals,
             BinaryOp::NotEqual | BinaryOp::StrictNotEqual => HelperCall::GenericNotEqual,
             BinaryOp::Less => HelperCall::GenericLessThan,
             BinaryOp::LessEqual => HelperCall::GenericLessEqual,
             BinaryOp::Greater => HelperCall::GenericGreater,
             BinaryOp::GreaterEqual => HelperCall::GenericGreaterEqual,
-            BinaryOp::And => HelperCall::GenericEquals, // TODO: Logical AND
-            BinaryOp::Or => HelperCall::GenericEquals,  // TODO: Logical OR
+            BinaryOp::And => {
+                return Err(AotError::UnsupportedInstruction(
+                    "BinaryOp::And is not yet implemented for compiled backends".to_string(),
+                ));
+            }
+            BinaryOp::Or => {
+                return Err(AotError::UnsupportedInstruction(
+                    "BinaryOp::Or is not yet implemented for compiled backends".to_string(),
+                ));
+            }
             BinaryOp::Concat => HelperCall::GenericConcat,
             BinaryOp::BitAnd
             | BinaryOp::BitOr
@@ -1509,7 +1526,9 @@ impl<'a> IrFunctionAdapter<'a> {
             | BinaryOp::ShiftLeft
             | BinaryOp::ShiftRight
             | BinaryOp::UnsignedShiftRight => {
-                HelperCall::GenericAdd // TODO: generic bitwise
+                return Err(AotError::UnsupportedInstruction(format!(
+                    "{op:?} is not yet implemented for compiled backends"
+                )));
             }
         };
         out.push(SmInstr::CallHelper {
@@ -1517,6 +1536,7 @@ impl<'a> IrFunctionAdapter<'a> {
             helper,
             args: vec![left, right],
         });
+        Ok(())
     }
 
     /// Analyze a single IR instruction for suspension classification.
@@ -1585,7 +1605,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
         }
     }
 
-    fn emit_blocks(&self) -> Vec<SmBlock> {
+    fn emit_blocks(&self) -> Result<Vec<SmBlock>, AotError> {
         let mut sm_blocks = Vec::with_capacity(self.func.blocks.len());
         let mut next_temp = self.base_reg_capacity();
         let entry_local_states = self.analyze_block_local_layouts();
@@ -1607,7 +1627,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
                         &mut next_temp,
                         &mut reg_state,
                         &mut local_state,
-                    );
+                    )?;
                     self.update_layout_tracking(instr, &mut reg_state, &mut local_state);
                 }
                 instructions.push(SmInstr::CallHelper {
@@ -1623,7 +1643,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
                         &mut next_temp,
                         &mut reg_state,
                         &mut local_state,
-                    );
+                    )?;
                     self.update_layout_tracking(instr, &mut reg_state, &mut local_state);
                 }
             }
@@ -1636,7 +1656,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
             });
         }
 
-        sm_blocks
+        Ok(sm_blocks)
     }
 
     fn param_count(&self) -> u32 {
@@ -1691,7 +1711,7 @@ mod tests {
         func.add_block(block);
 
         let adapter = IrFunctionAdapter::new(&func);
-        let blocks = adapter.emit_blocks();
+        let blocks = adapter.emit_blocks().expect("blocks");
 
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].instructions.len(), 1);
@@ -1731,7 +1751,7 @@ mod tests {
         func.add_block(block);
 
         let adapter = IrFunctionAdapter::new(&func);
-        let blocks = adapter.emit_blocks();
+        let blocks = adapter.emit_blocks().expect("blocks");
 
         match &blocks[0].instructions[0] {
             SmInstr::F64BinOp { dest, op, .. } => {
@@ -1763,7 +1783,7 @@ mod tests {
         func.add_block(block);
 
         let adapter = IrFunctionAdapter::new(&func);
-        let blocks = adapter.emit_blocks();
+        let blocks = adapter.emit_blocks().expect("blocks");
 
         assert_eq!(blocks[0].instructions.len(), 3);
         assert!(matches!(
@@ -1855,7 +1875,7 @@ mod tests {
         func.add_block(block);
 
         let adapter = IrFunctionAdapter::with_module(&module, &func);
-        let blocks = adapter.emit_blocks();
+        let blocks = adapter.emit_blocks().expect("blocks");
 
         assert!(matches!(
             &blocks[0].instructions[1],
@@ -1895,7 +1915,7 @@ mod tests {
         func.add_block(block);
 
         let adapter = IrFunctionAdapter::with_module(&module, &func);
-        let blocks = adapter.emit_blocks();
+        let blocks = adapter.emit_blocks().expect("blocks");
 
         assert!(matches!(
             &blocks[0].instructions[1],

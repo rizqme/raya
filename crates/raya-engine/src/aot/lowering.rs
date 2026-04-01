@@ -1023,7 +1023,13 @@ impl LoweringCtx {
                 self.ensure_reg(builder, d, helper_return_type(helper));
                 let results = builder.inst_results(inst);
                 if !results.is_empty() {
-                    self.def_reg(builder, d, results[0]);
+                    let result_index =
+                        if matches!(helper, HelperCall::KernelCall) && results.len() > 1 {
+                            1
+                        } else {
+                            0
+                        };
+                    self.def_reg(builder, d, results[result_index]);
                 }
             }
             return Ok(());
@@ -1298,9 +1304,6 @@ impl LoweringCtx {
                 v.push(argc);
                 v
             }
-
-            // (result: u64) -> u8
-            HelperCall::IsNativeSuspend => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (ctx, func_id: u32, args_ptr: i64, argc: u32) -> u64
             HelperCall::Spawn => {
@@ -1590,18 +1593,14 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
         }
-        // (ctx: i64, op_id: u16, args_ptr: i64, argc: u8) -> u64
+        // (ctx: i64, op_id: u16, args_ptr: i64, argc: u8) -> (status: u64, payload: u64)
         HelperCall::KernelCall => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I16));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I8));
             sig.returns.push(AbiParam::new(types::I64));
-        }
-        // (result: u64) -> u8
-        HelperCall::IsNativeSuspend => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I8));
+            sig.returns.push(AbiParam::new(types::I64));
         }
         // (ctx: i64, func_id: u32, args_ptr: i64, argc: u32) -> u64
         HelperCall::Spawn => {
@@ -1675,7 +1674,6 @@ fn helper_return_type(helper: &HelperCall) -> ir::types::Type {
         | HelperCall::GenericLessThan
         | HelperCall::InstanceOf
         | HelperCall::ImplementsShape
-        | HelperCall::IsNativeSuspend
         | HelperCall::CheckPreemption => types::I8,
         HelperCall::ObjectSetField
         | HelperCall::ArraySet
@@ -1725,7 +1723,6 @@ fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
         HelperCall::LoadGlobalValue => offset_of!(AotHelperTable, load_global_value),
         HelperCall::StoreGlobalValue => offset_of!(AotHelperTable, store_global_value),
         HelperCall::KernelCall => offset_of!(AotHelperTable, native_call),
-        HelperCall::IsNativeSuspend => offset_of!(AotHelperTable, is_native_suspend),
         HelperCall::Spawn => offset_of!(AotHelperTable, spawn),
         HelperCall::CheckPreemption => offset_of!(AotHelperTable, check_preemption),
         HelperCall::RunSyncAotCall => offset_of!(AotHelperTable, run_sync_aot_call),
@@ -1796,16 +1793,16 @@ pub mod frame_offsets {
 pub mod ctx_offsets {
     /// Offset of `preempt_requested` pointer field
     pub const PREEMPT_REQUESTED: i32 = 0;
-    /// Offset of `resume_value` field
-    pub const RESUME_VALUE: i32 = 8;
+    /// Offset of `resume_record.value` field
+    pub const RESUME_VALUE: i32 = 16;
     /// Offset of `suspend_record.tag` field
-    pub const SUSPEND_TAG: i32 = 16;
+    pub const SUSPEND_TAG: i32 = 24;
     /// Offset of `suspend_record.word0` field
-    pub const SUSPEND_WORD0: i32 = 24;
+    pub const SUSPEND_WORD0: i32 = 32;
     /// Offset of `suspend_record.word1` field
-    pub const SUSPEND_WORD1: i32 = 32;
+    pub const SUSPEND_WORD1: i32 = 40;
     /// Offset of `helpers` field (start of AotHelperTable)
-    pub const HELPERS: i32 = 40;
+    pub const HELPERS: i32 = 48;
     /// Offset of `shared_state` pointer field
     pub const SHARED_STATE: i32 = HELPERS + super::helper_table_size() as i32;
 }

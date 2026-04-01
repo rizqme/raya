@@ -18,7 +18,7 @@ use super::statemachine::{
     HelperCall, SmBlock, SmBlockId, SmBlockKind, SmCmpOp, SmF64BinOp, SmI32BinOp, SmInstr,
     SmTerminator,
 };
-use super::traits::{AotCompilable, AotProfileVariant, AotVariantGuard, AotVariantKind};
+use super::traits::{AotCompilable, AotError, AotProfileVariant, AotVariantGuard, AotVariantKind};
 
 #[cfg(all(feature = "aot", feature = "jit"))]
 use crate::jit::analysis::decoder::Operands;
@@ -1260,7 +1260,7 @@ impl LiftedFunction {
 impl AotCompilable for LiftedFunction {
     #[cfg(all(feature = "aot", feature = "jit"))]
     fn analyze(&self) -> SuspensionAnalysis {
-        let sm_blocks = self.emit_blocks();
+        let sm_blocks = self.emit_blocks().expect("lifted function emit_blocks");
         let mut points = Vec::new();
         let mut index = 0u32;
         let mut loop_headers = std::collections::HashSet::new();
@@ -1303,7 +1303,7 @@ impl AotCompilable for LiftedFunction {
     }
 
     #[cfg(all(feature = "aot", feature = "jit"))]
-    fn emit_blocks(&self) -> Vec<SmBlock> {
+    fn emit_blocks(&self) -> Result<Vec<SmBlock>, AotError> {
         let debug = std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some();
         if debug {
             eprintln!(
@@ -1322,7 +1322,8 @@ impl AotCompilable for LiftedFunction {
                 self.func_index, self.name, block_entry_states
             );
         }
-        self.jit_func
+        Ok(self
+            .jit_func
             .blocks
             .iter()
             .enumerate()
@@ -1356,17 +1357,17 @@ impl AotCompilable for LiftedFunction {
                     terminator,
                 }
             })
-            .collect()
+            .collect())
     }
 
     #[cfg(not(all(feature = "aot", feature = "jit")))]
-    fn emit_blocks(&self) -> Vec<SmBlock> {
-        vec![SmBlock {
+    fn emit_blocks(&self) -> Result<Vec<SmBlock>, AotError> {
+        Ok(vec![SmBlock {
             id: SmBlockId(0),
             kind: SmBlockKind::Body,
             instructions: vec![SmInstr::ConstNull { dest: 0 }],
             terminator: SmTerminator::Return { value: 0 },
-        }]
+        }])
     }
 
     fn param_count(&self) -> u32 {
@@ -1642,7 +1643,7 @@ mod tests {
             let analysis = func.analyze();
             assert!(!analysis.has_suspensions);
 
-            let blocks = func.emit_blocks();
+            let blocks = func.emit_blocks().expect("blocks");
             // Empty JIT function has no blocks
             assert_eq!(blocks.len(), 0);
         }
@@ -1726,7 +1727,7 @@ mod tests {
                 guard_arg_index: Some(0),
             })
         );
-        let blocks = variants[0].func.emit_blocks();
+        let blocks = variants[0].func.emit_blocks().expect("variant blocks");
         assert!(matches!(
             &blocks[0].instructions[1],
             SmInstr::CallHelper {

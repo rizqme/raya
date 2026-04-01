@@ -16,12 +16,10 @@ use super::abi;
 use crate::compiler::Opcode;
 use crate::jit::ir::instr::{JitBlockId, JitFunction, JitInstr, JitTerminator, Reg};
 use crate::jit::runtime::helpers::{
-    JIT_INTERPRETER_EXCEPTION_SENTINEL, JIT_INTERPRETER_FALLBACK_SENTINEL,
-    JIT_NATIVE_SUSPEND_SENTINEL, JIT_SHAPE_FIELD_FALLBACK_SENTINEL,
-    JIT_STRING_LEN_FALLBACK_SENTINEL,
+    JIT_SHAPE_FIELD_FALLBACK_SENTINEL, JIT_STRING_LEN_FALLBACK_SENTINEL,
 };
 use crate::jit::runtime::trampoline::{JitExitKind, JIT_EXIT_MAX_NATIVE_ARGS};
-use crate::vm::suspend::SuspendTag;
+use crate::vm::suspend::{BackendCallStatus, SuspendTag};
 
 /// State maintained during lowering of a single function
 pub struct LoweringContext<'a> {
@@ -1214,23 +1212,24 @@ impl<'a> LoweringContext<'a> {
                         shared_state,
                     ],
                 );
-                let result = builder.inst_results(call)[0];
-                let fallback = builder
+                let status = builder.inst_results(call)[0];
+                let payload = builder.inst_results(call)[1];
+                let boundary = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
-                let exception = builder
+                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                let threw = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
+                let is_boundary = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                    .icmp(condcodes::IntCC::Equal, status, boundary);
                 let is_exception = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, exception);
+                    .icmp(condcodes::IntCC::Equal, status, threw);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
-                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                    .brif(is_boundary, fallback_block, &[], after_fallback_check, &[]);
                 builder.seal_block(after_fallback_check);
                 builder.switch_to_block(after_fallback_check);
                 builder
@@ -1247,7 +1246,7 @@ impl<'a> LoweringContext<'a> {
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
 
                 builder.switch_to_block(success_block);
-                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.ins().jump(done, &[ir::BlockArg::Value(payload)]);
 
                 builder.seal_block(done);
                 builder.switch_to_block(done);
@@ -1322,23 +1321,24 @@ impl<'a> LoweringContext<'a> {
                         shared_state,
                     ],
                 );
-                let result = builder.inst_results(call)[0];
-                let fallback = builder
+                let status = builder.inst_results(call)[0];
+                let payload = builder.inst_results(call)[1];
+                let boundary = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
-                let exception = builder
+                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                let threw = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
+                let is_boundary = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                    .icmp(condcodes::IntCC::Equal, status, boundary);
                 let is_exception = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, exception);
+                    .icmp(condcodes::IntCC::Equal, status, threw);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
-                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                    .brif(is_boundary, fallback_block, &[], after_fallback_check, &[]);
                 builder.seal_block(after_fallback_check);
                 builder.switch_to_block(after_fallback_check);
                 builder
@@ -1353,7 +1353,7 @@ impl<'a> LoweringContext<'a> {
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
-                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.ins().jump(done, &[ir::BlockArg::Value(payload)]);
                 builder.seal_block(done);
                 builder.switch_to_block(done);
                 if let Some(dest) = dest {
@@ -1428,23 +1428,24 @@ impl<'a> LoweringContext<'a> {
                         shared_state,
                     ],
                 );
-                let result = builder.inst_results(call)[0];
-                let fallback = builder
+                let status = builder.inst_results(call)[0];
+                let payload = builder.inst_results(call)[1];
+                let boundary = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
-                let exception = builder
+                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                let threw = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
+                let is_boundary = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                    .icmp(condcodes::IntCC::Equal, status, boundary);
                 let is_exception = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, exception);
+                    .icmp(condcodes::IntCC::Equal, status, threw);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
-                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                    .brif(is_boundary, fallback_block, &[], after_fallback_check, &[]);
                 builder.seal_block(after_fallback_check);
                 builder.switch_to_block(after_fallback_check);
                 builder
@@ -1459,7 +1460,7 @@ impl<'a> LoweringContext<'a> {
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
-                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.ins().jump(done, &[ir::BlockArg::Value(payload)]);
                 builder.seal_block(done);
                 builder.switch_to_block(done);
                 if let Some(dest) = dest {
@@ -1526,23 +1527,24 @@ impl<'a> LoweringContext<'a> {
                         shared_state,
                     ],
                 );
-                let result = builder.inst_results(call)[0];
-                let fallback = builder
+                let status = builder.inst_results(call)[0];
+                let payload = builder.inst_results(call)[1];
+                let boundary = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
-                let exception = builder
+                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                let threw = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
+                let is_boundary = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                    .icmp(condcodes::IntCC::Equal, status, boundary);
                 let is_exception = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, exception);
+                    .icmp(condcodes::IntCC::Equal, status, threw);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
-                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                    .brif(is_boundary, fallback_block, &[], after_fallback_check, &[]);
                 builder.seal_block(after_fallback_check);
                 builder.switch_to_block(after_fallback_check);
                 builder
@@ -1557,7 +1559,7 @@ impl<'a> LoweringContext<'a> {
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
-                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.ins().jump(done, &[ir::BlockArg::Value(payload)]);
                 builder.seal_block(done);
                 builder.switch_to_block(done);
                 let merged = builder.block_params(done)[0];
@@ -1633,23 +1635,24 @@ impl<'a> LoweringContext<'a> {
                         shared_state,
                     ],
                 );
-                let result = builder.inst_results(call)[0];
-                let fallback = builder
+                let status = builder.inst_results(call)[0];
+                let payload = builder.inst_results(call)[1];
+                let boundary = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
-                let exception = builder
+                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                let threw = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
+                let is_boundary = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                    .icmp(condcodes::IntCC::Equal, status, boundary);
                 let is_exception = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, exception);
+                    .icmp(condcodes::IntCC::Equal, status, threw);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
-                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                    .brif(is_boundary, fallback_block, &[], after_fallback_check, &[]);
                 builder.seal_block(after_fallback_check);
                 builder.switch_to_block(after_fallback_check);
                 builder
@@ -1664,7 +1667,7 @@ impl<'a> LoweringContext<'a> {
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
-                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.ins().jump(done, &[ir::BlockArg::Value(payload)]);
                 builder.seal_block(done);
                 builder.switch_to_block(done);
                 let merged = builder.block_params(done)[0];
@@ -1730,23 +1733,24 @@ impl<'a> LoweringContext<'a> {
                         shared_state,
                     ],
                 );
-                let result = builder.inst_results(call)[0];
-                let fallback = builder
+                let status = builder.inst_results(call)[0];
+                let payload = builder.inst_results(call)[1];
+                let boundary = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
-                let exception = builder
+                    .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                let threw = builder
                     .ins()
-                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder
+                    .iconst(types::I64, BackendCallStatus::Threw as i64);
+                let is_boundary = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                    .icmp(condcodes::IntCC::Equal, status, boundary);
                 let is_exception = builder
                     .ins()
-                    .icmp(condcodes::IntCC::Equal, result, exception);
+                    .icmp(condcodes::IntCC::Equal, status, threw);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
-                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                    .brif(is_boundary, fallback_block, &[], after_fallback_check, &[]);
                 builder.seal_block(after_fallback_check);
                 builder.switch_to_block(after_fallback_check);
                 builder
@@ -1761,7 +1765,7 @@ impl<'a> LoweringContext<'a> {
                 builder.switch_to_block(exception_block);
                 self.emit_failed_exit(builder, stack, *bytecode_offset);
                 builder.switch_to_block(success_block);
-                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.ins().jump(done, &[ir::BlockArg::Value(payload)]);
                 builder.seal_block(done);
                 builder.switch_to_block(done);
                 if let Some(dest) = dest {
@@ -1882,26 +1886,26 @@ impl<'a> LoweringContext<'a> {
                             shared_state,
                         ],
                     );
-                    let result = builder.inst_results(call)[0];
-                    let suspend_sentinel = builder
+                    let status = builder.inst_results(call)[0];
+                    let payload = builder.inst_results(call)[1];
+                    let suspended = builder
                         .ins()
-                        .iconst(types::I64, JIT_NATIVE_SUSPEND_SENTINEL as i64);
-                    let fallback_sentinel = builder
+                        .iconst(types::I64, BackendCallStatus::Suspended as i64);
+                    let boundary = builder
                         .ins()
-                        .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
-                    let exception_sentinel = builder
+                        .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                    let threw = builder
                         .ins()
-                        .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                    let is_suspend =
-                        builder
-                            .ins()
-                            .icmp(condcodes::IntCC::Equal, result, suspend_sentinel);
+                        .iconst(types::I64, BackendCallStatus::Threw as i64);
+                    let is_suspend = builder
+                        .ins()
+                        .icmp(condcodes::IntCC::Equal, status, suspended);
                     let is_fallback = builder
                         .ins()
-                        .icmp(condcodes::IntCC::Equal, result, fallback_sentinel);
+                        .icmp(condcodes::IntCC::Equal, status, boundary);
                     let is_exception = builder
                         .ins()
-                        .icmp(condcodes::IntCC::Equal, result, exception_sentinel);
+                        .icmp(condcodes::IntCC::Equal, status, threw);
                     let suspend_exit = builder.create_block();
                     let fallback_dispatch = builder.create_block();
                     let exception_check = builder.create_block();
@@ -1948,7 +1952,7 @@ impl<'a> LoweringContext<'a> {
 
                     builder.switch_to_block(fast_continue);
                     if let Some(d) = dest {
-                        self.def_reg(builder, *d, result);
+                        self.def_reg(builder, *d, payload);
                     }
                     return Ok(false);
                 } else {
@@ -2004,26 +2008,26 @@ impl<'a> LoweringContext<'a> {
                             shared_state,
                         ],
                     );
-                    let result = builder.inst_results(call)[0];
-                    let suspend_sentinel = builder
+                    let status = builder.inst_results(call)[0];
+                    let payload = builder.inst_results(call)[1];
+                    let suspended = builder
                         .ins()
-                        .iconst(types::I64, JIT_NATIVE_SUSPEND_SENTINEL as i64);
-                    let fallback_sentinel = builder
+                        .iconst(types::I64, BackendCallStatus::Suspended as i64);
+                    let boundary = builder
                         .ins()
-                        .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
-                    let exception_sentinel = builder
+                        .iconst(types::I64, BackendCallStatus::InterpreterBoundary as i64);
+                    let threw = builder
                         .ins()
-                        .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                    let is_suspend =
-                        builder
-                            .ins()
-                            .icmp(condcodes::IntCC::Equal, result, suspend_sentinel);
+                        .iconst(types::I64, BackendCallStatus::Threw as i64);
+                    let is_suspend = builder
+                        .ins()
+                        .icmp(condcodes::IntCC::Equal, status, suspended);
                     let is_fallback = builder
                         .ins()
-                        .icmp(condcodes::IntCC::Equal, result, fallback_sentinel);
+                        .icmp(condcodes::IntCC::Equal, status, boundary);
                     let is_exception = builder
                         .ins()
-                        .icmp(condcodes::IntCC::Equal, result, exception_sentinel);
+                        .icmp(condcodes::IntCC::Equal, status, threw);
                     let suspend_exit = builder.create_block();
                     let fallback_dispatch = builder.create_block();
                     let exception_check = builder.create_block();
@@ -2090,7 +2094,7 @@ impl<'a> LoweringContext<'a> {
 
                     builder.switch_to_block(fast_continue);
                     if let Some(d) = dest {
-                        self.def_reg(builder, *d, result);
+                        self.def_reg(builder, *d, payload);
                     }
                     return Ok(false);
                 }
@@ -2166,7 +2170,8 @@ impl<'a> LoweringContext<'a> {
         sig.params.push(AbiParam::new(types::I8)); // arg_count
         sig.params.push(AbiParam::new(types::I64)); // module ptr
         sig.params.push(AbiParam::new(types::I64)); // shared_state
-        sig.returns.push(AbiParam::new(types::I64)); // NaN-boxed value or suspend sentinel
+        sig.returns.push(AbiParam::new(types::I64)); // BackendCallStatus
+        sig.returns.push(AbiParam::new(types::I64)); // payload
         let sig_ref = builder.func.import_signature(sig);
         self.sig_kernel_call_dispatch = Some(sig_ref);
         sig_ref
@@ -2199,7 +2204,8 @@ impl<'a> LoweringContext<'a> {
         sig.params.push(AbiParam::new(types::I16)); // arg_count
         sig.params.push(AbiParam::new(types::I64)); // module ptr
         sig.params.push(AbiParam::new(types::I64)); // shared_state ptr
-        sig.returns.push(AbiParam::new(types::I64)); // value/sentinel
+        sig.returns.push(AbiParam::new(types::I64)); // BackendCallStatus
+        sig.returns.push(AbiParam::new(types::I64)); // payload
         let sig_ref = builder.func.import_signature(sig);
         self.sig_interpreter_call = Some(sig_ref);
         sig_ref

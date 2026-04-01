@@ -41,7 +41,7 @@ pub struct AotProfileVariant {
 /// The pipeline:
 /// ```text
 /// AotCompilable::analyze()     → SuspensionAnalysis
-/// AotCompilable::emit_blocks() → Vec<SmBlock>
+/// AotCompilable::emit_blocks() → Result<Vec<SmBlock>, AotError>
 /// transform_to_state_machine() → StateMachineFunction
 /// lower_function()             → Cranelift IR
 /// ```
@@ -61,7 +61,7 @@ pub trait AotCompilable {
     /// understands. Suspension points are left as `CallHelper` instructions
     /// with suspension-causing helpers — the state machine transform will
     /// later wrap them with save/restore/dispatch machinery.
-    fn emit_blocks(&self) -> Vec<SmBlock>;
+    fn emit_blocks(&self) -> Result<Vec<SmBlock>, AotError>;
 
     /// Number of parameters.
     fn param_count(&self) -> u32;
@@ -120,7 +120,7 @@ impl std::error::Error for AotError {}
 pub fn compile_to_state_machine(
     func: &dyn AotCompilable,
     function_id: u32,
-) -> StateMachineFunction {
+) -> Result<StateMachineFunction, AotError> {
     let debug = std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some();
     let analysis = func.analyze();
     if debug {
@@ -131,7 +131,7 @@ pub fn compile_to_state_machine(
             analysis
         );
     }
-    let blocks = func.emit_blocks();
+    let blocks = func.emit_blocks()?;
     if debug {
         eprintln!(
             "\n=== AOT PRE-SM fn={} name={:?} ===\n{:#?}",
@@ -140,14 +140,14 @@ pub fn compile_to_state_machine(
             blocks
         );
     }
-    transform_to_state_machine(
+    Ok(transform_to_state_machine(
         function_id,
         blocks,
         analysis,
         func.param_count(),
         func.local_count(),
         func.name().map(|s| s.to_string()),
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -165,8 +165,8 @@ mod tests {
             SuspensionAnalysis::none()
         }
 
-        fn emit_blocks(&self) -> Vec<SmBlock> {
-            self.blocks.clone()
+        fn emit_blocks(&self) -> Result<Vec<SmBlock>, AotError> {
+            Ok(self.blocks.clone())
         }
 
         fn param_count(&self) -> u32 {
@@ -197,7 +197,7 @@ mod tests {
             }],
         };
 
-        let sm = compile_to_state_machine(&func, 0);
+        let sm = compile_to_state_machine(&func, 0).expect("state machine");
 
         assert_eq!(sm.function_id, 0);
         assert_eq!(sm.param_count, 0);

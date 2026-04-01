@@ -5,7 +5,7 @@
 //!
 //! | Group           | Fields                                                          | Accessed by          |
 //! |-----------------|-----------------------------------------------------------------|----------------------|
-//! | LifecycleState  | state, suspend_reason, resume_value, start_time, result,        | Reactor + VM workers |
+//! | LifecycleState  | state, suspend_reason, resume_record, start_time, result,       | Reactor + VM workers |
 //! |                 | waiters, awaiting_task                                          |                      |
 //! | ExceptionState  | current_exception, caught_exception, exception_handlers         | VM workers only      |
 //! | CallState       | closure_stack, call_stack, execution_frames                     | VM workers only      |
@@ -16,7 +16,7 @@ use crate::vm::interpreter::execution::{ExecutionFrame, ReturnAction};
 use crate::vm::snapshot::SerializedValue;
 use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
 use crate::vm::stack::Stack;
-use crate::vm::suspend::{ResumePolicy, SuspendReason, TaskId};
+use crate::vm::suspend::{ResumePolicy, ResumeRecord, SuspendReason, TaskId};
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
 #[cfg(feature = "aot")]
@@ -89,7 +89,7 @@ pub struct PromiseReaction {
 struct LifecycleState {
     state: TaskState,
     suspend_reason: Option<SuspendReason>,
-    resume_value: Option<Value>,
+    resume_record: ResumeRecord,
     start_time: Option<Instant>,
     result: Option<Value>,
     waiters: Vec<TaskId>,
@@ -261,7 +261,7 @@ impl Task {
             lifecycle: ParkingMutex::new(LifecycleState {
                 state: TaskState::Created,
                 suspend_reason: None,
-                resume_value: None,
+                resume_record: ResumeRecord::none(),
                 start_time: None,
                 result: None,
                 waiters: Vec::new(),
@@ -944,12 +944,28 @@ impl Task {
 
     /// Set the value to push when resuming (e.g., channel receive result)
     pub fn set_resume_value(&self, value: Value) {
-        self.lifecycle.lock().resume_value = Some(value);
+        self.lifecycle.lock().resume_record = ResumeRecord::with_value(value);
     }
 
     /// Take the resume value (consumes it)
     pub fn take_resume_value(&self) -> Option<Value> {
-        self.lifecycle.lock().resume_value.take()
+        let mut lifecycle = self.lifecycle.lock();
+        let record = lifecycle.resume_record;
+        lifecycle.resume_record = ResumeRecord::none();
+        record.as_value()
+    }
+
+    /// Set a thrown value to materialize on resume.
+    pub fn set_resume_throw(&self, value: Value) {
+        self.lifecycle.lock().resume_record = ResumeRecord::with_throw(value);
+    }
+
+    /// Take the full resume record (consumes it).
+    pub fn take_resume_record(&self) -> ResumeRecord {
+        let mut lifecycle = self.lifecycle.lock();
+        let record = lifecycle.resume_record;
+        lifecycle.resume_record = ResumeRecord::none();
+        record
     }
 
     /// Mark this task's rejection as observed by a consumer.
@@ -1179,8 +1195,11 @@ impl Task {
 
         {
             let lifecycle = self.lifecycle.lock();
-            if let Some(value) = lifecycle.resume_value.filter(Value::is_heap_allocated) {
-                roots.push(value);
+            if !lifecycle.resume_record.is_none() {
+                let value = unsafe { Value::from_raw(lifecycle.resume_record.value) };
+                if value.is_heap_allocated() {
+                    roots.push(value);
+                }
             }
             if let Some(value) = lifecycle.result.filter(Value::is_heap_allocated) {
                 roots.push(value);
@@ -1511,7 +1530,7 @@ impl Task {
             lifecycle: ParkingMutex::new(LifecycleState {
                 state: serialized.state,
                 suspend_reason,
-                resume_value: None,
+                resume_record: ResumeRecord::none(),
                 start_time: None,
                 result: serialized
                     .result

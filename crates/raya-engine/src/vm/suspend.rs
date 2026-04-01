@@ -98,6 +98,65 @@ impl ResumePolicy {
     }
 }
 
+/// Resume payload classification shared by interpreter, scheduler, AOT, and JIT.
+#[repr(u64)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ResumeKind {
+    #[default]
+    None = 0,
+    Value = 1,
+    Throw = 2,
+}
+
+/// Canonical resume transport shared by runtime and compiled backends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ResumeRecord {
+    pub kind: ResumeKind,
+    pub value: u64,
+}
+
+impl ResumeRecord {
+    pub const fn none() -> Self {
+        Self {
+            kind: ResumeKind::None,
+            value: 0,
+        }
+    }
+
+    pub fn with_value(value: Value) -> Self {
+        Self {
+            kind: ResumeKind::Value,
+            value: value.raw(),
+        }
+    }
+
+    pub fn with_throw(value: Value) -> Self {
+        Self {
+            kind: ResumeKind::Throw,
+            value: value.raw(),
+        }
+    }
+
+    pub fn is_none(self) -> bool {
+        matches!(self.kind, ResumeKind::None)
+    }
+
+    pub fn as_value(self) -> Option<Value> {
+        match self.kind {
+            ResumeKind::Value => Some(unsafe { Value::from_raw(self.value) }),
+            _ => None,
+        }
+    }
+
+    pub fn as_throw(self) -> Option<Value> {
+        match self.kind {
+            ResumeKind::Throw => Some(unsafe { Value::from_raw(self.value) }),
+            _ => None,
+        }
+    }
+}
+
 /// Canonical runtime/scheduler-facing suspend reason.
 #[derive(Debug, Clone)]
 pub enum SuspendReason {
@@ -116,6 +175,59 @@ pub enum SuspendReason {
     SemaphoreAcquire { semaphore_id: SemaphoreId },
     JsGeneratorYield { value: Value },
     JsGeneratorInit,
+}
+
+/// Typed compiled-backend helper status shared by AOT and JIT.
+#[repr(u64)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum BackendCallStatus {
+    #[default]
+    Completed = 0,
+    Suspended = 1,
+    Threw = 2,
+    InterpreterBoundary = 3,
+}
+
+/// Shared helper-call result transport for compiled backends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BackendCallResult {
+    pub status: BackendCallStatus,
+    pub payload: u64,
+}
+
+impl BackendCallResult {
+    pub const fn completed_raw(payload: u64) -> Self {
+        Self {
+            status: BackendCallStatus::Completed,
+            payload,
+        }
+    }
+
+    pub fn completed(value: Value) -> Self {
+        Self::completed_raw(value.raw())
+    }
+
+    pub const fn suspended() -> Self {
+        Self {
+            status: BackendCallStatus::Suspended,
+            payload: 0,
+        }
+    }
+
+    pub const fn threw() -> Self {
+        Self {
+            status: BackendCallStatus::Threw,
+            payload: 0,
+        }
+    }
+
+    pub const fn interpreter_boundary() -> Self {
+        Self {
+            status: BackendCallStatus::InterpreterBoundary,
+            payload: 0,
+        }
+    }
 }
 
 /// ABI tag shared by AOT and JIT suspend transport.

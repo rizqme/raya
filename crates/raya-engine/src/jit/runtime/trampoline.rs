@@ -4,7 +4,7 @@
 //! JIT code calls back into the runtime through function pointers in
 //! `RuntimeHelperTable` for GC, allocation, kernel calls, etc.
 
-use crate::vm::suspend::SuspendTag;
+use crate::vm::suspend::{BackendCallResult, SuspendTag};
 
 /// Entry point signature for JIT-compiled functions
 ///
@@ -113,13 +113,22 @@ pub struct RuntimeHelperTable {
     pub safepoint_poll: unsafe extern "C" fn(*const ()),
     /// Check if current task should be preempted: (current_task) -> should_yield
     pub check_preemption: unsafe extern "C" fn(*const ()) -> bool,
-    /// Dispatch a kernel call: (kernel_op_id, args_ptr, arg_count, module_ptr, shared_state) -> result/sentinel
+    /// Dispatch a kernel call through the shared compiled-backend ABI.
     pub kernel_call_dispatch:
-        unsafe extern "C" fn(u16, *const u64, u8, *const (), *mut ()) -> u64,
-    /// Execute a call-family opcode through the interpreter runtime:
-    /// (opcode, operand_u64, operand_u32, receiver, args_ptr, arg_count, module_ptr, shared_state) -> result/sentinel
+        unsafe extern "C" fn(u16, *const u64, u8, *const (), *mut ()) -> BackendCallResult,
+    /// Execute a call-family opcode through the interpreter runtime using the
+    /// shared compiled-backend ABI.
     pub interpreter_call:
-        unsafe extern "C" fn(u8, u64, u32, u64, *const u64, u16, *const (), *mut ()) -> u64,
+        unsafe extern "C" fn(
+            u8,
+            u64,
+            u32,
+            u64,
+            *const u64,
+            u16,
+            *const (),
+            *mut (),
+        ) -> BackendCallResult,
     /// Throw an exception: (exception_value, shared_state) -> !
     pub throw_exception: unsafe extern "C" fn(u64, *mut ()),
     /// Deoptimize: (bytecode_offset, shared_state) -> !

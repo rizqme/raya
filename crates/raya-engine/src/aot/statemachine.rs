@@ -340,7 +340,6 @@ pub enum HelperCall {
     LoadGlobalValue,
     StoreGlobalValue,
     KernelCall,
-    IsNativeSuspend,
     Spawn,
     CheckPreemption,
     ThrowException,
@@ -879,11 +878,9 @@ impl<'a> StateMachineTransformer<'a> {
                                 });
                             }
                             ExecutionSuspendKind::KernelBoundary => {
-                                // Native suspension token can be helper-specific; query helper table.
-                                all_pre_instrs.push(SmInstr::CallHelper {
-                                    dest: Some(check_reg),
-                                    helper: HelperCall::IsNativeSuspend,
-                                    args: vec![call_result],
+                                all_pre_instrs.push(SmInstr::IsSuspend {
+                                    dest: check_reg,
+                                    value: call_result,
                                 });
                             }
                             _ => unreachable!("handled by match arm"),
@@ -1180,7 +1177,6 @@ fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
         HelperCall::LoadGlobalValue => false,
         HelperCall::StoreGlobalValue => arg_index == 1,
         HelperCall::KernelCall => arg_index > 0,
-        HelperCall::IsNativeSuspend => true,
         HelperCall::Spawn => arg_index > 0,
         HelperCall::CheckPreemption => false,
         HelperCall::RunSyncAotCall | HelperCall::PrepareAotCallFrame => arg_index >= 2,
@@ -1423,12 +1419,9 @@ mod tests {
         assert!(
             body.instructions.iter().any(|i| matches!(
                 i,
-                SmInstr::CallHelper {
-                    helper: HelperCall::IsNativeSuspend,
-                    ..
-                }
+                SmInstr::IsSuspend { .. }
             )),
-            "native call suspension point should emit helper-based IsNativeSuspend check"
+            "kernel-boundary suspension point should emit direct IsSuspend check"
         );
         assert!(
             matches!(body.terminator, SmTerminator::Branch { .. }),

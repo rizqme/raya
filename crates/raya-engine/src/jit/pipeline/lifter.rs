@@ -1783,7 +1783,10 @@ fn lift_instruction(
 
         // ===== Bound Methods =====
         Opcode::BindMethod => {
-            // Falls back to interpreter — bound method creation requires GC allocation
+            return Err(LiftError::UnsupportedOpcode {
+                opcode: instr.opcode,
+                offset: instr.offset,
+            });
         }
     }
 

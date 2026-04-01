@@ -6,7 +6,7 @@
 //! - `AotHelperTable`: function pointer table for runtime services
 //! - `AotEntryFn`: the standard function signature for all AOT functions
 
-use crate::vm::suspend::SuspendRecord;
+use crate::vm::suspend::{BackendCallResult, ResumeRecord, SuspendRecord};
 use std::sync::atomic::AtomicBool;
 
 /// Sentinel value returned by AOT functions when they suspend.
@@ -66,9 +66,8 @@ pub struct AotTaskContext {
     /// Atomic flag: set by reactor when this task should yield.
     pub preempt_requested: *const AtomicBool,
 
-    /// Value provided when resuming from await/IO/channel.
-    /// Read by AOT code after re-entry at a suspension point.
-    pub resume_value: u64,
+    /// Resume payload provided when re-entering a suspended compiled frame.
+    pub resume_record: ResumeRecord,
 
     /// Shared suspend transport written by AOT code before returning AOT_SUSPEND.
     pub suspend_record: SuspendRecord,
@@ -183,14 +182,9 @@ pub struct AotHelperTable {
     pub store_global_value: unsafe extern "C" fn(*mut AotTaskContext, u32, u64),
 
     // ---- Native call dispatch ----
-    /// Dispatch a native function call: (ctx, native_id, args_ptr, argc) -> result
-    ///
-    /// Returns a NaN-boxed value on immediate completion, or a special
-    /// suspend token if the native needs I/O.
-    pub native_call: unsafe extern "C" fn(*mut AotTaskContext, u16, *const u64, u8) -> u64,
-
-    /// Check if a native call result is a suspend token: (result) -> bool
-    pub is_native_suspend: unsafe extern "C" fn(u64) -> u8,
+    /// Dispatch a kernel/native helper call through the compiled-backend ABI.
+    pub native_call:
+        unsafe extern "C" fn(*mut AotTaskContext, u16, *const u64, u8) -> BackendCallResult,
 
     // ---- Concurrency ----
     /// Spawn a new task: (ctx, func_id, args_ptr, argc) -> NaN-boxed task handle

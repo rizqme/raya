@@ -8,7 +8,7 @@
 //!
 //! Pipeline per function:
 //! 1. `AotCompilable::analyze()` → `SuspensionAnalysis`
-//! 2. `AotCompilable::emit_blocks()` → `Vec<SmBlock>`
+//! 2. `AotCompilable::emit_blocks()` → `Result<Vec<SmBlock>, AotError>`
 //! 3. `transform_to_state_machine()` → `StateMachineFunction`
 //! 4. `lower_function()` → Cranelift IR
 //! 5. `ctx.compile(isa)` → machine code bytes
@@ -297,7 +297,9 @@ pub fn compile_functions_with_profile(
             .unwrap_or_else(|| func.name().unwrap_or("anon").to_string());
 
         // 1. Run through the full pipeline: analyze → emit → transform
-        let sm_func = compile_to_state_machine(func, global_id.0);
+        let sm_func = compile_to_state_machine(func, global_id.0).map_err(|e| {
+            AotError::TransformFailed(format!("Failed to build state machine for '{}': {}", func_name, e))
+        })?;
         if std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some() {
             eprintln!(
                 "\n=== AOT SM {}::{:#06x} {} ===\n{:#?}",
@@ -443,8 +445,8 @@ mod tests {
             SuspensionAnalysis::none()
         }
 
-        fn emit_blocks(&self) -> Vec<SmBlock> {
-            vec![SmBlock {
+        fn emit_blocks(&self) -> Result<Vec<SmBlock>, AotError> {
+            Ok(vec![SmBlock {
                 id: SmBlockId(0),
                 kind: SmBlockKind::Body,
                 instructions: vec![
@@ -452,7 +454,7 @@ mod tests {
                     SmInstr::BoxI32 { dest: 1, src: 0 },
                 ],
                 terminator: SmTerminator::Return { value: 1 },
-            }]
+            }])
         }
 
         fn param_count(&self) -> u32 {
@@ -505,13 +507,13 @@ mod tests {
                 SuspensionAnalysis::none()
             }
 
-            fn emit_blocks(&self) -> Vec<SmBlock> {
-                vec![SmBlock {
+            fn emit_blocks(&self) -> Result<Vec<SmBlock>, AotError> {
+                Ok(vec![SmBlock {
                     id: SmBlockId(0),
                     kind: SmBlockKind::Body,
                     instructions: vec![SmInstr::ConstNull { dest: 0 }],
                     terminator: SmTerminator::Return { value: 0 },
-                }]
+                }])
             }
 
             fn param_count(&self) -> u32 {
@@ -662,8 +664,8 @@ mod tests {
             fn analyze(&self) -> SuspensionAnalysis {
                 SuspensionAnalysis::none()
             }
-            fn emit_blocks(&self) -> Vec<SmBlock> {
-                vec![SmBlock {
+            fn emit_blocks(&self) -> Result<Vec<SmBlock>, AotError> {
+                Ok(vec![SmBlock {
                     id: SmBlockId(0),
                     kind: SmBlockKind::Body,
                     instructions: vec![
@@ -680,7 +682,7 @@ mod tests {
                         SmInstr::BoxI32 { dest: 5, src: 4 },
                     ],
                     terminator: SmTerminator::Return { value: 5 },
-                }]
+                }])
             }
             fn param_count(&self) -> u32 {
                 2

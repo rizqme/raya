@@ -4,7 +4,7 @@ use raya_engine::aot::{run_aot_function, AotFrame, AotTaskContext, AOT_SUSPEND};
 use raya_engine::compiler::{Function, Module};
 use raya_engine::vm::interpreter::ExecutionResult;
 use raya_engine::vm::scheduler::{Scheduler, SuspendReason as SchedulerSuspendReason, Task, TaskId, TaskState};
-use raya_engine::vm::suspend::SuspendTag;
+use raya_engine::vm::suspend::{BackendCallResult, ResumeRecord, SuspendTag};
 use raya_engine::vm::value::Value;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -34,11 +34,11 @@ unsafe extern "C" fn stub_native_call_sum(
     _native_id: u16,
     args_ptr: *const u64,
     argc: u8,
-) -> u64 {
+) -> BackendCallResult {
     assert_eq!(argc, 2);
     let a = unsafe { *args_ptr.add(0) };
     let b = unsafe { *args_ptr.add(1) };
-    Value::i32(decode_i32(a) + decode_i32(b)).raw()
+    BackendCallResult::completed(Value::i32(decode_i32(a) + decode_i32(b)))
 }
 
 unsafe extern "C" fn aot_native_arg_fast_path(
@@ -48,7 +48,7 @@ unsafe extern "C" fn aot_native_arg_fast_path(
     let a = unsafe { *(*frame).locals.add(0) };
     let b = unsafe { *(*frame).locals.add(1) };
     let args = [a, b];
-    unsafe { ((*ctx).helpers.native_call)(ctx, 0, args.as_ptr(), args.len() as u8) }
+    unsafe { ((*ctx).helpers.native_call)(ctx, 0, args.as_ptr(), args.len() as u8).payload }
 }
 
 unsafe extern "C" fn stub_native_call_suspend(
@@ -56,8 +56,11 @@ unsafe extern "C" fn stub_native_call_suspend(
     _native_id: u16,
     _args_ptr: *const u64,
     _argc: u8,
-) -> u64 {
-    AOT_SUSPEND
+) -> BackendCallResult {
+    BackendCallResult {
+        status: raya_engine::vm::suspend::BackendCallStatus::Suspended,
+        payload: AOT_SUSPEND,
+    }
 }
 
 unsafe extern "C" fn aot_native_suspend_boundary(
@@ -66,7 +69,7 @@ unsafe extern "C" fn aot_native_suspend_boundary(
 ) -> u64 {
     unsafe {
         (*ctx).suspend_record.set_tag(SuspendTag::KernelBoundary);
-        ((*ctx).helpers.native_call)(ctx, 0, std::ptr::null(), 0)
+        ((*ctx).helpers.native_call)(ctx, 0, std::ptr::null(), 0).payload
     }
 }
 
@@ -82,7 +85,7 @@ unsafe extern "C" fn aot_suspend_then_resume(
                 .set_reason(&SchedulerSuspendReason::AwaitTask(TaskId::from_u64(1)));
             AOT_SUSPEND
         } else {
-            (*ctx).resume_value
+            (*ctx).resume_record.value
         }
     }
 }
@@ -171,7 +174,7 @@ fn aot_e2e_suspend_resume_roundtrip() {
             other => panic!("expected await suspend, got {:?}", other),
         }
 
-        prepare_resume(&mut ctx, Some(Value::i32(55)));
+        prepare_resume(&mut ctx, ResumeRecord::with_value(Value::i32(55)));
         let second = run_aot_function(first.frame, &mut ctx, 100);
         match second.result {
             ExecutionResult::Completed(v) => assert_eq!(v.as_i32(), Some(55)),

@@ -1396,9 +1396,7 @@ impl Reactor {
                 }
                 return;
             }
-            // Ensure stale resume values are not materialized when resuming with exception.
-            let _ = task.take_resume_value();
-            task.set_exception(exception);
+            task.set_resume_throw(exception);
             if task.resume_if_pending() {
                 task.clear_suspend_reason();
                 ready_queue.push_back(task.clone());
@@ -1484,11 +1482,10 @@ impl Reactor {
             if let Some(waiter_task) = tasks_map.get(&waiter_id) {
                 if task_failed {
                     // Ensure failure path does not keep an older resume payload.
-                    let _ = waiter_task.take_resume_value();
                     if let Some(exc) = exception {
-                        waiter_task.set_exception(exc);
+                        waiter_task.set_resume_throw(exc);
                     } else {
-                        waiter_task.set_exception(Value::null());
+                        waiter_task.set_resume_throw(Value::null());
                     }
                 } else if let Some(result) = task.result() {
                     waiter_task.set_resume_value(result);

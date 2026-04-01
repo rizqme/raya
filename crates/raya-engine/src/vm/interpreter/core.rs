@@ -15,7 +15,7 @@ use crate::vm::native_handler::NativeHandler;
 use crate::vm::object::{CallableKind, Class, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
-use crate::vm::suspend::SuspendTag;
+use crate::vm::suspend::{ResumeKind, SuspendTag};
 use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -1902,17 +1902,22 @@ impl<'a> Interpreter<'a> {
         // onto the operand stack. `WaitAll` is different: it re-executes with
         // its original array operand already on the stack and does not consume
         // the resumed value from a single completed child task.
-        if task.has_exception() {
-            // Exception resumption path must not also materialize a prior resume value.
-            // Mixing both can corrupt operand expectations at catch/unwind boundaries.
-            let _ = task.take_resume_value();
-        } else if let Some(resume_value) = task.take_resume_value() {
-            let next_opcode = code.get(ip).and_then(|b| Opcode::from_u8(*b));
-            if !matches!(next_opcode, Some(Opcode::WaitAll)) {
-                if let Err(e) = stack_guard.push(resume_value) {
-                    return ExecutionResult::Failed(e);
+        match task.take_resume_record() {
+            record if matches!(record.kind, ResumeKind::Value) => {
+                if !task.has_exception() {
+                    let next_opcode = code.get(ip).and_then(|b| Opcode::from_u8(*b));
+                    if !matches!(next_opcode, Some(Opcode::WaitAll)) {
+                        let resume_value = unsafe { Value::from_raw(record.value) };
+                        if let Err(e) = stack_guard.push(resume_value) {
+                            return ExecutionResult::Failed(e);
+                        }
+                    }
                 }
             }
+            record if matches!(record.kind, ResumeKind::Throw) => {
+                task.set_exception(unsafe { Value::from_raw(record.value) });
+            }
+            _ => {}
         }
 
         // Check if there's a pending exception (e.g., from awaited task failure).
