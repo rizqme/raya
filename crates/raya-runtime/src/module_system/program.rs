@@ -7,7 +7,7 @@ use raya_engine::compiler::module::{
 };
 use raya_engine::compiler::module::{ModuleCompileError, ModuleCompiler as BinaryModuleCompiler};
 use raya_engine::compiler::{module_id_from_name, SymbolType};
-use raya_engine::parser::{Interner, Parser};
+use raya_engine::parser::{Interner, ParseGoal, Parser};
 use raya_engine::parser::checker::TsTypeFlags;
 use raya_engine::semantics::{SemanticProfile, SourceKind};
 use raya_engine::vm::module::ModuleLinker;
@@ -500,7 +500,8 @@ fn parse_interner(source: &str, virtual_entry_path: &Path) -> Result<Interner, R
                 .collect::<Vec<_>>()
                 .join("\n"),
         )
-    })?;
+    })?
+    .with_goal(ParseGoal::from_path(virtual_entry_path));
     let (_, interner) = parser.parse().map_err(|errors| {
         RuntimeError::Parse(
             errors

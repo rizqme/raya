@@ -570,6 +570,8 @@ pub struct ForOfStatement {
     pub left: ForOfLeft,
     /// Right side expression (the iterable)
     pub right: Expression,
+    /// Whether this is a `for await (... of ...)` loop.
+    pub is_await: bool,
     /// Loop body
     pub body: Box<Statement>,
     pub span: Span,

@@ -22,7 +22,7 @@ use crate::parser::checker::{
     check_early_errors_with_options, Binder, CheckerPolicy, EarlyErrorOptions, ScopeId, ScopeKind,
     Symbol, SymbolFlags, SymbolKind, TsTypeFlags, TypeChecker, TypeSystemMode,
 };
-use crate::parser::{Interner, Parser, Span, TypeContext};
+use crate::parser::{Interner, ParseGoal, Parser, Span, TypeContext};
 use crate::semantics::{SemanticProfile, SourceKind, TypingDiscipline};
 
 use super::cache::ModuleCache;
@@ -876,13 +876,12 @@ impl ModuleCompiler {
 
     /// Extract import specifiers from source code
     fn extract_imports(&self, source: &str, path: &Path) -> ModuleCompileResult<Vec<String>> {
-        let parser =
-            Parser::new_with_mode(source, self.parser_mode_for_path(path)).map_err(|e| {
-                ModuleCompileError::LexError {
-                    path: path.to_path_buf(),
-                    message: format!("{:?}", e),
-                }
-            })?;
+        let parser = Parser::new_with_mode(source, self.parser_mode_for_path(path))
+            .map_err(|e| ModuleCompileError::LexError {
+                path: path.to_path_buf(),
+                message: format!("{:?}", e),
+            })?
+            .with_goal(ParseGoal::from_path(path));
 
         let (ast, interner) = parser.parse().map_err(|e| ModuleCompileError::ParseError {
             path: path.to_path_buf(),
@@ -959,6 +958,9 @@ impl ModuleCompiler {
         if is_entry {
             options.allow_top_level_return = true;
         }
+        if matches!(ParseGoal::from_path(path), ParseGoal::Module) {
+            options.allow_await_outside_async = true;
+        }
         options
     }
 
@@ -1014,13 +1016,12 @@ impl ModuleCompiler {
             eprintln!("[module-compile] parse:start path={}", path.display());
         }
         // Parse
-        let parser =
-            Parser::new_with_mode(&source, self.parser_mode_for_path(path)).map_err(|e| {
-                ModuleCompileError::LexError {
-                    path: path.clone(),
-                    message: format!("{:?}", e),
-                }
-            })?;
+        let parser = Parser::new_with_mode(&source, self.parser_mode_for_path(path))
+            .map_err(|e| ModuleCompileError::LexError {
+                path: path.clone(),
+                message: format!("{:?}", e),
+            })?
+            .with_goal(ParseGoal::from_path(path));
 
         let (ast, interner) = parser.parse().map_err(|e| ModuleCompileError::ParseError {
             path: path.clone(),

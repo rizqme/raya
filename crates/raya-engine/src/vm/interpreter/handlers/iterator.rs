@@ -95,7 +95,12 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
-        self.iterator_method_value(iterator, "next", task, module)
+        if let Some(cached) = self.cached_iterator_next_method(iterator) {
+            return Ok(cached);
+        }
+        let method = self.iterator_method_value(iterator, "next", task, module)?;
+        self.cache_iterator_next_method(iterator, method);
+        Ok(method)
     }
 
     fn normalize_iterator_candidate(
@@ -172,7 +177,7 @@ impl<'a> Interpreter<'a> {
         module: &Module,
     ) -> Result<Option<Value>, VmError> {
         let string_fallback_iterator = self.string_iterator_fallback(iterable, task, module)?;
-        let direct_js = self.get_property_value_via_js_semantics_with_context(
+        let direct_js = self.well_known_symbol_property_value(
             iterable,
             "Symbol.iterator",
             task,
@@ -232,13 +237,8 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        let Some(iterator_method) = self
-            .get_property_value_via_js_semantics_with_context(
-                iterable,
-                "Symbol.asyncIterator",
-                task,
-                module,
-            )?
+        let Some(iterator_method) =
+            self.well_known_symbol_property_value(iterable, "Symbol.asyncIterator", task, module)?
         else {
             return self.try_get_iterator_from_value(iterable, task, module);
         };
@@ -364,7 +364,10 @@ impl<'a> Interpreter<'a> {
             ResumeCompletionKind::Return => ("return", Some(ResumeCompletionKind::Return)),
             ResumeCompletionKind::Throw => ("throw", Some(ResumeCompletionKind::Throw)),
         };
-        let method = self.iterator_method_value(iterator, method_name, task, module)?;
+        let method = match completion.kind {
+            ResumeCompletionKind::Next => self.iterator_next_method(iterator, task, module)?,
+            _ => self.iterator_method_value(iterator, method_name, task, module)?,
+        };
         if method.is_null() || method.is_undefined() {
             return match missing_behavior {
                 Some(ResumeCompletionKind::Return) => {
@@ -394,7 +397,10 @@ impl<'a> Interpreter<'a> {
             task,
             module,
         )?;
-        if !self.is_js_object_value(result) && !Self::is_callable_value(result) {
+        if self.promise_handle_from_value(result).is_none()
+            && !self.is_js_object_value(result)
+            && !Self::is_callable_value(result)
+        {
             return Err(VmError::TypeError(format!(
                 "Iterator {} must produce an object",
                 method_name

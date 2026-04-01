@@ -44,7 +44,7 @@ pub mod checker;
 // Re-exports for convenience
 pub use interner::{Interner, Symbol};
 pub use lexer::{LexError, Lexer};
-pub use parser::{ParseError, Parser};
+pub use parser::{ParseError, ParseGoal, Parser};
 pub use token::{Span, TemplatePart, Token};
 
 // Type system re-exports

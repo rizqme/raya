@@ -293,6 +293,18 @@ struct ClassFieldInfo {
     /// For generic container fields (Map<K,V>, Set<T>): the value type's TypeId.
     /// Used to propagate return types through .get(), .values(), etc.
     value_type: Option<TypeId>,
+    /// Source declaration order within the class body.
+    order: usize,
+}
+
+/// Information about a runtime-defined class field whose property key must be
+/// evaluated dynamically instead of being lowered to a fixed slot.
+#[derive(Clone)]
+struct DynamicClassFieldInfo {
+    key: ast::PropertyKey,
+    initializer: Option<Expression>,
+    key_global_index: u16,
+    order: usize,
 }
 
 /// Information about a class method
@@ -333,6 +345,8 @@ struct StaticFieldInfo {
     global_index: u16,
     /// Initial value expression
     initializer: Option<Expression>,
+    /// Source declaration order within the class body.
+    order: usize,
 }
 
 /// Information about a static method
@@ -372,6 +386,7 @@ enum ResolvedBinding {
         local_idx: u16,
         is_refcell: bool,
         is_immutable: bool,
+        is_named_function_self: bool,
     },
     Capture {
         env: EnvHandle,
@@ -379,6 +394,7 @@ enum ResolvedBinding {
         capture_idx: u16,
         is_refcell: bool,
         is_immutable: bool,
+        is_named_function_self: bool,
     },
     ScriptLexicalGlobal {
         env: EnvHandle,
@@ -492,6 +508,8 @@ struct ParameterDecoratorInfo {
 struct ClassInfo {
     /// Instance fields with their initializers
     fields: Vec<ClassFieldInfo>,
+    /// Instance fields requiring runtime property-key evaluation.
+    dynamic_fields: Vec<DynamicClassFieldInfo>,
     /// Instance methods
     methods: Vec<ClassMethodInfo>,
     /// Constructor function ID (if class has a constructor)
@@ -500,6 +518,8 @@ struct ClassInfo {
     constructor_params: Vec<ConstructorParamInfo>,
     /// Static fields
     static_fields: Vec<StaticFieldInfo>,
+    /// Static fields requiring runtime property-key evaluation.
+    dynamic_static_fields: Vec<DynamicClassFieldInfo>,
     /// Static initializer blocks
     static_blocks: Vec<ast::BlockStatement>,
     /// Static methods
@@ -590,6 +610,9 @@ struct AncestorVar {
     is_refcell: bool,
     /// Whether writes to this binding must throw (e.g. `const`).
     is_immutable: bool,
+    /// Whether this binding is the special immutable self-binding for a named
+    /// function expression. Sloppy writes are ignored, strict writes throw.
+    is_named_function_self: bool,
 }
 
 /// Captured variable information
@@ -607,6 +630,8 @@ struct CaptureInfo {
     is_refcell: bool,
     /// Whether writes to this capture must throw (e.g. captured `const`).
     is_immutable: bool,
+    /// Whether this capture refers to a named-function-expression self-binding.
+    is_named_function_self: bool,
 }
 
 /// AST to IR lowerer
@@ -703,6 +728,9 @@ pub struct Lowerer<'a> {
     refcell_vars: FxHashSet<Symbol>,
     /// Local bindings that are immutable in the current scope (e.g. `const`).
     immutable_bindings: FxHashSet<Symbol>,
+    /// Named function-expression self bindings stored in dedicated hidden local
+    /// slots. They resolve after ordinary locals so params/vars can shadow them.
+    named_function_self_bindings: FxHashMap<Symbol, u16>,
     /// Map from local variable to its RefCell register (for variables stored in RefCells)
     refcell_registers: FxHashMap<u16, Register>,
     /// Variables that are read from an outer scope by a nested closure.
@@ -725,6 +753,9 @@ pub struct Lowerer<'a> {
     pending_constructor_prologue: Option<PendingConstructorPrologue>,
     /// Active constructor receiver for implicit and bare returns.
     constructor_return_this: Option<Register>,
+    /// Whether `this` reads in the current callable must fault until `super()`
+    /// has initialized the most-derived receiver.
+    super_this_guard_active: bool,
     /// Info about `this` from ancestor scope (for arrow functions inside methods)
     this_ancestor_info: Option<AncestorThisInfo>,
     /// Capture index of `this` if it was captured (for LoadCaptured)
@@ -925,6 +956,8 @@ pub struct Lowerer<'a> {
     /// Whether unresolved body identifiers should first consult a carried direct-eval env
     /// from parameter initialization before falling back to outer/global bindings.
     body_scope_eval_mode: bool,
+    /// Count of enclosing function scopes that require a JS parameter environment.
+    active_parameter_env_function_depth: usize,
     /// Parameter bindings visible in the currently lowered function body.
     parameter_symbols: FxHashSet<Symbol>,
     /// Anonymous local that tracks direct-eval script completion values.
@@ -1542,6 +1575,7 @@ impl<'a> Lowerer<'a> {
             last_arrow_func_id: None,
             refcell_vars: FxHashSet::default(),
             immutable_bindings: FxHashSet::default(),
+            named_function_self_bindings: FxHashMap::default(),
             refcell_registers: FxHashMap::default(),
             captured_read_vars: FxHashSet::default(),
             refcell_inner_types: FxHashMap::default(),
@@ -1553,6 +1587,7 @@ impl<'a> Lowerer<'a> {
             this_register: None,
             pending_constructor_prologue: None,
             constructor_return_this: None,
+            super_this_guard_active: false,
             this_ancestor_info: None,
             this_captured_idx: None,
             js_arguments_local: None,
@@ -1634,6 +1669,7 @@ impl<'a> Lowerer<'a> {
             parameter_binding_mode: false,
             body_scope_eval_arguments_mode: false,
             body_scope_eval_mode: false,
+            active_parameter_env_function_depth: 0,
             parameter_symbols: FxHashSet::default(),
             eval_completion_local: None,
             yield_buffer_local: None,
@@ -3251,6 +3287,7 @@ impl<'a> Lowerer<'a> {
         match expr {
             ast::Expression::StringLiteral(lit) => Some(lit.value),
             ast::Expression::IntLiteral(lit) => self.interner.lookup(&lit.value.to_string()),
+            ast::Expression::FloatLiteral(lit) => self.interner.lookup(&lit.value.to_string()),
             ast::Expression::Parenthesized(expr) => {
                 self.known_property_symbol_from_expr(&expr.expression)
             }
@@ -3267,6 +3304,24 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    pub(super) fn lower_runtime_property_key(&mut self, key: &ast::PropertyKey) -> Register {
+        match key {
+            ast::PropertyKey::Identifier(id) => {
+                self.emit_named_key_register(self.interner.resolve(id.name))
+            }
+            ast::PropertyKey::StringLiteral(lit) => {
+                self.emit_named_key_register(self.interner.resolve(lit.value))
+            }
+            ast::PropertyKey::IntLiteral(lit) => {
+                self.emit_named_key_register(&lit.value.to_string())
+            }
+            ast::PropertyKey::Computed(expr) => {
+                let raw_key = self.lower_expr(expr);
+                self.emit_property_key_coercion(raw_key)
+            }
+        }
+    }
+
     fn class_member_display_name(&self, key: &ast::PropertyKey, fallback_idx: usize) -> String {
         match key {
             ast::PropertyKey::Identifier(id) => self.interner.resolve(id.name).to_string(),
@@ -3276,6 +3331,9 @@ impl<'a> Lowerer<'a> {
                 self.interner.resolve(lit.value).to_string()
             }
             ast::PropertyKey::Computed(ast::Expression::IntLiteral(lit)) => lit.value.to_string(),
+            ast::PropertyKey::Computed(ast::Expression::FloatLiteral(lit)) => {
+                lit.value.to_string()
+            }
             ast::PropertyKey::Computed(ast::Expression::Parenthesized(expr)) => self
                 .class_member_display_name(
                     &ast::PropertyKey::Computed(*expr.expression.clone()),
@@ -3525,7 +3583,9 @@ impl<'a> Lowerer<'a> {
 
         // Collect instance and static field information
         let mut fields = Vec::new();
+        let mut dynamic_fields = Vec::new();
         let mut static_fields = Vec::new();
+        let mut dynamic_static_fields = Vec::new();
 
         // Start field index after ALL ancestor fields (not just immediate parent)
         let mut parent_fields = if let Some(parent_id) = parent_class {
@@ -3622,6 +3682,12 @@ impl<'a> Lowerer<'a> {
 
                 if field.is_static {
                     let Some(field_name) = self.known_class_member_symbol(&field.name) else {
+                        dynamic_static_fields.push(DynamicClassFieldInfo {
+                            key: field.name.clone(),
+                            initializer: field.initializer.clone(),
+                            key_global_index: u16::MAX,
+                            order: member_idx,
+                        });
                         continue;
                     };
                     let global_index = self.next_global_index;
@@ -3631,9 +3697,18 @@ impl<'a> Lowerer<'a> {
                         nominal_type_id,
                         global_index,
                         initializer: field.initializer.clone(),
+                        order: member_idx,
                     });
                 } else {
                     let Some(field_name) = self.known_class_member_symbol(&field.name) else {
+                        let key_global_index = self.next_global_index;
+                        self.next_global_index += 1;
+                        dynamic_fields.push(DynamicClassFieldInfo {
+                            key: field.name.clone(),
+                            initializer: field.initializer.clone(),
+                            key_global_index,
+                            order: member_idx,
+                        });
                         continue;
                     };
                     // Check if this field shadows a parent field with the same name.
@@ -3661,6 +3736,7 @@ impl<'a> Lowerer<'a> {
                         class_type: class_type.or(array_elem_class_type),
                         type_name,
                         value_type,
+                        order: member_idx,
                     });
                 }
             }
@@ -3687,6 +3763,7 @@ impl<'a> Lowerer<'a> {
                                 class_type: None,
                                 type_name: None,
                                 value_type: None,
+                                order: usize::MAX,
                             });
                         }
                     }
@@ -3748,8 +3825,10 @@ impl<'a> Lowerer<'a> {
                                 func_id,
                                 kind: method.kind,
                             });
-                            self.static_method_map
-                                .insert((nominal_type_id, method_name), func_id);
+                            if matches!(method.kind, ast::MethodKind::Normal) {
+                                self.static_method_map
+                                    .insert((nominal_type_id, method_name), func_id);
+                            }
                         } else {
                             methods.push(ClassMethodInfo {
                                 name: method_name,
@@ -3757,21 +3836,25 @@ impl<'a> Lowerer<'a> {
                                 kind: method.kind,
                                 visibility: method.visibility,
                             });
-                            self.method_map
-                                .insert((nominal_type_id, method_name), func_id);
+                            if matches!(method.kind, ast::MethodKind::Normal) {
+                                self.method_map
+                                    .insert((nominal_type_id, method_name), func_id);
+                            }
                         }
 
-                        if let Some(ret_type) = &method.return_type {
-                            if let Some(ret_class_name) =
-                                self.try_extract_class_name_from_type(ret_type)
-                            {
-                                self.method_return_type_alias_map
-                                    .insert((nominal_type_id, method_name), ret_class_name);
+                        if matches!(method.kind, ast::MethodKind::Normal) {
+                            if let Some(ret_type) = &method.return_type {
+                                if let Some(ret_class_name) =
+                                    self.try_extract_class_name_from_type(ret_type)
+                                {
+                                    self.method_return_type_alias_map
+                                        .insert((nominal_type_id, method_name), ret_class_name);
+                                }
+                                // Store full return TypeId for all return types (bound method propagation)
+                                let type_id = self.resolve_type_annotation(ret_type);
+                                self.method_return_type_map
+                                    .insert((nominal_type_id, method_name), type_id);
                             }
-                            // Store full return TypeId for all return types (bound method propagation)
-                            let type_id = self.resolve_type_annotation(ret_type);
-                            self.method_return_type_map
-                                .insert((nominal_type_id, method_name), type_id);
                         }
                     }
                 }
@@ -3805,7 +3888,10 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        for method_info in &methods {
+        for method_info in methods
+            .iter()
+            .filter(|method_info| matches!(method_info.kind, ast::MethodKind::Normal))
+        {
             let slot = self
                 .find_parent_method_slot(parent_class, method_info.name)
                 .unwrap_or_else(|| {
@@ -3977,10 +4063,12 @@ impl<'a> Lowerer<'a> {
             nominal_type_id,
             ClassInfo {
                 fields,
+                dynamic_fields,
                 methods,
                 constructor,
                 constructor_params,
                 static_fields,
+                dynamic_static_fields,
                 static_blocks,
                 static_methods: static_methods_vec,
                 runtime_method_elements,
@@ -4008,6 +4096,8 @@ impl<'a> Lowerer<'a> {
         self.function_depth += 1;
         self.yield_buffer_local = None;
         let has_js_this_slot = self.js_this_binding_compat;
+        let saved_super_this_guard_active = self.super_this_guard_active;
+        self.super_this_guard_active = false;
 
         // Check if any parameters use destructuring
         let has_destructuring_params = func
@@ -4291,6 +4381,7 @@ impl<'a> Lowerer<'a> {
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
         let saved_body_scope_eval_mode = self.body_scope_eval_mode;
+        let saved_active_parameter_env_function_depth = self.active_parameter_env_function_depth;
         let saved_hoisted_function_decl_spans =
             std::mem::take(&mut self.hoisted_function_decl_spans);
         self.js_strict_context = is_strict_js;
@@ -4298,8 +4389,13 @@ impl<'a> Lowerer<'a> {
             .direct_eval_entry_function
             .as_deref()
             .is_some_and(|target| target == name);
+        let inherited_parameter_env_scope = saved_active_parameter_env_function_depth > 0
+            || (self.js_this_binding_compat && !saved_parameter_symbols.is_empty());
+        self.active_parameter_env_function_depth =
+            saved_active_parameter_env_function_depth + usize::from(use_js_parameter_env);
         self.body_scope_eval_arguments_mode = false;
-        self.body_scope_eval_mode = saved_body_scope_eval_mode || use_js_parameter_env;
+        self.body_scope_eval_mode =
+            saved_body_scope_eval_mode || inherited_parameter_env_scope || use_js_parameter_env;
 
         // Create entry block
         let entry_block = self.alloc_block();
@@ -4366,10 +4462,7 @@ impl<'a> Lowerer<'a> {
         // Emit rest array collection code if present
         if let Some((rest_pattern, rest_ty)) = rest_param_info {
             let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
-            self.bind_pattern(rest_pattern, rest_value);
-            if use_js_parameter_env {
-                self.clear_parameter_tdz_for_pattern(rest_pattern);
-            }
+            self.emit_js_rest_parameter_binding(rest_pattern, rest_value);
         }
 
         // Emit null-check + default-value for parameters with defaults
@@ -4409,7 +4502,9 @@ impl<'a> Lowerer<'a> {
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
         self.body_scope_eval_mode = saved_body_scope_eval_mode;
+        self.active_parameter_env_function_depth = saved_active_parameter_env_function_depth;
         self.hoisted_function_decl_spans = saved_hoisted_function_decl_spans;
+        self.super_this_guard_active = saved_super_this_guard_active;
         lowered
     }
 
@@ -4438,6 +4533,7 @@ impl<'a> Lowerer<'a> {
         self.parameter_symbols.clear();
         self.eval_completion_local = None;
         self.pending_constructor_prologue = None;
+        self.super_this_guard_active = false;
         self.current_method_env_globals = None;
         self.pending_class_method_env_globals = None;
         self.hoisted_function_decl_spans.clear();
@@ -4852,11 +4948,23 @@ impl<'a> Lowerer<'a> {
                     self.js_arguments_local = None;
                     self.closure_locals.clear();
                     self.current_method_env_globals = class_method_env_globals.clone();
+                    let saved_parameter_symbols = self.parameter_symbols.clone();
+                    let saved_eval_completion_local = self.eval_completion_local;
+                    let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
+                    let saved_body_scope_eval_arguments_mode =
+                        self.body_scope_eval_arguments_mode;
+                    let saved_body_scope_eval_mode = self.body_scope_eval_mode;
+                    let saved_active_parameter_env_function_depth =
+                        self.active_parameter_env_function_depth;
+                    self.parameter_symbols.clear();
+                    self.eval_completion_local = None;
 
                     // Create parameter registers
                     let mut params = Vec::new();
                     let mut rest_param_info: Option<(&Pattern, TypeId)> = None;
                     let mut fixed_param_count = 0;
+                    let use_js_parameter_env =
+                        self.js_parameter_environment_required(&method.params);
 
                     let method_has_js_this_slot = self.js_this_binding_compat;
                     if method.is_static {
@@ -4874,7 +4982,7 @@ impl<'a> Lowerer<'a> {
                         let has_destructuring = method.params.iter().any(|p| {
                             !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
                         });
-                        if has_destructuring {
+                        if use_js_parameter_env || has_destructuring {
                             let param_count = usize::from(method_has_js_this_slot)
                                 + method.params.iter().filter(|p| !p.is_rest).count();
                             self.next_local = param_count as u16;
@@ -4906,7 +5014,7 @@ impl<'a> Lowerer<'a> {
                         let has_destructuring = method.params.iter().any(|p| {
                             !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
                         });
-                        if has_destructuring {
+                        if use_js_parameter_env || has_destructuring {
                             let param_count =
                                 1 + method.params.iter().filter(|p| !p.is_rest).count();
                             self.next_local = param_count as u16;
@@ -4915,10 +5023,17 @@ impl<'a> Lowerer<'a> {
                         }
                     }
 
+                    if use_js_parameter_env {
+                        for param in &method.params {
+                            self.preallocate_parameter_pattern_locals(&param.pattern);
+                        }
+                    }
+
                     // Add explicit parameters (excluding rest parameters)
                     let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
                     let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
                     let mut param_local_indices = Vec::with_capacity(method.params.len());
+                    let mut raw_param_slots = Vec::new();
                     let method_type_params = method.type_params.as_deref();
                     let class_type_params = class.type_params.as_deref();
                     let has_destructuring_params = method
@@ -4927,6 +5042,7 @@ impl<'a> Lowerer<'a> {
                         .any(|p| !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_)));
 
                     for (decl_param_idx, param) in method.params.iter().enumerate() {
+                        collect_pattern_names(&param.pattern, &mut self.parameter_symbols);
                         // Skip rest parameters - they're handled separately
                         if param.is_rest {
                             let ty = param
@@ -4958,6 +5074,7 @@ impl<'a> Lowerer<'a> {
                             })
                             .unwrap_or(UNRESOLVED);
                         let reg = self.alloc_register(ty);
+                        raw_param_slots.push(params.len() as u16);
                         if let Some(type_ann) = &param.type_annotation {
                             let nominal_type_id = self.resolve_param_nominal_type_from_annotation(
                                 type_ann,
@@ -4989,7 +5106,10 @@ impl<'a> Lowerer<'a> {
                         }
 
                         if let Pattern::Identifier(ident) = &param.pattern {
-                            let local_idx = if has_destructuring_params {
+                            let local_idx = if use_js_parameter_env {
+                                self.lookup_local(ident.name)
+                                    .expect("preallocated parameter local must exist")
+                            } else if has_destructuring_params {
                                 let local_idx =
                                     decl_param_idx as u16 + u16::from(self.this_register.is_some());
                                 self.local_map.insert(ident.name, local_idx);
@@ -5131,6 +5251,15 @@ impl<'a> Lowerer<'a> {
                     let saved_yield_buffer_local = self.yield_buffer_local.take();
                     self.js_strict_context = true;
                     self.in_direct_eval_function = false;
+                    let inherited_parameter_env_scope =
+                        saved_active_parameter_env_function_depth > 0
+                            || (self.js_this_binding_compat && !saved_parameter_symbols.is_empty());
+                    self.active_parameter_env_function_depth = saved_active_parameter_env_function_depth
+                        + usize::from(use_js_parameter_env);
+                    self.body_scope_eval_arguments_mode = false;
+                    self.body_scope_eval_mode = saved_body_scope_eval_mode
+                        || inherited_parameter_env_scope
+                        || use_js_parameter_env;
                     let arguments_symbol = self.find_js_arguments_symbol(&method.params, body);
 
                     {
@@ -5155,33 +5284,42 @@ impl<'a> Lowerer<'a> {
                     self.current_function_mut()
                         .add_block(BasicBlock::with_label(entry_block, "entry"));
 
-                    // Bind destructuring patterns in method parameters
-                    // This must happen after entry block is created so we can emit instructions
-                    for (param_idx, pattern, value_reg) in destructure_params {
-                        // Register object field layout for destructuring
-                        if let ast::Pattern::Object(_) = pattern {
-                            if let Some(type_ann) = method
-                                .params
-                                .get(param_idx)
-                                .and_then(|p| p.type_annotation.as_ref())
-                            {
-                                if let Some(field_layout) =
-                                    self.extract_field_names_from_type(type_ann)
+                    if use_js_parameter_env {
+                        let env_object = self.lower_activation_direct_eval_environment_object(
+                            method.span.start,
+                            method.span.start,
+                        );
+                        let _ = self.emit_ensure_activation_direct_eval_env(env_object);
+                        self.emit_js_parameter_initialization(&method.params, &raw_param_slots);
+                    } else {
+                        // Bind destructuring patterns in method parameters
+                        // This must happen after entry block is created so we can emit instructions
+                        for (param_idx, pattern, value_reg) in destructure_params {
+                            // Register object field layout for destructuring
+                            if let ast::Pattern::Object(_) = pattern {
+                                if let Some(type_ann) = method
+                                    .params
+                                    .get(param_idx)
+                                    .and_then(|p| p.type_annotation.as_ref())
                                 {
-                                    self.register_object_fields
-                                        .insert(value_reg.id, field_layout);
-                                }
-                                if let Some(nested_array_layouts) =
-                                    self.extract_array_element_object_layouts_from_type(type_ann)
-                                {
-                                    for (field_idx, layout) in nested_array_layouts {
-                                        self.register_nested_array_element_object_fields
-                                            .insert((value_reg.id, field_idx), layout);
+                                    if let Some(field_layout) =
+                                        self.extract_field_names_from_type(type_ann)
+                                    {
+                                        self.register_object_fields
+                                            .insert(value_reg.id, field_layout);
+                                    }
+                                    if let Some(nested_array_layouts) =
+                                        self.extract_array_element_object_layouts_from_type(type_ann)
+                                    {
+                                        for (field_idx, layout) in nested_array_layouts {
+                                            self.register_nested_array_element_object_fields
+                                                .insert((value_reg.id, field_idx), layout);
+                                        }
                                     }
                                 }
                             }
+                            self.bind_pattern(pattern, value_reg);
                         }
-                        self.bind_pattern(pattern, value_reg);
                     }
 
                     for (param_reg, expected_ty) in structural_param_bindings {
@@ -5203,7 +5341,7 @@ impl<'a> Lowerer<'a> {
                     // Emit rest array collection code if present
                     if let Some((rest_pattern, rest_ty)) = rest_param_info {
                         let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
-                        self.bind_pattern(rest_pattern, rest_value);
+                        self.emit_js_rest_parameter_binding(rest_pattern, rest_value);
                     }
 
                     // Emit null-check + default-value for parameters with defaults
@@ -5231,25 +5369,29 @@ impl<'a> Lowerer<'a> {
 
                     // Get the function ID and add to pending methods
                     let method_name_str = method_name.as_str();
-                    let func_id = if let Some(method_symbol) = method_symbol {
-                        if method.is_static {
-                            *self.static_method_map.get(&(nominal_type_id, method_symbol))
-                                .unwrap_or_else(|| panic!(
-                                    "ICE: static method '{}::{}' not found in static_method_map (nominal_type_id={})",
-                                    name, method_name_str, nominal_type_id.as_u32()
-                                ))
+                    let func_id = if matches!(method.kind, ast::MethodKind::Normal) {
+                        if let Some(method_symbol) = method_symbol {
+                            if method.is_static {
+                                *self.static_method_map.get(&(nominal_type_id, method_symbol))
+                                    .unwrap_or_else(|| panic!(
+                                        "ICE: static method '{}::{}' not found in static_method_map (nominal_type_id={})",
+                                        name, method_name_str, nominal_type_id.as_u32()
+                                    ))
+                            } else {
+                                *self
+                                    .method_map
+                                    .get(&(nominal_type_id, method_symbol))
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "ICE: method '{}::{}' not found in method_map (nominal_type_id={})",
+                                            name,
+                                            method_name_str,
+                                            nominal_type_id.as_u32()
+                                        )
+                                    })
+                            }
                         } else {
-                            *self
-                                .method_map
-                                .get(&(nominal_type_id, method_symbol))
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "ICE: method '{}::{}' not found in method_map (nominal_type_id={})",
-                                        name,
-                                        method_name_str,
-                                        nominal_type_id.as_u32()
-                                    )
-                                })
+                            runtime_method.func_id
                         }
                     } else {
                         runtime_method.func_id
@@ -5260,6 +5402,13 @@ impl<'a> Lowerer<'a> {
                     self.js_strict_context = saved_js_strict_context;
                     self.in_direct_eval_function = saved_in_direct_eval_function;
                     self.yield_buffer_local = saved_yield_buffer_local;
+                    self.parameter_symbols = saved_parameter_symbols;
+                    self.eval_completion_local = saved_eval_completion_local;
+                    self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
+                    self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
+                    self.body_scope_eval_mode = saved_body_scope_eval_mode;
+                    self.active_parameter_env_function_depth =
+                        saved_active_parameter_env_function_depth;
 
                     let ir_method_kind = match method.kind {
                         ast::MethodKind::Normal => IrMethodKind::Normal,
@@ -5274,14 +5423,18 @@ impl<'a> Lowerer<'a> {
                             ir_class.add_static_method(func_id, ir_method_kind);
                         }
                     } else {
-                        if let Some(method_symbol) = method_symbol {
-                            if let Some(&slot) =
-                                self.method_slot_map.get(&(nominal_type_id, method_symbol))
-                            {
-                                ir_class.add_method_with_slot(func_id, slot, ir_method_kind);
-                            } else {
-                                ir_class.add_method(func_id, ir_method_kind);
+                        if matches!(method.kind, ast::MethodKind::Normal) {
+                            if let Some(method_symbol) = method_symbol {
+                                if let Some(&slot) =
+                                    self.method_slot_map.get(&(nominal_type_id, method_symbol))
+                                {
+                                    ir_class.add_method_with_slot(func_id, slot, ir_method_kind);
+                                } else {
+                                    ir_class.add_method(func_id, ir_method_kind);
+                                }
                             }
+                        } else if method_symbol.is_some() {
+                            ir_class.add_method(func_id, ir_method_kind);
                         }
                     }
 
@@ -5328,6 +5481,15 @@ impl<'a> Lowerer<'a> {
                 self.js_arguments_local = None;
                 self.closure_locals.clear();
                 self.current_method_env_globals = class_method_env_globals.clone();
+                let saved_parameter_symbols = self.parameter_symbols.clone();
+                let saved_eval_completion_local = self.eval_completion_local;
+                let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
+                let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
+                let saved_body_scope_eval_mode = self.body_scope_eval_mode;
+                let saved_active_parameter_env_function_depth =
+                    self.active_parameter_env_function_depth;
+                self.parameter_symbols.clear();
+                self.eval_completion_local = None;
 
                 // Set current class context for 'this' handling
                 self.current_class = Some(nominal_type_id);
@@ -5335,6 +5497,7 @@ impl<'a> Lowerer<'a> {
 
                 // Create parameter registers - 'this' is the first parameter
                 let mut params = Vec::new();
+                let use_js_parameter_env = self.js_parameter_environment_required(&ctor.params);
 
                 // Add 'this' as the first parameter
                 // Reserve local slot 0 for 'this'
@@ -5356,18 +5519,26 @@ impl<'a> Lowerer<'a> {
                 let mut rest_param_info: Option<(&Pattern, TypeId)> = None;
                 let mut fixed_param_count = 1usize;
                 let mut param_local_indices = Vec::with_capacity(ctor.params.len());
+                let mut raw_param_slots = Vec::new();
                 let class_type_params = class.type_params.as_deref();
                 let has_destructuring_params = ctor
                     .params
                     .iter()
                     .any(|p| !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_)));
-                if has_destructuring_params {
+                if use_js_parameter_env || has_destructuring_params {
                     let fixed_param_slots =
                         ctor.params.iter().filter(|p| !p.is_rest).count() + 1usize;
                     self.next_local = fixed_param_slots as u16;
                 }
 
+                if use_js_parameter_env {
+                    for param in &ctor.params {
+                        self.preallocate_parameter_pattern_locals(&param.pattern);
+                    }
+                }
+
                 for (decl_param_idx, param) in ctor.params.iter().enumerate() {
+                    collect_pattern_names(&param.pattern, &mut self.parameter_symbols);
                     if param.is_rest {
                         let ty = param
                             .type_annotation
@@ -5390,6 +5561,7 @@ impl<'a> Lowerer<'a> {
                         })
                         .unwrap_or(UNRESOLVED);
                     let reg = self.alloc_register(ty);
+                    raw_param_slots.push(params.len() as u16);
                     if let Some(type_ann) = &param.type_annotation {
                         let param_nominal_type_id = self
                             .resolve_param_nominal_type_from_annotation(
@@ -5420,7 +5592,10 @@ impl<'a> Lowerer<'a> {
                     }
 
                     if let Pattern::Identifier(ident) = &param.pattern {
-                        let local_idx = if has_destructuring_params {
+                        let local_idx = if use_js_parameter_env {
+                            self.lookup_local(ident.name)
+                                .expect("preallocated parameter local must exist")
+                        } else if has_destructuring_params {
                             let local_idx =
                                 decl_param_idx as u16 + u16::from(self.this_register.is_some());
                             self.local_map.insert(ident.name, local_idx);
@@ -5536,6 +5711,14 @@ impl<'a> Lowerer<'a> {
                 let saved_in_direct_eval_function = self.in_direct_eval_function;
                 self.js_strict_context = true;
                 self.in_direct_eval_function = false;
+                let inherited_parameter_env_scope = saved_active_parameter_env_function_depth > 0
+                    || (self.js_this_binding_compat && !saved_parameter_symbols.is_empty());
+                self.active_parameter_env_function_depth = saved_active_parameter_env_function_depth
+                    + usize::from(use_js_parameter_env);
+                self.body_scope_eval_arguments_mode = false;
+                self.body_scope_eval_mode = saved_body_scope_eval_mode
+                    || inherited_parameter_env_scope
+                    || use_js_parameter_env;
                 let arguments_symbol = self.find_js_arguments_symbol(&ctor.params, &ctor.body);
 
                 {
@@ -5556,32 +5739,40 @@ impl<'a> Lowerer<'a> {
                 self.current_function_mut()
                     .add_block(BasicBlock::with_label(entry_block, "entry"));
 
-                // Bind destructuring patterns in constructor parameters
-                // This must happen after entry block is created so we can emit instructions
-                for (param_idx, pattern, value_reg) in destructure_params {
-                    // Register object field layout for destructuring
-                    if let ast::Pattern::Object(_) = pattern {
-                        if let Some(type_ann) = ctor
-                            .params
-                            .get(param_idx)
-                            .and_then(|p| p.type_annotation.as_ref())
-                        {
-                            if let Some(field_layout) = self.extract_field_names_from_type(type_ann)
+                if use_js_parameter_env {
+                    let env_object = self
+                        .lower_activation_direct_eval_environment_object(ctor.span.start, ctor.span.start);
+                    let _ = self.emit_ensure_activation_direct_eval_env(env_object);
+                    self.emit_js_parameter_initialization(&ctor.params, &raw_param_slots);
+                } else {
+                    // Bind destructuring patterns in constructor parameters
+                    // This must happen after entry block is created so we can emit instructions
+                    for (param_idx, pattern, value_reg) in destructure_params {
+                        // Register object field layout for destructuring
+                        if let ast::Pattern::Object(_) = pattern {
+                            if let Some(type_ann) = ctor
+                                .params
+                                .get(param_idx)
+                                .and_then(|p| p.type_annotation.as_ref())
                             {
-                                self.register_object_fields
-                                    .insert(value_reg.id, field_layout);
-                            }
-                            if let Some(nested_array_layouts) =
-                                self.extract_array_element_object_layouts_from_type(type_ann)
-                            {
-                                for (field_idx, layout) in nested_array_layouts {
-                                    self.register_nested_array_element_object_fields
-                                        .insert((value_reg.id, field_idx), layout);
+                                if let Some(field_layout) =
+                                    self.extract_field_names_from_type(type_ann)
+                                {
+                                    self.register_object_fields
+                                        .insert(value_reg.id, field_layout);
+                                }
+                                if let Some(nested_array_layouts) =
+                                    self.extract_array_element_object_layouts_from_type(type_ann)
+                                {
+                                    for (field_idx, layout) in nested_array_layouts {
+                                        self.register_nested_array_element_object_fields
+                                            .insert((value_reg.id, field_idx), layout);
+                                    }
                                 }
                             }
                         }
+                        self.bind_pattern(pattern, value_reg);
                     }
-                    self.bind_pattern(pattern, value_reg);
                 }
 
                 for (param_reg, expected_ty) in structural_param_bindings {
@@ -5602,7 +5793,7 @@ impl<'a> Lowerer<'a> {
 
                 if let Some((rest_pattern, rest_ty)) = rest_param_info {
                     let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
-                    self.bind_pattern(rest_pattern, rest_value);
+                    self.emit_js_rest_parameter_binding(rest_pattern, rest_value);
                 }
 
                 // Emit null-check + default-value for constructor parameters with defaults
@@ -5613,6 +5804,7 @@ impl<'a> Lowerer<'a> {
 
                 let this_reg = self.this_register.clone().unwrap();
                 let saved_constructor_return_this = self.constructor_return_this.take();
+                let saved_super_this_guard_active = self.super_this_guard_active;
                 self.constructor_return_this = Some(this_reg.clone());
                 let mut param_property_fields: Vec<(u16, Register)> = Vec::new();
                 for (param_name, param_reg) in &param_prop_regs {
@@ -5626,6 +5818,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 let is_derived = self.class_is_derived(nominal_type_id);
+                self.super_this_guard_active = is_derived;
                 if is_derived {
                     self.pending_constructor_prologue = Some(PendingConstructorPrologue {
                         nominal_type_id,
@@ -5663,12 +5856,21 @@ impl<'a> Lowerer<'a> {
                 self.js_strict_context = saved_js_strict_context;
                 self.in_direct_eval_function = saved_in_direct_eval_function;
                 self.constructor_return_this = saved_constructor_return_this;
+                self.super_this_guard_active = saved_super_this_guard_active;
+                self.parameter_symbols = saved_parameter_symbols;
+                self.eval_completion_local = saved_eval_completion_local;
+                self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
+                self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
+                self.body_scope_eval_mode = saved_body_scope_eval_mode;
+                self.active_parameter_env_function_depth =
+                    saved_active_parameter_env_function_depth;
 
                 // Clear method context
                 self.current_class = None;
                 self.current_method_is_static = false;
                 self.this_register = None;
                 self.pending_constructor_prologue = None;
+                self.super_this_guard_active = false;
                 if let Some(this_sym) = self.interner.lookup("this") {
                     self.nominal_binding_cache.remove(&this_sym);
                 }
@@ -5769,6 +5971,7 @@ impl<'a> Lowerer<'a> {
             self.current_function = Some(ir_func);
             let saved_js_strict_context = self.js_strict_context;
             let saved_constructor_return_this = self.constructor_return_this.take();
+            let saved_super_this_guard_active = self.super_this_guard_active;
             self.js_strict_context = true;
 
             let entry_block = self.alloc_block();
@@ -5778,6 +5981,7 @@ impl<'a> Lowerer<'a> {
 
             let this_reg = self.this_register.clone().unwrap();
             self.constructor_return_this = Some(this_reg.clone());
+            self.super_this_guard_active = true;
             let parent_constructor = self.lower_parent_constructor_for_class(nominal_type_id);
             if let Some(parent_constructor) = parent_constructor {
                 let new_target = self.load_class_value_for_nominal_type(nominal_type_id);
@@ -5796,11 +6000,13 @@ impl<'a> Lowerer<'a> {
                 .push((ctor_func_id.as_u32(), ir_func));
             self.js_strict_context = saved_js_strict_context;
             self.constructor_return_this = saved_constructor_return_this;
+            self.super_this_guard_active = saved_super_this_guard_active;
 
             self.current_class = None;
             self.current_method_is_static = false;
             self.this_register = None;
             self.pending_constructor_prologue = None;
+            self.super_this_guard_active = false;
             if let Some(this_sym) = self.interner.lookup("this") {
                 self.nominal_binding_cache.remove(&this_sym);
             }
@@ -6199,6 +6405,30 @@ impl<'a> Lowerer<'a> {
             self.bind_pattern(&param.pattern, value);
             self.clear_parameter_tdz_for_pattern(&param.pattern);
         }
+
+        self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
+        self.parameter_binding_mode = saved_parameter_binding_mode;
+        self.parameter_tdz_symbols = saved_parameter_tdz_symbols;
+    }
+
+    pub(super) fn emit_js_rest_parameter_binding(
+        &mut self,
+        pattern: &ast::Pattern,
+        value: Register,
+    ) {
+        let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
+        let saved_parameter_binding_mode = self.parameter_binding_mode;
+        let saved_parameter_tdz_symbols = std::mem::take(&mut self.parameter_tdz_symbols);
+
+        self.parameter_scope_eval_mode = true;
+        self.parameter_binding_mode = true;
+
+        let mut names = FxHashSet::default();
+        collect_pattern_names(pattern, &mut names);
+        self.parameter_tdz_symbols.extend(names);
+
+        self.bind_pattern(pattern, value);
+        self.clear_parameter_tdz_for_pattern(pattern);
 
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.parameter_binding_mode = saved_parameter_binding_mode;
@@ -6744,7 +6974,7 @@ impl<'a> Lowerer<'a> {
                 self.get_expr_type(decorator_expr)
             };
             let decorator_ty_raw = decorator_ty.as_u32();
-            if !self.type_is_callable(decorator_ty) {
+            if !self.type_is_callable(decorator_ty) && !self.js_this_binding_compat {
                 self.errors
                     .push(crate::compiler::CompileError::InternalError {
                         message: format!(
@@ -6770,7 +7000,7 @@ impl<'a> Lowerer<'a> {
                 self.get_expr_type(decorator_expr)
             };
             let decorator_ty_raw = decorator_ty.as_u32();
-            if !self.type_is_callable(decorator_ty) {
+            if !self.type_is_callable(decorator_ty) && !self.js_this_binding_compat {
                 self.errors
                     .push(crate::compiler::CompileError::InternalError {
                         message: format!(
@@ -7623,19 +7853,82 @@ impl<'a> Lowerer<'a> {
         nominal_type_id: NominalTypeId,
         this_reg: &Register,
     ) {
-        let own_fields = self
+        let (own_fields, dynamic_fields) = self
             .class_info_map
             .get(&nominal_type_id)
-            .map(|info| info.fields.clone())
+            .map(|info| (info.fields.clone(), info.dynamic_fields.clone()))
             .unwrap_or_default();
-        for field in own_fields {
-            if let Some(init_expr) = field.initializer {
-                let value = self.lower_expr(&init_expr);
-                self.emit(IrInstr::StoreFieldExact {
-                    object: this_reg.clone(),
-                    field: field.index,
-                    value,
-                });
+
+        #[derive(Clone)]
+        enum InstanceFieldInitializer {
+            Fixed(ClassFieldInfo),
+            Dynamic(DynamicClassFieldInfo),
+        }
+
+        let mut initializers = own_fields
+            .into_iter()
+            .filter(|field| field.order != usize::MAX)
+            .map(InstanceFieldInitializer::Fixed)
+            .chain(
+                dynamic_fields
+                    .into_iter()
+                    .map(InstanceFieldInitializer::Dynamic),
+            )
+            .collect::<Vec<_>>();
+        initializers.sort_by_key(|entry| match entry {
+            InstanceFieldInitializer::Fixed(field) => field.order,
+            InstanceFieldInitializer::Dynamic(field) => field.order,
+        });
+
+        for initializer in initializers {
+            match initializer {
+                InstanceFieldInitializer::Fixed(field) => {
+                    let value = if let Some(init_expr) = field.initializer {
+                        self.lower_expr(&init_expr)
+                    } else {
+                        let undefined = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: undefined.clone(),
+                            value: IrValue::Constant(IrConstant::Undefined),
+                        });
+                        undefined
+                    };
+                    self.emit(IrInstr::StoreFieldExact {
+                        object: this_reg.clone(),
+                        field: field.index,
+                        value,
+                    });
+                }
+                InstanceFieldInitializer::Dynamic(field) => {
+                    let key = if field.key_global_index != u16::MAX {
+                        let key = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                        self.emit(IrInstr::LoadGlobal {
+                            dest: key.clone(),
+                            index: field.key_global_index,
+                        });
+                        key
+                    } else {
+                        self.lower_runtime_property_key(&field.key)
+                    };
+                    let value = if let Some(init_expr) = field.initializer {
+                        self.lower_expr(&init_expr)
+                    } else {
+                        let undefined = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: undefined.clone(),
+                            value: IrValue::Constant(IrConstant::Undefined),
+                        });
+                        undefined
+                    };
+                    let descriptor =
+                        self.lower_data_property_descriptor(value, true, true, true);
+                    let define_result = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                    self.emit_vm_native_call(
+                        Some(define_result),
+                        crate::compiler::native_id::OBJECT_DEFINE_PROPERTY,
+                        vec![this_reg.clone(), key, descriptor],
+                    );
+                }
             }
         }
     }

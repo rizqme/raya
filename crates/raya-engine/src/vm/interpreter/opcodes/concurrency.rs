@@ -262,15 +262,7 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                // JS-like await normalization: awaiting a non-promise value resolves immediately.
-                let Some(awaited_handle) = self.promise_handle_from_value(awaited_val) else {
-                    if let Err(e) = stack.push(awaited_val) {
-                        return OpcodeResult::Error(e);
-                    }
-                    return OpcodeResult::Continue;
-                };
-
-                let mut awaited_id = awaited_handle.task_id();
+                let mut awaited_id = self.normalize_promise_source_task(awaited_val, task).id();
 
                 loop {
                     let tasks_guard = self.tasks.read();

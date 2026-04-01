@@ -157,8 +157,24 @@ fn parse_statement_inner(
         Token::Try => parse_try_statement(parser),
         Token::Return => parse_return_statement(parser),
         Token::Yield => {
-            if parser.is_js_mode() && matches!(parser.peek(), Some(Token::Colon)) {
-                parse_labeled_statement(parser)
+            if parser.is_js_mode() {
+                if matches!(parser.peek(), Some(Token::Colon)) {
+                    parse_labeled_statement(parser)
+                } else if !parser.yield_expression_allowed() {
+                    let start_span = parser.current_span();
+                    let expression = super::expr::parse_expression(parser)?;
+
+                    parser.consume_semicolon_or_asi()?;
+
+                    let span = parser.combine_spans(&start_span, expression.span());
+
+                    Ok(Statement::Expression(ExpressionStatement {
+                        expression,
+                        span,
+                    }))
+                } else {
+                    parse_yield_statement(parser)
+                }
             } else {
                 parse_yield_statement(parser)
             }
@@ -345,27 +361,29 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
 
     let (type_params, params, return_type, body) =
         parser.with_yield_context(is_generator, |parser| {
-            let type_params = if parser.check(&Token::Less) {
-                parser.advance();
-                Some(parse_type_parameters(parser)?)
-            } else {
-                None
-            };
+            parser.with_await_context(is_async, |parser| {
+                let type_params = if parser.check(&Token::Less) {
+                    parser.advance();
+                    Some(parse_type_parameters(parser)?)
+                } else {
+                    None
+                };
 
-            parser.expect(Token::LeftParen)?;
-            let params = parse_function_parameters(parser)?;
-            parser.expect(Token::RightParen)?;
+                parser.expect(Token::LeftParen)?;
+                let params = parse_function_parameters(parser)?;
+                parser.expect(Token::RightParen)?;
 
-            let return_type = if parser.check(&Token::Colon) {
-                parser.advance();
-                Some(super::types::parse_type_annotation(parser)?)
-            } else {
-                None
-            };
+                let return_type = if parser.check(&Token::Colon) {
+                    parser.advance();
+                    Some(super::types::parse_type_annotation(parser)?)
+                } else {
+                    None
+                };
 
-            parser.expect(Token::LeftBrace)?;
-            let body = parse_block_statement(parser)?;
-            Ok((type_params, params, return_type, body))
+                parser.expect(Token::LeftBrace)?;
+                let body = parse_block_statement(parser)?;
+                Ok((type_params, params, return_type, body))
+            })
         })?;
 
     let span = parser.combine_spans(&start_span, &body.span);
@@ -710,6 +728,12 @@ fn parse_do_while_statement(parser: &mut Parser) -> Result<Statement, ParseError
 fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
     parser.expect(Token::For)?;
+    let is_await = if parser.check(&Token::Await) {
+        parser.advance();
+        true
+    } else {
+        false
+    };
     parser.expect(Token::LeftParen)?;
 
     // Check if this is a for-of loop or traditional for loop
@@ -745,11 +769,17 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
                 initializer: None,
                 span: start_span,
             };
-            return parse_for_of(parser, start_span, ForOfLeft::VariableDecl(decl));
+            return parse_for_of(parser, start_span, ForOfLeft::VariableDecl(decl), is_await);
         }
 
         // Check for 'in' keyword - this is a for-in loop
         if parser.check(&Token::In) {
+            if is_await {
+                return Err(ParseError::invalid_syntax(
+                    "`for await` loops must use `of`",
+                    parser.current_span(),
+                ));
+            }
             parser.advance();
             let decl = VariableDecl {
                 kind,
@@ -762,6 +792,12 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
         }
 
         // Otherwise, this is a traditional for loop
+        if is_await {
+            return Err(ParseError::invalid_syntax(
+                "`for await` loops must use `of`",
+                parser.current_span(),
+            ));
+        }
         let type_annotation = if parser.check(&Token::Colon) {
             parser.advance();
             Some(super::types::parse_type_annotation(parser)?)
@@ -798,15 +834,27 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 
         if parser.check(&Token::Of) {
             parser.advance();
-            return parse_for_of(parser, start_span, ForOfLeft::Pattern(pattern));
+            return parse_for_of(parser, start_span, ForOfLeft::Pattern(pattern), is_await);
         }
 
         if parser.check(&Token::In) {
+            if is_await {
+                return Err(ParseError::invalid_syntax(
+                    "`for await` loops must use `of`",
+                    parser.current_span(),
+                ));
+            }
             parser.advance();
             return parse_for_in(parser, start_span, ForOfLeft::Pattern(pattern));
         }
 
         // Not a for-of, so this pattern is part of an expression
+        if is_await {
+            return Err(ParseError::invalid_syntax(
+                "`for await` loops must use `of`",
+                parser.current_span(),
+            ));
+        }
         // Convert pattern back to expression and continue parsing the full expression
         let base_expr = pattern_to_expression(pattern)?;
         let expr = parse_expression_from_base(parser, base_expr)?;
@@ -815,6 +863,12 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     }
 
     // Traditional for loop with non-identifier expression init
+    if is_await {
+        return Err(ParseError::invalid_syntax(
+            "`for await` loops must use `of`",
+            parser.current_span(),
+        ));
+    }
     let expr = parser.with_disallow_in(super::expr::parse_expression)?;
     parser.expect(Token::Semicolon)?;
     parse_traditional_for(parser, start_span, Some(ForInit::Expression(expr)))
@@ -914,6 +968,7 @@ fn parse_for_of(
     parser: &mut Parser,
     start_span: Span,
     left: ForOfLeft,
+    is_await: bool,
 ) -> Result<Statement, ParseError> {
     // Parse the iterable expression
     let right = super::expr::parse_expression(parser)?;
@@ -927,6 +982,7 @@ fn parse_for_of(
     Ok(Statement::ForOf(ForOfStatement {
         left,
         right,
+        is_await,
         body,
         span,
     }))
@@ -1142,16 +1198,12 @@ fn parse_type_alias_declaration(
     parser.expect(Token::Type)?;
 
     // Parse type name
-    let name = if let Token::Identifier(name) = parser.current() {
-        let name_str = *name;
-        let name_span = parser.current_span();
-        parser.advance();
-        Identifier {
-            name: name_str,
-            span: name_span,
+    let name = match parser.current() {
+        Token::Identifier(_) => parser.expect_identifier_like()?,
+        Token::Await if parser.is_js_mode() && !parser.is_module_goal() => {
+            parser.expect_identifier_like()?
         }
-    } else {
-        return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+        _ => return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())])),
     };
 
     // Optional type parameters
@@ -1744,35 +1796,37 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         // Method
         let (type_params, params, return_type, body) =
             parser.with_yield_context(is_generator, |parser| {
-                let type_params = if parser.check(&Token::Less) {
-                    parser.advance();
-                    Some(parse_type_parameters(parser)?)
-                } else {
-                    None
-                };
-
-                parser.expect(Token::LeftParen)?;
-                let params = parse_function_parameters(parser)?;
-                parser.expect(Token::RightParen)?;
-
-                let return_type = if parser.check(&Token::Colon) {
-                    parser.advance();
-                    Some(super::types::parse_type_annotation(parser)?)
-                } else {
-                    None
-                };
-
-                let body = if is_abstract {
-                    if parser.check(&Token::Semicolon) {
+                parser.with_await_context(is_async, |parser| {
+                    let type_params = if parser.check(&Token::Less) {
                         parser.advance();
-                    }
-                    None
-                } else {
-                    parser.expect(Token::LeftBrace)?;
-                    Some(parse_block_statement(parser)?)
-                };
+                        Some(parse_type_parameters(parser)?)
+                    } else {
+                        None
+                    };
 
-                Ok((type_params, params, return_type, body))
+                    parser.expect(Token::LeftParen)?;
+                    let params = parse_function_parameters(parser)?;
+                    parser.expect(Token::RightParen)?;
+
+                    let return_type = if parser.check(&Token::Colon) {
+                        parser.advance();
+                        Some(super::types::parse_type_annotation(parser)?)
+                    } else {
+                        None
+                    };
+
+                    let body = if is_abstract {
+                        if parser.check(&Token::Semicolon) {
+                            parser.advance();
+                        }
+                        None
+                    } else {
+                        parser.expect(Token::LeftBrace)?;
+                        Some(parse_block_statement(parser)?)
+                    };
+
+                    Ok((type_params, params, return_type, body))
+                })
             })?;
 
         let end_span = if let Some(ref b) = body {
@@ -1893,9 +1947,23 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
     let start_span = parser.current_span();
     parser.expect(Token::At)?;
 
-    // Parse decorator expression: identifier, member access, or call
-    let mut expression = if let Token::Identifier(name) = parser.current() {
-        let name_sym = *name;
+    // Parse decorator expression: parenthesized expression or identifier/member/call chain.
+    let mut expression = if parser.check(&Token::LeftParen) {
+        let paren_start = parser.current_span();
+        parser.advance();
+        let inner = if parser.peek() == Some(&Token::RightParen) {
+            let ident = parser.expect_identifier_like()?;
+            Expression::Identifier(ident)
+        } else {
+            super::expr::parse_expression(parser)?
+        };
+        let end_span = parser.current_span();
+        parser.expect(Token::RightParen)?;
+        Expression::Parenthesized(crate::parser::ast::ParenthesizedExpression {
+            expression: Box::new(inner),
+            span: parser.combine_spans(&paren_start, &end_span),
+        })
+    } else if let Some(name_sym) = parser.current_identifier_like_symbol() {
         let ident_span = parser.current_span();
         parser.advance();
 
@@ -1910,26 +1978,35 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
     // Handle member access: @module.decorator
     while parser.check(&Token::Dot) {
         parser.advance();
-        if let Token::Identifier(name) = parser.current() {
-            let name_sym = *name;
-            let member_span = parser.current_span();
-            parser.advance();
+        let (name_sym, member_span) = match parser.current() {
+            Token::Identifier(name) => (*name, parser.current_span()),
+            Token::PrivateIdentifier(name) => {
+                (intern_private_name(parser, *name), parser.current_span())
+            }
+            token => match super::expr::keyword_as_property_name(token) {
+                Some(name) => (parser.intern(name), parser.current_span()),
+                None => {
+                    return Err(parser.unexpected_token(&[
+                        Token::Identifier(Symbol::dummy()),
+                        Token::PrivateIdentifier(Symbol::dummy()),
+                    ]));
+                }
+            },
+        };
+        parser.advance();
 
-            let end_span = member_span;
-            let span = parser.combine_spans(expression.span(), &end_span);
+        let end_span = member_span;
+        let span = parser.combine_spans(expression.span(), &end_span);
 
-            expression = Expression::Member(MemberExpression {
-                object: Box::new(expression),
-                property: Identifier {
-                    name: name_sym,
-                    span: member_span,
-                },
-                optional: false,
-                span,
-            });
-        } else {
-            return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
-        }
+        expression = Expression::Member(MemberExpression {
+            object: Box::new(expression),
+            property: Identifier {
+                name: name_sym,
+                span: member_span,
+            },
+            optional: false,
+            span,
+        });
     }
 
     // Check for call(s): @decorator(args) or chained @decorator(args1)(args2)...
@@ -2352,12 +2429,26 @@ fn parse_export_specifiers(parser: &mut Parser) -> Result<Vec<ExportSpecifier>, 
 
 #[cfg(test)]
 mod tests {
+    use crate::parser::ast::{ClassDecl, Expression, Statement};
     use crate::parser::Parser;
 
     fn parse(source: &str) -> crate::parser::ast::Module {
         let parser = Parser::new(source).expect("should lex");
         let (module, _interner) = parser.parse().expect("should parse");
         module
+    }
+
+    fn class_decl_from_synthetic_class_expression(expr: &Expression) -> &ClassDecl {
+        let Expression::Call(call) = expr else {
+            panic!("Expected synthetic class expression call");
+        };
+        let Expression::Function(function) = call.callee.as_ref() else {
+            panic!("Expected synthetic class expression function");
+        };
+        let Statement::ClassDecl(class) = &function.body.statements[0] else {
+            panic!("Expected synthetic class declaration");
+        };
+        class
     }
 
     #[test]
@@ -2780,6 +2871,37 @@ const value = {
     }
 
     #[test]
+    fn test_js_class_name_accepts_escaped_await_in_script_goal() {
+        let parser =
+            Parser::new_with_mode("var C = class aw\\u0061it {};", crate::parser::checker::TypeSystemMode::Js)
+                .expect("should lex");
+        let (module, interner) = parser.parse().expect("should parse");
+        let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[0] else {
+            panic!("Expected variable declaration");
+        };
+        let Some(init) = decl.initializer.as_ref() else {
+            panic!("Expected class expression initializer");
+        };
+        let class = class_decl_from_synthetic_class_expression(init);
+        assert_eq!(interner.resolve(class.name.name), "await");
+    }
+
+    #[test]
+    fn test_js_class_name_rejects_escaped_await_in_module_goal() {
+        let parser = Parser::new_with_mode(
+            "var C = class aw\\u0061it {};",
+            crate::parser::checker::TypeSystemMode::Js,
+        )
+        .expect("should lex")
+        .with_goal(crate::parser::ParseGoal::Module);
+        let err = match parser.parse() {
+            Ok(_) => panic!("module-goal class name using await should fail"),
+            Err(err) => err,
+        };
+        assert!(!err.is_empty(), "expected parse error");
+    }
+
+    #[test]
     fn test_object_pattern_accepts_string_and_numeric_keys() {
         let parser =
             Parser::new(r#"const { "name": alias, 0: zero } = value;"#).expect("should lex");
@@ -2907,6 +3029,84 @@ class Foo {
             panic!("Expected array initializer");
         };
         assert_eq!(array.elements.len(), 3);
+    }
+
+    #[test]
+    fn test_direct_assignment_to_arrow_function_is_parse_error() {
+        let parser = Parser::new("() => ({}) = 1;").expect("should lex");
+        let err = match parser.parse() {
+            Ok(_) => panic!("assignment to arrow function should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.iter()
+                .any(|e| e.message.contains("Invalid assignment target")),
+            "expected invalid-assignment parse error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_direct_assignment_to_parenthesized_object_literal_is_parse_error() {
+        let parser = Parser::new("({}) = 1;").expect("should lex");
+        let err = match parser.parse() {
+            Ok(_) => panic!("assignment to parenthesized object literal should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.iter()
+                .any(|e| e.message.contains("Invalid assignment target")),
+            "expected invalid-assignment parse error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_js_class_expression_decorator_accepts_yield_identifier_reference() {
+        let parser = Parser::new_with_mode(
+            "function decorator() { return () => {}; } var yield = decorator; var C = @yield() class {};",
+            crate::parser::checker::TypeSystemMode::Js,
+        )
+        .expect("should lex");
+        let (module, interner) = parser.parse().expect("should parse");
+        let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[2] else {
+            panic!("Expected variable declaration");
+        };
+        let Some(init) = decl.initializer.as_ref() else {
+            panic!("Expected class expression initializer");
+        };
+        let class = class_decl_from_synthetic_class_expression(init);
+        assert_eq!(class.decorators.len(), 1);
+        let crate::parser::ast::Expression::Call(call) = &class.decorators[0].expression else {
+            panic!("Expected decorator call expression");
+        };
+        let crate::parser::ast::Expression::Identifier(ident) = call.callee.as_ref() else {
+            panic!("Expected identifier callee");
+        };
+        assert_eq!(interner.resolve(ident.name), "yield");
+    }
+
+    #[test]
+    fn test_js_class_expression_decorator_accepts_parenthesized_yield_reference() {
+        let parser = Parser::new_with_mode(
+            "function yield() {} var C = @(yield) class {};",
+            crate::parser::checker::TypeSystemMode::Js,
+        )
+        .expect("should lex");
+        let (module, interner) = parser.parse().expect("should parse");
+        let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[1] else {
+            panic!("Expected variable declaration");
+        };
+        let Some(init) = decl.initializer.as_ref() else {
+            panic!("Expected class expression initializer");
+        };
+        let class = class_decl_from_synthetic_class_expression(init);
+        let crate::parser::ast::Expression::Parenthesized(paren) = &class.decorators[0].expression
+        else {
+            panic!("Expected parenthesized decorator expression");
+        };
+        let crate::parser::ast::Expression::Identifier(ident) = paren.expression.as_ref() else {
+            panic!("Expected identifier in decorator expression");
+        };
+        assert_eq!(interner.resolve(ident.name), "yield");
     }
 
     #[test]

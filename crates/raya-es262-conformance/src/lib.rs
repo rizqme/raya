@@ -1285,7 +1285,7 @@ fn run_case(
         .as_ref()
         .and_then(|negative| negative.error_type.as_deref());
 
-    let temp_path = case_artifact_path(case);
+    let temp_path = case_artifact_path(case, &loaded.metadata);
     let is_async = loaded.metadata.flags.iter().any(|flag| flag == "async");
 
     let outcome = match negative_phase {
@@ -1356,11 +1356,17 @@ fn run_case(
     }
 }
 
-fn case_artifact_path(case: &TestCase) -> PathBuf {
+fn case_artifact_path(case: &TestCase, metadata: &Frontmatter) -> PathBuf {
+    let extension = if metadata.flags.iter().any(|flag| flag == "module") {
+        "mjs"
+    } else {
+        "js"
+    };
     std::env::temp_dir().join(format!(
-        "raya-es262-{}-{}.js",
+        "raya-es262-{}-{}.{}",
         std::process::id(),
         sanitized_case_stem(&case.relative_path),
+        extension,
     ))
 }
 
@@ -1401,7 +1407,7 @@ fn format_failure_report(
         ));
     }
 
-    let artifact_path = case_artifact_path(case);
+    let artifact_path = case_artifact_path(case, metadata);
     if artifact_path.exists() {
         report.push_str(&format!("\n  transformed: {}", artifact_path.display()));
     }
@@ -1648,10 +1654,14 @@ fn load_harness_include(root: &Path, include: &str) -> std::result::Result<Strin
     let loaded = fs::read_to_string(&include_path)
         .map_err(|_| format!("failed to load harness include: {}", include))
         .and_then(|raw| {
-            let raw = if include == "wellKnownIntrinsicObjects.js" {
-                rewrite_well_known_intrinsic_objects_harness(&raw)
-            } else {
-                raw
+            let raw = match include {
+                "wellKnownIntrinsicObjects.js" => rewrite_well_known_intrinsic_objects_harness(&raw),
+                "asyncHelpers.js" => raw.replacen(
+                    "assert.throwsAsync = function",
+                    "var __assert_throwsAsync = function",
+                    1,
+                ),
+                _ => raw,
             };
             transform_source(&raw)
         });
@@ -1773,6 +1783,10 @@ fn transform_source(source: &str) -> std::result::Result<String, String> {
     transformed = transformed.replace("assert.notSameValue(", "__assert_notSameValue(");
     transformed = transformed.replace("assert.throws(", "__assert_throws(");
     transformed = transformed.replace("assert.throwsAsync", "__assert_throwsAsync");
+    transformed = transformed.replace(
+        "__assert_throwsAsync = function",
+        "var __assert_throwsAsync = function",
+    );
     transformed = transformed.replace("assert.compareArray(", "__assert_compareArray(");
     transformed = bare_assert_regex()
         .replace_all(&transformed, "${prefix}__assert(")

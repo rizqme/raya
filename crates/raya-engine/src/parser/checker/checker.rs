@@ -9032,6 +9032,11 @@ impl<'a> TypeChecker<'a> {
         decorator: &crate::parser::ast::Decorator,
         _class: &crate::parser::ast::ClassDecl,
     ) {
+        if self.is_js_mode() {
+            let _ = self.check_expr(&decorator.expression);
+            return;
+        }
+
         // Get the type of the decorator expression
         let decorator_ty = self.check_expr(&decorator.expression);
 
@@ -9091,6 +9096,11 @@ impl<'a> TypeChecker<'a> {
         decorator: &crate::parser::ast::Decorator,
         method_ty: TypeId,
     ) {
+        if self.is_js_mode() {
+            let _ = self.check_expr(&decorator.expression);
+            return;
+        }
+
         // Get the type of the decorator expression
         let decorator_ty = self.check_expr(&decorator.expression);
 
@@ -9171,6 +9181,11 @@ impl<'a> TypeChecker<'a> {
     ///
     /// Field decorators have the signature: (target: T, fieldName: string) => void
     fn check_field_decorator(&mut self, decorator: &crate::parser::ast::Decorator) {
+        if self.is_js_mode() {
+            let _ = self.check_expr(&decorator.expression);
+            return;
+        }
+
         // Get the type of the decorator expression
         let decorator_ty = self.check_expr(&decorator.expression);
 
@@ -9235,6 +9250,11 @@ impl<'a> TypeChecker<'a> {
     /// Parameter decorators have the signature:
     /// (target: T, methodName: string, parameterIndex: number) => void
     fn check_parameter_decorator(&mut self, decorator: &crate::parser::ast::Decorator) {
+        if self.is_js_mode() {
+            let _ = self.check_expr(&decorator.expression);
+            return;
+        }
+
         // Get the type of the decorator expression
         let decorator_ty = self.check_expr(&decorator.expression);
 

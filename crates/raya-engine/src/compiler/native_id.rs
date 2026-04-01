@@ -114,6 +114,8 @@ pub const OBJECT_GET_OWN_PROPERTY_SYMBOLS: u16 = 0x003E;
 pub const OBJECT_STRING_FROM_CHAR_CODE: u16 = 0x003F;
 /// Read the current JS `new.target` value.
 pub const OBJECT_CURRENT_NEW_TARGET: u16 = 0x0032;
+/// Read the current callable closure object.
+pub const OBJECT_CURRENT_CLOSURE: u16 = 0x0069;
 /// Resolve `super.prop` using the current callable home object.
 pub const OBJECT_GET_SUPER_PROPERTY: u16 = 0x0033;
 /// Attach a callable home object to a JS method closure.
@@ -122,6 +124,12 @@ pub const OBJECT_SET_CALLABLE_HOME_OBJECT: u16 = 0x0034;
 pub const OBJECT_PUSH_WITH_ENV: u16 = 0x0035;
 /// Pop the active `with` object environment from the JS env chain.
 pub const OBJECT_POP_WITH_ENV: u16 = 0x0036;
+/// Capture the current env-record target for a JS identifier reference.
+pub const OBJECT_JS_CAPTURE_IDENTIFIER_ENV: u16 = 0x0037;
+/// Read a JS identifier through a previously captured env-record target.
+pub const OBJECT_JS_GET_IDENTIFIER_FROM_ENV: u16 = 0x0038;
+/// Write a JS identifier through a previously captured env-record target.
+pub const OBJECT_JS_SET_IDENTIFIER_IN_ENV: u16 = 0x0039;
 /// Parse a JS BigInt literal into an arbitrary-precision runtime primitive.
 pub const OBJECT_PARSE_BIGINT_LITERAL: u16 = 0x0040;
 /// Apply JS unary minus using ToNumeric semantics.
@@ -172,6 +180,8 @@ pub const OBJECT_CREATE_REFERENCE_ERROR: u16 = 0x0058;
 pub const OBJECT_CREATE_TYPE_ERROR: u16 = 0x0059;
 /// Ensure the current activation has a persistent direct-eval environment.
 pub const OBJECT_ENSURE_ACTIVATION_EVAL_ENV: u16 = 0x005A;
+/// Ensure a derived-constructor `this` value has been initialized by `super()`.
+pub const OBJECT_REQUIRE_SUPER_THIS_INITIALIZED: u16 = 0x005B;
 /// Push a fresh declarative env record onto the active JS env stack.
 pub const OBJECT_PUSH_DECLARATIVE_ENV: u16 = 0x005E;
 /// Pop the active declarative env record from the active JS env stack.
@@ -728,6 +738,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_JS_DELETE_IDENTIFIER => "Object.jsDeleteIdentifier",
         OBJECT_EVAL_SET_COMPLETION => "Object.evalSetCompletion",
         OBJECT_EVAL_GET_COMPLETION => "Object.evalGetCompletion",
+        OBJECT_CURRENT_CLOSURE => "Object.currentClosure",
         OBJECT_JS_DECLARE_LEXICAL => "Object.jsDeclareLexical",
         OBJECT_ENSURE_ACTIVATION_EVAL_ENV => "Object.ensureActivationEvalEnv",
         OBJECT_PUSH_DECLARATIVE_ENV => "Object.pushDeclarativeEnv",
@@ -764,6 +775,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_CREATE_REFERENCE_ERROR => "Object.createReferenceError",
         OBJECT_CREATE_TYPE_ERROR => "Object.createTypeError",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
+        OBJECT_REQUIRE_SUPER_THIS_INITIALIZED => "Object.requireSuperThisInitialized",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",
         FUNCTION_EVAL_HELPER => "Function.eval",
@@ -771,6 +783,9 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_JS_TO_INTEGER_OR_INFINITY => "Object.jsToIntegerOrInfinity",
         TRY_GET_GLOBAL => "tryGetGlobal",
         OBJECT_HAS_PROPERTY => "Object.hasProperty",
+        OBJECT_JS_CAPTURE_IDENTIFIER_ENV => "Object.jsCaptureIdentifierEnv",
+        OBJECT_JS_GET_IDENTIFIER_FROM_ENV => "Object.jsGetIdentifierFromEnv",
+        OBJECT_JS_SET_IDENTIFIER_IN_ENV => "Object.jsSetIdentifierInEnv",
         OBJECT_PARSE_BIGINT_LITERAL => "Object.parseBigIntLiteral",
         OBJECT_JS_UNARY_MINUS => "Object.jsUnaryMinus",
         OBJECT_COPY_DATA_PROPERTIES => "Object.copyDataProperties",

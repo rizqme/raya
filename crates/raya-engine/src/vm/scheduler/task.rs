@@ -71,6 +71,7 @@ pub enum PromiseReactionKind {
     FinallyResume { original: Value, failed: bool },
     All { state: Value, index: u32 },
     Race,
+    AsyncGeneratorYield { iterator: Value },
 }
 
 #[derive(Debug, Clone, Copy)]

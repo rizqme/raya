@@ -19,6 +19,7 @@ use crate::parser::interner::Interner;
 use crate::parser::interner::Symbol;
 use crate::parser::lexer::Lexer;
 use crate::parser::token::{LexedToken, Span, Token};
+use std::path::Path;
 
 pub use error::{ParseError, ParseErrorKind};
 
@@ -51,8 +52,34 @@ pub struct Parser {
     /// while generator functions enable `yield` expression parsing within their code.
     yield_context_stack: Vec<bool>,
 
+    /// Active async-function await parsing contexts.
+    ///
+    /// Script goal code keeps `await` identifier-like outside async bodies, while
+    /// module goal code always treats `await` as expression/reserved syntax.
+    await_context_stack: Vec<bool>,
+
     /// Parsing compatibility mode.
     mode: TypeSystemMode,
+
+    /// ECMAScript parse goal for JS-family sources.
+    goal: ParseGoal,
+}
+
+/// ECMAScript parse goal for JS-family sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ParseGoal {
+    #[default]
+    Script,
+    Module,
+}
+
+impl ParseGoal {
+    pub fn from_path(path: &Path) -> Self {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("mjs" | "mts") => Self::Module,
+            _ => Self::Script,
+        }
+    }
 }
 
 /// Backtracking snapshot for speculative parsing.
@@ -62,6 +89,7 @@ pub struct ParserCheckpoint {
     depth: usize,
     disallow_in: usize,
     yield_context_depth: usize,
+    await_context_depth: usize,
 }
 
 impl Parser {
@@ -102,7 +130,9 @@ impl Parser {
             depth: 0,
             disallow_in: 0,
             yield_context_stack: Vec::new(),
+            await_context_stack: Vec::new(),
             mode,
+            goal: ParseGoal::Script,
         })
     }
 
@@ -119,6 +149,16 @@ impl Parser {
         mut tokens: Vec<LexedToken>,
         interner: Interner,
         mode: TypeSystemMode,
+    ) -> Self {
+        Self::from_tokens_with_mode_and_goal(tokens, interner, mode, ParseGoal::Script)
+    }
+
+    /// Create a new parser from pre-tokenized input with an explicit goal.
+    pub(crate) fn from_tokens_with_mode_and_goal(
+        mut tokens: Vec<LexedToken>,
+        interner: Interner,
+        mode: TypeSystemMode,
+        goal: ParseGoal,
     ) -> Self {
         // Add EOF token if not present
         if tokens.is_empty() || !matches!(tokens.last().unwrap().token, Token::Eof) {
@@ -143,13 +183,21 @@ impl Parser {
             depth: 0,
             disallow_in: 0,
             yield_context_stack: Vec::new(),
+            await_context_stack: Vec::new(),
             mode,
+            goal,
         }
     }
 
     /// Override the parser compatibility mode.
     pub fn with_mode(mut self, mode: TypeSystemMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    /// Override the ECMAScript parse goal.
+    pub fn with_goal(mut self, goal: ParseGoal) -> Self {
+        self.goal = goal;
         self
     }
 
@@ -167,6 +215,17 @@ impl Parser {
         self.disallow_in += 1;
         let result = f(self);
         self.disallow_in -= 1;
+        result
+    }
+
+    pub(crate) fn with_allow_in<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        let saved = self.disallow_in;
+        self.disallow_in = 0;
+        let result = f(self);
+        self.disallow_in = saved;
         result
     }
 
@@ -329,6 +388,7 @@ impl Parser {
             depth: self.depth,
             disallow_in: self.disallow_in,
             yield_context_depth: self.yield_context_stack.len(),
+            await_context_depth: self.await_context_stack.len(),
         }
     }
 
@@ -340,6 +400,8 @@ impl Parser {
         self.disallow_in = checkpoint.disallow_in;
         self.yield_context_stack
             .truncate(checkpoint.yield_context_depth);
+        self.await_context_stack
+            .truncate(checkpoint.await_context_depth);
     }
 
     #[inline]
@@ -355,6 +417,22 @@ impl Parser {
         self.yield_context_stack.push(allow_yield_expression);
         let result = f(self);
         self.yield_context_stack.pop();
+        result
+    }
+
+    #[inline]
+    pub(crate) fn await_expression_allowed(&self) -> bool {
+        self.is_module_goal() || self.await_context_stack.last().copied().unwrap_or(false)
+    }
+
+    pub(crate) fn with_await_context<T>(
+        &mut self,
+        allow_await_expression: bool,
+        f: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        self.await_context_stack.push(allow_await_expression);
+        let result = f(self);
+        self.await_context_stack.pop();
         result
     }
 
@@ -390,6 +468,16 @@ impl Parser {
     #[inline]
     pub(crate) fn mode(&self) -> TypeSystemMode {
         self.mode
+    }
+
+    #[inline]
+    pub(crate) fn goal(&self) -> ParseGoal {
+        self.goal
+    }
+
+    #[inline]
+    pub(crate) fn is_module_goal(&self) -> bool {
+        matches!(self.goal, ParseGoal::Module)
     }
 
     #[inline]

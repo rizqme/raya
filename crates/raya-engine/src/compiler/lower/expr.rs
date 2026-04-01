@@ -101,6 +101,8 @@ enum PreparedDestructuringTarget {
     Identifier {
         symbol: Symbol,
         span_start: usize,
+        binding: Option<super::ResolvedBinding>,
+        captured_env: Option<Register>,
     },
     StaticFieldGlobal {
         global_index: u16,
@@ -130,6 +132,17 @@ enum PreparedDestructuringTarget {
 }
 
 impl<'a> Lowerer<'a> {
+    fn named_function_self_assignment_should_throw(&self) -> bool {
+        self.js_strict_context
+    }
+
+    fn emit_named_function_self_assignment(&mut self, value: Register) -> Register {
+        if self.named_function_self_assignment_should_throw() {
+            let _ = self.emit_type_error_throw("Assignment to constant variable.");
+        }
+        value
+    }
+
     fn js_builtin_call_uses_construct(name: &str) -> bool {
         matches!(
             name,
@@ -2366,6 +2379,18 @@ impl<'a> Lowerer<'a> {
                 local_idx,
                 is_refcell: self.refcell_registers.contains_key(&local_idx),
                 is_immutable: self.immutable_bindings.contains(&symbol),
+                is_named_function_self: false,
+            });
+        }
+
+        if let Some(&local_idx) = self.named_function_self_bindings.get(&symbol) {
+            return Some(super::ResolvedBinding::Local {
+                env: self.env_handle_for_binding(false, false, false),
+                symbol,
+                local_idx,
+                is_refcell: false,
+                is_immutable: false,
+                is_named_function_self: true,
             });
         }
 
@@ -2381,6 +2406,7 @@ impl<'a> Lowerer<'a> {
                 capture_idx: capture.capture_idx,
                 is_refcell: capture.is_refcell,
                 is_immutable: capture.is_immutable,
+                is_named_function_self: capture.is_named_function_self,
             });
         }
 
@@ -2395,6 +2421,7 @@ impl<'a> Lowerer<'a> {
                     ty: ancestor_var.ty,
                     is_refcell: ancestor_var.is_refcell,
                     is_immutable: ancestor_var.is_immutable,
+                    is_named_function_self: ancestor_var.is_named_function_self,
                 });
                 return Some(super::ResolvedBinding::Capture {
                     env: self.env_handle_for_binding(false, false, false),
@@ -2402,6 +2429,7 @@ impl<'a> Lowerer<'a> {
                     capture_idx,
                     is_refcell: ancestor_var.is_refcell,
                     is_immutable: ancestor_var.is_immutable,
+                    is_named_function_self: ancestor_var.is_named_function_self,
                 });
             }
         }
@@ -2451,6 +2479,103 @@ impl<'a> Lowerer<'a> {
         None
     }
 
+    fn resolve_static_identifier_binding(
+        &mut self,
+        symbol: Symbol,
+    ) -> Option<super::ResolvedBinding> {
+        if let Some(&local_idx) = self.local_map.get(&symbol) {
+            return Some(super::ResolvedBinding::Local {
+                env: self.env_handle_for_binding(false, false, false),
+                symbol,
+                local_idx,
+                is_refcell: self.refcell_registers.contains_key(&local_idx),
+                is_immutable: self.immutable_bindings.contains(&symbol),
+                is_named_function_self: false,
+            });
+        }
+
+        if let Some(&local_idx) = self.named_function_self_bindings.get(&symbol) {
+            return Some(super::ResolvedBinding::Local {
+                env: self.env_handle_for_binding(false, false, false),
+                symbol,
+                local_idx,
+                is_refcell: false,
+                is_immutable: false,
+                is_named_function_self: true,
+            });
+        }
+
+        if let Some(idx) = self
+            .captures
+            .iter()
+            .position(|capture| capture.symbol == symbol)
+        {
+            let capture = &self.captures[idx];
+            return Some(super::ResolvedBinding::Capture {
+                env: self.env_handle_for_binding(false, false, false),
+                symbol,
+                capture_idx: capture.capture_idx,
+                is_refcell: capture.is_refcell,
+                is_immutable: capture.is_immutable,
+                is_named_function_self: capture.is_named_function_self,
+            });
+        }
+
+        if let Some(ref ancestors) = self.ancestor_variables.clone() {
+            if let Some(ancestor_var) = ancestors.get(&symbol) {
+                let capture_idx = self.next_capture_slot;
+                self.next_capture_slot += 1;
+                self.captures.push(super::CaptureInfo {
+                    symbol,
+                    source: ancestor_var.source,
+                    capture_idx,
+                    ty: ancestor_var.ty,
+                    is_refcell: ancestor_var.is_refcell,
+                    is_immutable: ancestor_var.is_immutable,
+                    is_named_function_self: ancestor_var.is_named_function_self,
+                });
+                return Some(super::ResolvedBinding::Capture {
+                    env: self.env_handle_for_binding(false, false, false),
+                    symbol,
+                    capture_idx,
+                    is_refcell: ancestor_var.is_refcell,
+                    is_immutable: ancestor_var.is_immutable,
+                    is_named_function_self: ancestor_var.is_named_function_self,
+                });
+            }
+        }
+
+        if self.js_this_binding_compat && self.js_script_lexical_globals.contains_key(&symbol) {
+            return Some(super::ResolvedBinding::ScriptLexicalGlobal {
+                env: self.env_handle_for_binding(false, true, false),
+                symbol,
+            });
+        }
+
+        if let Some(global_idx) = self.shared_script_binding_slot(symbol) {
+            return Some(super::ResolvedBinding::SharedGlobal {
+                env: self.env_handle_for_binding(false, true, false),
+                symbol,
+                global_idx,
+            });
+        }
+
+        if let Some(binding) = self
+            .current_method_env_globals
+            .as_ref()
+            .and_then(|globals| globals.get(&symbol))
+            .copied()
+        {
+            return Some(super::ResolvedBinding::MethodEnvGlobal {
+                env: self.env_handle_for_binding(false, true, false),
+                symbol,
+                binding,
+            });
+        }
+
+        None
+    }
+
     pub(super) fn emit_load_identifier_binding(
         &mut self,
         binding: super::ResolvedBinding,
@@ -2461,6 +2586,7 @@ impl<'a> Lowerer<'a> {
                 symbol,
                 local_idx,
                 is_refcell,
+                is_named_function_self: _,
                 ..
             } => {
                 if is_refcell {
@@ -2496,6 +2622,7 @@ impl<'a> Lowerer<'a> {
                 symbol,
                 capture_idx,
                 is_refcell,
+                is_named_function_self: _,
                 ..
             } => {
                 if is_refcell {
@@ -2614,8 +2741,12 @@ impl<'a> Lowerer<'a> {
                 local_idx,
                 is_refcell,
                 is_immutable,
+                is_named_function_self,
                 ..
             } => {
+                if is_named_function_self {
+                    return self.emit_named_function_self_assignment(value);
+                }
                 if is_immutable {
                     let _ = self.emit_type_error_throw("Assignment to constant variable.");
                     return value;
@@ -2659,8 +2790,12 @@ impl<'a> Lowerer<'a> {
                 capture_idx,
                 is_refcell,
                 is_immutable,
+                is_named_function_self,
                 ..
             } => {
+                if is_named_function_self {
+                    return self.emit_named_function_self_assignment(value);
+                }
                 if is_immutable {
                     let _ = self.emit_type_error_throw("Assignment to constant variable.");
                     return value;
@@ -2873,6 +3008,141 @@ impl<'a> Lowerer<'a> {
             }
             _ => None,
         }
+    }
+
+    fn synthetic_class_expression_decl_from_call<'b>(
+        &self,
+        call: &'b ast::CallExpression,
+    ) -> Option<&'b ast::ClassDecl> {
+        if call.optional || !call.arguments.is_empty() {
+            return None;
+        }
+
+        let callee = match call.callee.as_ref() {
+            Expression::Parenthesized(paren) => &paren.expression,
+            other => other,
+        };
+        let Expression::Function(function_expr) = callee else {
+            return None;
+        };
+        if function_expr.name.is_some()
+            || function_expr.is_async
+            || function_expr.is_generator
+            || !function_expr.params.is_empty()
+        {
+            return None;
+        }
+
+        let [ast::Statement::ClassDecl(class_decl), ast::Statement::Return(ret)] =
+            function_expr.body.statements.as_slice()
+        else {
+            return None;
+        };
+        let Some(Expression::Identifier(ret_ident)) = ret.value.as_ref() else {
+            return None;
+        };
+
+        (ret_ident.name == class_decl.name.name).then_some(class_decl)
+    }
+
+    fn lower_synthetic_class_expression_call(
+        &mut self,
+        call: &ast::CallExpression,
+    ) -> Option<Register> {
+        let class_decl = self.synthetic_class_expression_decl_from_call(call)?;
+        let nominal_type_id = self
+            .nominal_type_id_for_decl(class_decl)
+            .or_else(|| self.class_map.get(&class_decl.name.name).copied())?;
+
+        if !self.lowered_nominal_type_ids.contains(&nominal_type_id) {
+            let saved_pending_method_env = self.pending_class_method_env_globals.take();
+            if self.current_function.is_some() {
+                self.pending_class_method_env_globals =
+                    Some(self.materialize_current_locals_for_method_env());
+            }
+
+            let saved_register = self.next_register;
+            let saved_block = self.next_block;
+            let saved_local_map = self.local_map.clone();
+            let saved_local_registers = self.local_registers.clone();
+            let saved_refcell_registers = self.refcell_registers.clone();
+            let saved_refcell_inner_types = self.refcell_inner_types.clone();
+            let saved_refcell_vars = self.refcell_vars.clone();
+            let saved_immutable_bindings = self.immutable_bindings.clone();
+            let saved_captured_read_vars = self.captured_read_vars.clone();
+            let saved_next_local = self.next_local;
+            let saved_function = self.current_function.take();
+            let saved_current_block = self.current_block;
+            let saved_current_class = self.current_class.take();
+            let saved_this_register = self.this_register.take();
+            let saved_yield_buffer_local = self.yield_buffer_local.take();
+
+            self.lower_class_declaration(class_decl);
+
+            self.next_register = saved_register;
+            self.next_block = saved_block;
+            self.local_map = saved_local_map;
+            self.local_registers = saved_local_registers;
+            self.refcell_registers = saved_refcell_registers;
+            self.refcell_inner_types = saved_refcell_inner_types;
+            self.refcell_vars = saved_refcell_vars;
+            self.immutable_bindings = saved_immutable_bindings;
+            self.captured_read_vars = saved_captured_read_vars;
+            self.next_local = saved_next_local;
+            self.current_function = saved_function;
+            self.current_block = saved_current_block;
+            self.current_class = saved_current_class;
+            self.this_register = saved_this_register;
+            self.yield_buffer_local = saved_yield_buffer_local;
+            self.pending_class_method_env_globals = saved_pending_method_env;
+        }
+
+        let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
+        let class_name = self.interner.resolve(class_decl.name.name);
+        let needs_temp_binding = !class_name.starts_with("__class_expr_");
+        let previous_local = if needs_temp_binding {
+            self.local_map.get(&class_decl.name.name).copied()
+        } else {
+            None
+        };
+
+        if needs_temp_binding {
+            let local_idx = self.allocate_local(class_decl.name.name);
+            let undefined = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Assign {
+                dest: undefined.clone(),
+                value: IrValue::Constant(IrConstant::Undefined),
+            });
+            let refcell_reg = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::NewRefCell {
+                dest: refcell_reg.clone(),
+                initial_value: undefined,
+            });
+            self.local_registers.insert(local_idx, refcell_reg.clone());
+            self.refcell_registers.insert(local_idx, refcell_reg.clone());
+            self.refcell_inner_types.insert(local_idx, UNRESOLVED);
+            self.emit(IrInstr::StoreLocal {
+                index: local_idx,
+                value: refcell_reg,
+            });
+            self.store_identifier_value_at_span(
+                class_decl.name.name,
+                class_decl.name.span.start,
+                class_value.clone(),
+            );
+        }
+
+        self.emit_static_elements_for_class(class_decl, nominal_type_id, class_value.clone());
+
+        if needs_temp_binding {
+            if let Some(previous_local) = previous_local {
+                self.local_map.insert(class_decl.name.name, previous_local);
+            } else {
+                self.local_map.remove(&class_decl.name.name);
+            }
+        }
+
+        Some(class_value)
     }
 
     fn lower_call_argument_values(&mut self, args: &[ast::CallArgument]) -> Vec<Register> {
@@ -3164,6 +3434,52 @@ impl<'a> Lowerer<'a> {
         let name_reg = self.emit_direct_eval_name_reg(name);
         self.emit_vm_native_call(Some(dest.clone()), crate::compiler::native_id::OBJECT_JS_HAS_IDENTIFIER, vec![name_reg]);
         dest
+    }
+
+    pub(super) fn emit_capture_identifier_env(&mut self, name: &str) -> Register {
+        let dest = self.alloc_register(UNRESOLVED);
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit_vm_native_call(
+            Some(dest.clone()),
+            crate::compiler::native_id::OBJECT_JS_CAPTURE_IDENTIFIER_ENV,
+            vec![name_reg],
+        );
+        dest
+    }
+
+    pub(super) fn emit_captured_identifier_get(
+        &mut self,
+        env: Register,
+        name: &str,
+        non_throwing: bool,
+    ) -> Register {
+        let dest = self.alloc_register(UNRESOLVED);
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        let mode_reg = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: mode_reg.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(non_throwing)),
+        });
+        self.emit_vm_native_call(
+            Some(dest.clone()),
+            crate::compiler::native_id::OBJECT_JS_GET_IDENTIFIER_FROM_ENV,
+            vec![env, name_reg, mode_reg],
+        );
+        dest
+    }
+
+    pub(super) fn emit_captured_identifier_set(
+        &mut self,
+        env: Register,
+        name: &str,
+        value: Register,
+    ) {
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit_vm_native_call(
+            None,
+            crate::compiler::native_id::OBJECT_JS_SET_IDENTIFIER_IN_ENV,
+            vec![env, name_reg, value],
+        );
     }
 
     pub(super) fn emit_ensure_activation_direct_eval_env(
@@ -3459,6 +3775,51 @@ impl<'a> Lowerer<'a> {
             ));
         self.current_block = merge_block;
         dest
+    }
+
+    fn store_shadowable_identifier_with_runtime_fallback(
+        &mut self,
+        symbol: Symbol,
+        span_start: usize,
+        value: Register,
+    ) {
+        let name = self.interner.resolve(symbol).to_string();
+        let has_binding = self.emit_direct_eval_binding_has(&name);
+        let hit_block = self.alloc_block();
+        let miss_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+
+        self.set_terminator(Terminator::Branch {
+            cond: has_binding,
+            then_block: hit_block,
+            else_block: miss_block,
+        });
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(hit_block, "eval.shadow.store.hit"));
+        self.current_block = hit_block;
+        self.emit_direct_eval_binding_set(&name, value.clone());
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(miss_block, "eval.shadow.store.miss"));
+        self.current_block = miss_block;
+        let saved_suppressed_runtime_identifier_lookup_span =
+            self.suppressed_runtime_identifier_lookup_span;
+        self.suppressed_runtime_identifier_lookup_span = Some(span_start);
+        if let Some(binding) = self.resolve_identifier_binding(symbol, span_start) {
+            let _ = self.emit_store_identifier_binding(binding, value);
+        }
+        self.suppressed_runtime_identifier_lookup_span =
+            saved_suppressed_runtime_identifier_lookup_span;
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(
+                merge_block,
+                "eval.shadow.store.merge",
+            ));
+        self.current_block = merge_block;
     }
 
     pub(super) fn lower_direct_eval_environment_object(
@@ -3819,6 +4180,16 @@ impl<'a> Lowerer<'a> {
                 dest: resume_value.clone(),
             });
             let result = self.emit_iterator_resume_helper(kind, iterator_reg, resume_value);
+            let result = if uses_async_protocol {
+                let awaited = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::Await {
+                    dest: awaited.clone(),
+                    task: result,
+                });
+                awaited
+            } else {
+                result
+            };
             self.emit(IrInstr::StoreLocal {
                 index: result_local,
                 value: result,
@@ -3850,6 +4221,50 @@ impl<'a> Lowerer<'a> {
             dest: step_result.clone(),
         });
         let completion = self.emit_iterator_value_helper(step_result);
+        let completion = if uses_async_protocol {
+            let awaited = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Await {
+                dest: awaited.clone(),
+                task: completion,
+            });
+            awaited
+        } else {
+            completion
+        };
+        let completion_kind = self.alloc_register(TypeId::new(super::INT_TYPE_ID));
+        self.emit(IrInstr::LoadLocal {
+            index: resume_kind_local,
+            dest: completion_kind.clone(),
+        });
+        let return_const =
+            self.emit_i32_const(crate::vm::iteration::ResumeCompletionKind::Return.as_i32());
+        let is_return = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: is_return.clone(),
+            op: crate::ir::BinaryOp::StrictEqual,
+            left: completion_kind,
+            right: return_const,
+        });
+        let done_return_block = self.alloc_block();
+        let done_exit_block = self.alloc_block();
+        self.set_terminator(Terminator::Branch {
+            cond: is_return,
+            then_block: done_return_block,
+            else_block: done_exit_block,
+        });
+
+        self.current_function_mut().add_block(crate::ir::BasicBlock::with_label(
+            done_return_block,
+            "yield_star.done_return",
+        ));
+        self.current_block = done_return_block;
+        self.set_terminator(Terminator::Return(Some(completion.clone())));
+
+        self.current_function_mut().add_block(crate::ir::BasicBlock::with_label(
+            done_exit_block,
+            "yield_star.done_value",
+        ));
+        self.current_block = done_exit_block;
         self.emit(IrInstr::Assign {
             dest: final_value.clone(),
             value: IrValue::Register(completion),
@@ -4459,6 +4874,20 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
+        if let Some(&local_idx) = self.named_function_self_bindings.get(&ident.name) {
+            let ty = self.effective_identifier_value_type(
+                ident,
+                self.default_js_function_type(),
+            );
+            let dest = self.alloc_register(ty);
+            self.emit(IrInstr::LoadLocal {
+                dest: dest.clone(),
+                index: local_idx,
+            });
+            self.propagate_type_projection_to_register(ty, &dest);
+            return dest;
+        }
+
         if self.parameter_scope_eval_mode {
             if name == "arguments" {
                 return self.lower_parameter_scope_eval_arguments();
@@ -4472,15 +4901,22 @@ impl<'a> Lowerer<'a> {
             });
         }
 
-        if self.body_scope_eval_mode && !self.function_map.contains_key(&ident.name) {
+        if (self.body_scope_eval_mode || self.active_parameter_env_function_depth > 0)
+            && !self.function_map.contains_key(&ident.name)
+        {
             let saved_body_scope_eval_mode = self.body_scope_eval_mode;
             let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
+            let saved_active_parameter_env_function_depth =
+                self.active_parameter_env_function_depth;
             return self.lower_eval_shadowable_identifier(name, |this| {
                 this.body_scope_eval_mode = false;
                 this.body_scope_eval_arguments_mode = false;
+                this.active_parameter_env_function_depth = 0;
                 let value = this.lower_identifier(ident);
                 this.body_scope_eval_mode = saved_body_scope_eval_mode;
                 this.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
+                this.active_parameter_env_function_depth =
+                    saved_active_parameter_env_function_depth;
                 value
             });
         }
@@ -4574,6 +5010,7 @@ impl<'a> Lowerer<'a> {
                     ty: narrowed_ty,
                     is_refcell,
                     is_immutable,
+                    is_named_function_self: ancestor_var.is_named_function_self,
                 });
 
                 if self.js_dynamic_semantics_enabled() && self.js_this_binding_compat {
@@ -5316,6 +5753,10 @@ impl<'a> Lowerer<'a> {
             return self.lower_optional_call(call, full_expr);
         }
 
+        if let Some(class_value) = self.lower_synthetic_class_expression_call(call) {
+            return class_value;
+        }
+
         let semantic_call_kind = self
             .semantic_plan
             .call_op_at_span(call.span.start, call.span.end)
@@ -5426,7 +5867,7 @@ impl<'a> Lowerer<'a> {
                 let parent_constructor =
                     self.lower_parent_constructor_for_class(current_nominal_type_id);
                 if let Some(parent_constructor) = parent_constructor {
-                    let this_reg = self.lower_this();
+                    let this_reg = self.lower_this_for_super_construct();
                     let new_target =
                         self.load_class_value_for_nominal_type(current_nominal_type_id);
                     // Keep the original most-derived receiver alive across nested
@@ -6794,7 +7235,7 @@ impl<'a> Lowerer<'a> {
         // a static method/accessor). In JS static methods, `this` is the
         // constructor value and must share the same lowering path.
         if let Some(nominal_type_id) = self.static_member_owner_nominal_type(&member.object) {
-            if self.js_this_binding_compat {
+            if self.js_this_binding_compat && !prop_name.starts_with('#') {
                 let member_ty = {
                     let member_expr = Expression::Member(member.clone());
                     let inferred = self.get_expr_type(&member_expr);
@@ -8966,6 +9407,15 @@ impl<'a> Lowerer<'a> {
             let _ = self.emit_parameter_tdz_reference_error(self.interner.resolve(symbol));
             return;
         }
+        let name = self.interner.resolve(symbol).to_string();
+        if self.js_this_binding_compat
+            && self.active_with_env_depth > 0
+            && !self.identifier_is_ambient_runtime_global(&name)
+            && !self.runtime_identifier_lookup_suppressed(span_start)
+        {
+            self.store_shadowable_identifier_with_runtime_fallback(symbol, span_start, value);
+            return;
+        }
         let Some(binding) = self.resolve_identifier_binding(symbol, span_start) else {
             return;
         };
@@ -8974,6 +9424,7 @@ impl<'a> Lowerer<'a> {
 
     fn identifier_has_static_assignment_target(&self, symbol: Symbol) -> bool {
         self.local_map.contains_key(&symbol)
+            || self.named_function_self_bindings.contains_key(&symbol)
             || self.captures.iter().any(|capture| capture.symbol == symbol)
             || self
                 .ancestor_variables
@@ -8999,10 +9450,18 @@ impl<'a> Lowerer<'a> {
             Expression::Assignment(assign) if assign.operator == AssignmentOperator::Assign => {
                 self.prepare_destructuring_target(&assign.left)
             }
-            Expression::Identifier(ident) => Some(PreparedDestructuringTarget::Identifier {
-                symbol: ident.name,
-                span_start: ident.span.start,
-            }),
+            Expression::Identifier(ident) => {
+                let binding = self.resolve_static_identifier_binding(ident.name);
+                let captured_env = self
+                    .js_this_binding_compat
+                    .then(|| self.emit_capture_identifier_env(self.interner.resolve(ident.name)));
+                Some(PreparedDestructuringTarget::Identifier {
+                    symbol: ident.name,
+                    span_start: ident.span.start,
+                    binding,
+                    captured_env,
+                })
+            }
             Expression::Member(member) => {
                 let property = self.interner.resolve(member.property.name).to_string();
                 if matches!(member.object.as_ref(), Expression::Super(_)) {
@@ -9142,8 +9601,62 @@ impl<'a> Lowerer<'a> {
         value: Register,
     ) {
         match target {
-            PreparedDestructuringTarget::Identifier { symbol, span_start } => {
-                self.store_identifier_value_at_span(symbol, span_start, value);
+            PreparedDestructuringTarget::Identifier {
+                symbol,
+                span_start,
+                binding,
+                captured_env,
+            } => {
+                if let Some(env) = captured_env {
+                    let static_binding = binding;
+                    let hit_block = self.alloc_block();
+                    let miss_block = self.alloc_block();
+                    let merge_block = self.alloc_block();
+                    let is_undefined = self.emit_is_js_undefined(env.clone());
+                    self.set_terminator(Terminator::Branch {
+                        cond: is_undefined,
+                        then_block: miss_block,
+                        else_block: hit_block,
+                    });
+
+                    self.current_function_mut().add_block(BasicBlock::with_label(
+                        hit_block,
+                        "assign.ident.ref.hit",
+                    ));
+                    self.current_block = hit_block;
+                    self.emit_captured_identifier_set(
+                        env.clone(),
+                        self.interner.resolve(symbol),
+                        value.clone(),
+                    );
+                    self.set_terminator(Terminator::Jump(merge_block));
+
+                    self.current_function_mut().add_block(BasicBlock::with_label(
+                        miss_block,
+                        "assign.ident.ref.miss",
+                    ));
+                    self.current_block = miss_block;
+                    if let Some(binding) = static_binding {
+                        let _ = self.emit_store_identifier_binding(binding, value);
+                    } else {
+                        self.emit_captured_identifier_set(
+                            env,
+                            self.interner.resolve(symbol),
+                            value,
+                        );
+                    }
+                    self.set_terminator(Terminator::Jump(merge_block));
+
+                    self.current_function_mut().add_block(BasicBlock::with_label(
+                        merge_block,
+                        "assign.ident.ref.merge",
+                    ));
+                    self.current_block = merge_block;
+                } else if let Some(binding) = binding {
+                    let _ = self.emit_store_identifier_binding(binding, value);
+                } else {
+                    self.store_identifier_value_at_span(symbol, span_start, value);
+                }
             }
             PreparedDestructuringTarget::StaticFieldGlobal { global_index } => {
                 self.emit(IrInstr::StoreGlobal {
@@ -9632,23 +10145,11 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_assignment(&mut self, assign: &ast::AssignmentExpression) -> Register {
-        fn member_like_assignment_target(expr: &Expression) -> bool {
-            match expr {
-                Expression::Member(_) | Expression::Index(_) => true,
-                Expression::Parenthesized(paren) => {
-                    member_like_assignment_target(&paren.expression)
-                }
-                Expression::Assignment(assign) if assign.operator == AssignmentOperator::Assign => {
-                    member_like_assignment_target(&assign.left)
-                }
-                _ => false,
+        let prepared_simple_assignment_target = if assign.operator == AssignmentOperator::Assign {
+            match &*assign.left {
+                Expression::Array(_) | Expression::Object(_) => None,
+                _ => self.prepare_destructuring_target(&assign.left),
             }
-        }
-
-        let prepared_simple_assignment_target = if assign.operator == AssignmentOperator::Assign
-            && member_like_assignment_target(&assign.left)
-        {
-            self.prepare_destructuring_target(&assign.left)
         } else {
             None
         };
@@ -9793,6 +10294,13 @@ impl<'a> Lowerer<'a> {
                             let ty = ancestor_var.ty;
                             let is_refcell = ancestor_var.is_refcell;
                             let is_immutable = ancestor_var.is_immutable;
+                            let is_named_function_self =
+                                ancestor_var.is_named_function_self;
+                            if is_named_function_self {
+                                let _ = self
+                                    .emit_named_function_self_assignment(assigned_value.clone());
+                                return assigned_value;
+                            }
                             if is_immutable {
                                 let _ =
                                     self.emit_type_error_throw("Assignment to constant variable.");
@@ -9807,6 +10315,7 @@ impl<'a> Lowerer<'a> {
                                 ty,
                                 is_refcell,
                                 is_immutable,
+                                is_named_function_self,
                             });
                             if is_refcell {
                                 let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
@@ -10127,10 +10636,41 @@ impl<'a> Lowerer<'a> {
 
         if self.js_this_binding_compat && assign.operator == AssignmentOperator::Assign {
             if let Some(reference) = self.resolve_update_reference(&assign.left) {
-                let can_use_reference_pipeline = match &reference {
+                let is_super_property_assignment = match &*assign.left {
+                    Expression::Member(member) => {
+                        matches!(member.object.as_ref(), Expression::Super(_))
+                    }
+                    Expression::Index(index) => {
+                        matches!(index.object.as_ref(), Expression::Super(_))
+                    }
+                    Expression::Parenthesized(paren) => matches!(
+                        paren.expression.as_ref(),
+                        Expression::Member(member)
+                            if matches!(member.object.as_ref(), Expression::Super(_))
+                    ) || matches!(
+                        paren.expression.as_ref(),
+                        Expression::Index(index)
+                            if matches!(index.object.as_ref(), Expression::Super(_))
+                    ),
+                    _ => false,
+                };
+                let can_use_reference_pipeline = !is_super_property_assignment && match &reference {
                     super::Reference::Property { .. } => true,
                     super::Reference::Identifier(binding) => {
-                        !matches!(binding, super::ResolvedBinding::AmbientGlobal { .. })
+                        let is_shadowable_with_store = if let Expression::Identifier(ident) =
+                            &*assign.left
+                        {
+                            let name = self.interner.resolve(ident.name).to_string();
+                            self.js_this_binding_compat
+                                && self.active_with_env_depth > 0
+                                && !self.identifier_is_ambient_runtime_global(&name)
+                                && !self.runtime_identifier_lookup_suppressed(ident.span.start)
+                        } else {
+                            false
+                        };
+
+                        !is_shadowable_with_store
+                            && !matches!(binding, super::ResolvedBinding::AmbientGlobal { .. })
                     }
                 };
 
@@ -10201,31 +10741,45 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expression::Identifier(ident) => {
-                let binding = self.resolve_identifier_binding(ident.name, ident.span.start);
-                let assigned_local_idx = match binding {
-                    Some(super::ResolvedBinding::Local { local_idx, .. }) => Some(local_idx),
-                    _ => None,
-                };
+                let name = self.interner.resolve(ident.name).to_string();
+                let shadowable_with_store = self.js_this_binding_compat
+                    && self.active_with_env_depth > 0
+                    && !self.identifier_is_ambient_runtime_global(&name)
+                    && !self.runtime_identifier_lookup_suppressed(ident.span.start);
+                if shadowable_with_store {
+                    self.store_shadowable_identifier_with_runtime_fallback(
+                        ident.name,
+                        ident.span.start,
+                        value.clone(),
+                    );
+                    self.callable_symbol_hints.remove(&ident.name);
+                } else {
+                    let binding = self.resolve_identifier_binding(ident.name, ident.span.start);
+                    let assigned_local_idx = match binding {
+                        Some(super::ResolvedBinding::Local { local_idx, .. }) => Some(local_idx),
+                        _ => None,
+                    };
 
-                if let Some(binding) = binding {
-                    let _ = self.emit_store_identifier_binding(binding, value.clone());
-                    if assign.operator == AssignmentOperator::Assign {
-                        if callable_assign_hint {
-                            self.callable_symbol_hints.insert(ident.name);
+                    if let Some(binding) = binding {
+                        let _ = self.emit_store_identifier_binding(binding, value.clone());
+                        if assign.operator == AssignmentOperator::Assign {
+                            if callable_assign_hint {
+                                self.callable_symbol_hints.insert(ident.name);
+                            } else {
+                                self.callable_symbol_hints.remove(&ident.name);
+                            }
+                            if let Some(local_idx) = assigned_local_idx {
+                                if callable_assign_hint {
+                                    self.callable_local_hints.insert(local_idx);
+                                } else {
+                                    self.callable_local_hints.remove(&local_idx);
+                                }
+                            }
                         } else {
                             self.callable_symbol_hints.remove(&ident.name);
-                        }
-                        if let Some(local_idx) = assigned_local_idx {
-                            if callable_assign_hint {
-                                self.callable_local_hints.insert(local_idx);
-                            } else {
+                            if let Some(local_idx) = assigned_local_idx {
                                 self.callable_local_hints.remove(&local_idx);
                             }
-                        }
-                    } else {
-                        self.callable_symbol_hints.remove(&ident.name);
-                        if let Some(local_idx) = assigned_local_idx {
-                            self.callable_local_hints.remove(&local_idx);
                         }
                     }
                 }
@@ -10525,7 +11079,9 @@ impl<'a> Lowerer<'a> {
             preassigned_func_id
         };
 
-        let function_name = if self.js_this_binding_compat && func.name.is_none() {
+        let function_name = if let Some(name) = &func.name {
+            self.interner.resolve(name.name).to_string()
+        } else if self.js_this_binding_compat {
             String::new()
         } else {
             let generated = format!("__function_{}", self.arrow_counter);
@@ -10565,6 +11121,7 @@ impl<'a> Lowerer<'a> {
         let saved_callable_symbol_hints = self.callable_symbol_hints.clone();
         let saved_refcell_vars = self.refcell_vars.clone();
         let saved_immutable_bindings = self.immutable_bindings.clone();
+        let saved_named_function_self_bindings = self.named_function_self_bindings.clone();
         let saved_refcell_registers = self.refcell_registers.clone();
         let saved_captured_read_vars = self.captured_read_vars.clone();
         let saved_refcell_inner_types = self.refcell_inner_types.clone();
@@ -10576,6 +11133,7 @@ impl<'a> Lowerer<'a> {
         let saved_next_capture_slot = self.next_capture_slot;
         let saved_this_register = self.this_register.take();
         let saved_current_method_is_static = self.current_method_is_static;
+        let saved_super_this_guard_active = self.super_this_guard_active;
         let saved_pending_constructor_prologue = self.pending_constructor_prologue.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
@@ -10587,6 +11145,7 @@ impl<'a> Lowerer<'a> {
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
         let saved_body_scope_eval_mode = self.body_scope_eval_mode;
+        let saved_active_parameter_env_function_depth = self.active_parameter_env_function_depth;
 
         let mut new_ancestor_vars = rustc_hash::FxHashMap::default();
         for (sym, &local_idx) in &saved_local_map {
@@ -10602,8 +11161,23 @@ impl<'a> Lowerer<'a> {
                     ty,
                     is_refcell,
                     is_immutable: saved_immutable_bindings.contains(sym),
+                    is_named_function_self: false,
                 },
             );
+        }
+        for (sym, &local_idx) in &saved_named_function_self_bindings {
+            if !new_ancestor_vars.contains_key(sym) {
+                new_ancestor_vars.insert(
+                    *sym,
+                    super::AncestorVar {
+                        source: super::AncestorSource::ImmediateParentLocal(local_idx),
+                        ty: self.default_js_function_type(),
+                        is_refcell: false,
+                        is_immutable: false,
+                        is_named_function_self: true,
+                    },
+                );
+            }
         }
         if let Some(ref existing) = saved_ancestor_variables {
             for (sym, var) in existing {
@@ -10615,6 +11189,7 @@ impl<'a> Lowerer<'a> {
                             ty: var.ty,
                             is_refcell: var.is_refcell,
                             is_immutable: var.is_immutable,
+                            is_named_function_self: var.is_named_function_self,
                         },
                     );
                 }
@@ -10637,11 +11212,13 @@ impl<'a> Lowerer<'a> {
         self.callable_local_hints.clear();
         self.refcell_vars.clear();
         self.immutable_bindings.clear();
+        self.named_function_self_bindings.clear();
         self.refcell_registers.clear();
         self.captured_read_vars.clear();
         self.refcell_inner_types.clear();
         self.yield_buffer_local = None;
         self.current_method_is_static = false;
+        self.super_this_guard_active = false;
 
         let has_destructuring_params = func.params.iter().any(|p| {
             !matches!(
@@ -10659,6 +11236,12 @@ impl<'a> Lowerer<'a> {
         } else {
             self.next_local = js_this_slots as u16;
         }
+
+        let named_self_local = func.name.as_ref().map(|name| {
+            let local_idx = self.allocate_anonymous_local();
+            self.named_function_self_bindings.insert(name.name, local_idx);
+            local_idx
+        });
 
         if use_js_parameter_env {
             for param in &func.params {
@@ -10811,13 +11394,34 @@ impl<'a> Lowerer<'a> {
             .direct_eval_entry_function
             .as_deref()
             .is_some_and(|target| target == function_name);
+        let inherited_parameter_env_scope = saved_active_parameter_env_function_depth > 0
+            || (self.js_this_binding_compat && !saved_parameter_symbols.is_empty());
+        self.active_parameter_env_function_depth =
+            saved_active_parameter_env_function_depth + usize::from(use_js_parameter_env);
         self.body_scope_eval_arguments_mode = false;
-        self.body_scope_eval_mode = saved_body_scope_eval_mode || use_js_parameter_env;
+        self.body_scope_eval_mode =
+            saved_body_scope_eval_mode || inherited_parameter_env_scope || use_js_parameter_env;
 
         let entry_block = self.alloc_block();
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
+
+        if let Some(local_idx) = named_self_local {
+            let closure_ty =
+                self.closure_value_type_for_expr(&Expression::Function(func.clone()));
+            let current_closure = self.alloc_register(closure_ty);
+            self.emit_vm_native_call(
+                Some(current_closure.clone()),
+                crate::compiler::native_id::OBJECT_CURRENT_CLOSURE,
+                vec![],
+            );
+            self.emit(IrInstr::StoreLocal {
+                index: local_idx,
+                value: current_closure.clone(),
+            });
+            self.local_registers.insert(local_idx, current_closure);
+        }
 
         if use_js_parameter_env {
             let env_object = self
@@ -10862,10 +11466,7 @@ impl<'a> Lowerer<'a> {
 
         if let Some((rest_pattern, rest_ty)) = rest_param_info {
             let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
-            self.bind_pattern(rest_pattern, rest_value);
-            if use_js_parameter_env {
-                self.clear_parameter_tdz_for_pattern(rest_pattern);
-            }
+            self.emit_js_rest_parameter_binding(rest_pattern, rest_value);
         }
 
         if !use_js_parameter_env {
@@ -10918,6 +11519,7 @@ impl<'a> Lowerer<'a> {
         self.callable_symbol_hints = saved_callable_symbol_hints;
         self.refcell_vars = saved_refcell_vars;
         self.immutable_bindings = saved_immutable_bindings;
+        self.named_function_self_bindings = saved_named_function_self_bindings;
         self.refcell_registers = saved_refcell_registers;
         self.captured_read_vars = saved_captured_read_vars;
         self.refcell_inner_types = saved_refcell_inner_types;
@@ -10929,6 +11531,7 @@ impl<'a> Lowerer<'a> {
         self.next_capture_slot = saved_next_capture_slot;
         self.this_register = saved_this_register;
         self.current_method_is_static = saved_current_method_is_static;
+        self.super_this_guard_active = saved_super_this_guard_active;
         self.pending_constructor_prologue = saved_pending_constructor_prologue;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
@@ -10939,6 +11542,7 @@ impl<'a> Lowerer<'a> {
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
         self.body_scope_eval_mode = saved_body_scope_eval_mode;
+        self.active_parameter_env_function_depth = saved_active_parameter_env_function_depth;
         self.closure_locals = saved_closure_locals;
         self.function_depth = saved_function_depth;
 
@@ -11008,7 +11612,7 @@ impl<'a> Lowerer<'a> {
                         let capture_idx = if let Some(idx) = parent_capture_idx {
                             idx
                         } else {
-                            let (source, is_refcell, is_immutable) = if let Some(ref ancestors) =
+                            let (source, is_refcell, is_immutable, is_named_function_self) = if let Some(ref ancestors) =
                                 child_ancestor_variables
                             {
                                 if let Some(ancestor_var) = ancestors.get(&cap.symbol) {
@@ -11016,18 +11620,21 @@ impl<'a> Lowerer<'a> {
                                         ancestor_var.source,
                                         ancestor_var.is_refcell,
                                         ancestor_var.is_immutable,
+                                        ancestor_var.is_named_function_self,
                                     )
                                 } else if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
                                     (
                                         super::AncestorSource::ImmediateParentLocal(local_idx),
                                         cap.is_refcell,
                                         self.immutable_bindings.contains(&cap.symbol),
+                                        false,
                                     )
                                 } else {
                                     (
                                         super::AncestorSource::Ancestor,
                                         cap.is_refcell,
                                         cap.is_immutable,
+                                        cap.is_named_function_self,
                                     )
                                 }
                             } else if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
@@ -11036,12 +11643,14 @@ impl<'a> Lowerer<'a> {
                                     super::AncestorSource::ImmediateParentLocal(local_idx),
                                     is_refcell,
                                     self.immutable_bindings.contains(&cap.symbol),
+                                    false,
                                 )
                             } else {
                                 (
                                     super::AncestorSource::Ancestor,
                                     cap.is_refcell,
                                     cap.is_immutable,
+                                    cap.is_named_function_self,
                                 )
                             };
 
@@ -11053,6 +11662,7 @@ impl<'a> Lowerer<'a> {
                                 ty: cap.ty,
                                 is_refcell,
                                 is_immutable,
+                                is_named_function_self,
                             });
                             self.next_capture_slot = self.next_capture_slot.max(idx + 1);
                             idx
@@ -11134,6 +11744,7 @@ impl<'a> Lowerer<'a> {
         let saved_callable_symbol_hints = self.callable_symbol_hints.clone();
         let saved_refcell_vars = self.refcell_vars.clone();
         let saved_immutable_bindings = self.immutable_bindings.clone();
+        let saved_named_function_self_bindings = self.named_function_self_bindings.clone();
         let saved_refcell_registers = self.refcell_registers.clone();
         let saved_captured_read_vars = self.captured_read_vars.clone();
         let saved_refcell_inner_types = self.refcell_inner_types.clone();
@@ -11145,6 +11756,7 @@ impl<'a> Lowerer<'a> {
         let saved_next_capture_slot = self.next_capture_slot;
         let saved_this_register = self.this_register.take();
         let saved_current_method_is_static = self.current_method_is_static;
+        let saved_super_this_guard_active = self.super_this_guard_active;
         let saved_pending_constructor_prologue = self.pending_constructor_prologue.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
@@ -11155,6 +11767,7 @@ impl<'a> Lowerer<'a> {
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
         let saved_body_scope_eval_mode = self.body_scope_eval_mode;
+        let saved_active_parameter_env_function_depth = self.active_parameter_env_function_depth;
         let saved_in_direct_eval_function = self.in_direct_eval_function;
         // closure_locals maps local-slot indices to async func IDs; it is
         // per-scope, so it must be cleared on entry and restored on exit to
@@ -11181,8 +11794,23 @@ impl<'a> Lowerer<'a> {
                     ty,
                     is_refcell,
                     is_immutable: saved_immutable_bindings.contains(sym),
+                    is_named_function_self: false,
                 },
             );
+        }
+        for (sym, &local_idx) in &saved_named_function_self_bindings {
+            if !new_ancestor_vars.contains_key(sym) {
+                new_ancestor_vars.insert(
+                    *sym,
+                    super::AncestorVar {
+                        source: super::AncestorSource::ImmediateParentLocal(local_idx),
+                        ty: self.default_js_function_type(),
+                        is_refcell: false,
+                        is_immutable: false,
+                        is_named_function_self: true,
+                    },
+                );
+            }
         }
 
         // Add existing ancestor variables (they stay as Ancestor for nested arrows)
@@ -11197,6 +11825,7 @@ impl<'a> Lowerer<'a> {
                             ty: var.ty,
                             is_refcell: var.is_refcell,
                             is_immutable: var.is_immutable,
+                            is_named_function_self: var.is_named_function_self,
                         },
                     );
                 }
@@ -11236,10 +11865,12 @@ impl<'a> Lowerer<'a> {
         self.callable_local_hints.clear();
         self.refcell_vars.clear();
         self.immutable_bindings.clear();
+        self.named_function_self_bindings.clear();
         self.refcell_registers.clear();
         self.captured_read_vars.clear();
         self.refcell_inner_types.clear();
         self.yield_buffer_local = None;
+        self.super_this_guard_active = saved_super_this_guard_active;
 
         // Check if any parameters use destructuring
         let has_destructuring_params = arrow.params.iter().any(|p| {
@@ -11424,8 +12055,13 @@ impl<'a> Lowerer<'a> {
             .direct_eval_entry_function
             .as_deref()
             .is_some_and(|target| target == arrow_name);
+        let inherited_parameter_env_scope = saved_active_parameter_env_function_depth > 0
+            || (self.js_this_binding_compat && !saved_parameter_symbols.is_empty());
+        self.active_parameter_env_function_depth =
+            saved_active_parameter_env_function_depth + usize::from(use_js_parameter_env);
         self.body_scope_eval_arguments_mode = true;
-        self.body_scope_eval_mode = saved_body_scope_eval_mode || use_js_parameter_env;
+        self.body_scope_eval_mode =
+            saved_body_scope_eval_mode || inherited_parameter_env_scope || use_js_parameter_env;
 
         // Create entry block
         let entry_block = self.alloc_block();
@@ -11479,10 +12115,7 @@ impl<'a> Lowerer<'a> {
         // Emit rest array collection code if present
         if let Some((rest_pattern, rest_ty)) = rest_param_info {
             let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
-            self.bind_pattern(rest_pattern, rest_value);
-            if use_js_parameter_env {
-                self.clear_parameter_tdz_for_pattern(rest_pattern);
-            }
+            self.emit_js_rest_parameter_binding(rest_pattern, rest_value);
         }
 
         if !use_js_parameter_env {
@@ -11543,6 +12176,7 @@ impl<'a> Lowerer<'a> {
         self.callable_symbol_hints = saved_callable_symbol_hints;
         self.refcell_vars = saved_refcell_vars;
         self.immutable_bindings = saved_immutable_bindings;
+        self.named_function_self_bindings = saved_named_function_self_bindings;
         self.refcell_registers = saved_refcell_registers;
         self.captured_read_vars = saved_captured_read_vars;
         self.refcell_inner_types = saved_refcell_inner_types;
@@ -11554,6 +12188,7 @@ impl<'a> Lowerer<'a> {
         self.next_capture_slot = saved_next_capture_slot;
         self.this_register = saved_this_register;
         self.current_method_is_static = saved_current_method_is_static;
+        self.super_this_guard_active = saved_super_this_guard_active;
         self.pending_constructor_prologue = saved_pending_constructor_prologue;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
@@ -11564,6 +12199,7 @@ impl<'a> Lowerer<'a> {
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
         self.body_scope_eval_mode = saved_body_scope_eval_mode;
+        self.active_parameter_env_function_depth = saved_active_parameter_env_function_depth;
         self.closure_locals = saved_closure_locals;
         self.function_map = saved_function_map;
         self.function_depth = saved_function_depth;
@@ -11654,7 +12290,7 @@ impl<'a> Lowerer<'a> {
                             // Add to parent's captures (propagate up)
                             // Look up where the CURRENT (parent) function gets this variable from
                             // using the child's ancestor_variables (which describes the parent's sources)
-                            let (source, is_refcell, is_immutable) = if let Some(ref ancestors) =
+                            let (source, is_refcell, is_immutable, is_named_function_self) = if let Some(ref ancestors) =
                                 child_ancestor_variables
                             {
                                 if let Some(ancestor_var) = ancestors.get(&cap.symbol) {
@@ -11662,6 +12298,7 @@ impl<'a> Lowerer<'a> {
                                         ancestor_var.source,
                                         ancestor_var.is_refcell,
                                         ancestor_var.is_immutable,
+                                        ancestor_var.is_named_function_self,
                                     )
                                 } else {
                                     // Variable not in child's ancestors - should not happen
@@ -11671,12 +12308,14 @@ impl<'a> Lowerer<'a> {
                                             super::AncestorSource::ImmediateParentLocal(local_idx),
                                             cap.is_refcell,
                                             self.immutable_bindings.contains(&cap.symbol),
+                                            false,
                                         )
                                     } else {
                                         (
                                             super::AncestorSource::Ancestor,
                                             cap.is_refcell,
                                             cap.is_immutable,
+                                            cap.is_named_function_self,
                                         )
                                     }
                                 }
@@ -11690,12 +12329,14 @@ impl<'a> Lowerer<'a> {
                                         super::AncestorSource::ImmediateParentLocal(local_idx),
                                         is_refcell,
                                         self.immutable_bindings.contains(&cap.symbol),
+                                        false,
                                     )
                                 } else {
                                     (
                                         super::AncestorSource::Ancestor,
                                         cap.is_refcell,
                                         cap.is_immutable,
+                                        cap.is_named_function_self,
                                     )
                                 }
                             };
@@ -11708,6 +12349,7 @@ impl<'a> Lowerer<'a> {
                                 ty: cap.ty,
                                 is_refcell,
                                 is_immutable,
+                                is_named_function_self,
                             });
                             // Keep lazy-capture index allocation monotonic.
                             // Without this, subsequent direct captures in the same function
@@ -12338,7 +12980,7 @@ impl<'a> Lowerer<'a> {
                 dest: dest.clone(),
                 index: 0,
             });
-            return dest;
+            return self.guard_super_this_if_needed(dest);
         }
 
         // Check if we've already captured `this`
@@ -12348,7 +12990,7 @@ impl<'a> Lowerer<'a> {
                 dest: dest.clone(),
                 index: capture_idx,
             });
-            return dest;
+            return self.guard_super_this_if_needed(dest);
         }
 
         // Check if `this` is available from ancestor scope (we're inside an arrow in a method)
@@ -12363,7 +13005,7 @@ impl<'a> Lowerer<'a> {
                 dest: dest.clone(),
                 index: idx,
             });
-            return dest;
+            return self.guard_super_this_if_needed(dest);
         }
 
         if self.js_this_binding_compat {
@@ -12389,6 +13031,30 @@ impl<'a> Lowerer<'a> {
                 message: "unresolved 'this' outside method/arrow-method context".to_string(),
             });
         self.lower_unresolved_poison()
+    }
+
+    fn lower_this_for_super_construct(&mut self) -> Register {
+        if let Some(ref this_reg) = self.this_register {
+            let dest = self.alloc_register(this_reg.ty);
+            self.emit(IrInstr::LoadLocal {
+                dest: dest.clone(),
+                index: 0,
+            });
+            return dest;
+        }
+        self.lower_this()
+    }
+
+    fn guard_super_this_if_needed(&mut self, value: Register) -> Register {
+        if !self.super_this_guard_active {
+            return value;
+        }
+        self.emit_vm_native_call(
+            Some(value.clone()),
+            crate::compiler::native_id::OBJECT_REQUIRE_SUPER_THIS_INITIALIZED,
+            vec![value.clone()],
+        );
+        value
     }
 
     fn lower_super(&mut self) -> Register {

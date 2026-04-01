@@ -54,6 +54,7 @@ const OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY: &str = "__object_prototype_overrid
 const OBJECT_EXTENSIBLE_METADATA_KEY: &str = "__object_extensible__";
 const FIELD_PRESENT_MASK_KEY: &str = "__field_present_mask__";
 const WELL_KNOWN_SYMBOL_METADATA_KEY: &str = "__well_known_symbol__";
+const ITERATOR_RUNTIME_METADATA_KEY: &str = "__iterator_runtime__";
 const DIRECT_EVAL_OUTER_ENV_KEY: &str = "__direct_eval_outer_env__";
 const DIRECT_EVAL_COMPLETION_KEY: &str = "__direct_eval_completion__";
 const DIRECT_EVAL_LOCALS_BASE_KEY: &str = "__direct_eval_locals_base__";
@@ -838,6 +839,7 @@ impl<'a> Interpreter<'a> {
             vec![],
         ));
         settled_task.replace_stack(self.stack_pool.acquire());
+        let task_id = settled_task.id();
         if std::env::var("RAYA_DEBUG_ASYNC_TASKS").is_ok() {
             let current_module = caller_task.current_module();
             let current_func_id = caller_task.current_func_id();
@@ -860,15 +862,10 @@ impl<'a> Interpreter<'a> {
                 detail
             );
         }
-        match value {
-            Ok(result) => settled_task.complete(result),
-            Err(exception) => {
-                settled_task.set_exception(exception);
-                settled_task.fail();
-            }
-        }
-        let task_id = settled_task.id();
         self.tasks.write().insert(task_id, settled_task);
+        // Route through the normal promise settlement path so nested task handles
+        // are adopted instead of being fulfilled as raw handle values.
+        let _ = self.settle_existing_task_handle(PromiseHandle::new(task_id).into_value(), value);
         PromiseHandle::new(task_id)
     }
 
@@ -920,17 +917,93 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    fn normalize_promise_source_task(
+    pub(in crate::vm::interpreter) fn normalize_promise_source_task(
         &mut self,
         value: Value,
         caller_task: &Arc<Task>,
     ) -> Arc<Task> {
-        if let Some(task) = self.task_from_handle_value(value) {
+        if let Some(task) = self.promise_resolution_source_task(value, caller_task) {
             return task;
         }
         let settled = self.settled_task_handle(caller_task, Ok(value));
         self.task_from_promise_handle(settled)
             .expect("settled_task_handle must create a valid PromiseHandle")
+    }
+
+    fn promise_resolution_source_task(
+        &mut self,
+        value: Value,
+        caller_task: &Arc<Task>,
+    ) -> Option<Arc<Task>> {
+        if let Some(task) = self.task_from_handle_value(value) {
+            return Some(task);
+        }
+
+        if !self.is_js_object_value(value) {
+            return None;
+        }
+
+        let caller_module = caller_task.current_module();
+        let then = match self.get_property_value_via_js_semantics_with_context(
+            value,
+            "then",
+            caller_task,
+            &caller_module,
+        ) {
+            Ok(Some(then)) => then,
+            Ok(None) => return None,
+            Err(error) => {
+                let reason = if caller_task.has_exception() {
+                    let reason = caller_task.current_exception().unwrap_or(Value::undefined());
+                    caller_task.clear_exception();
+                    reason
+                } else {
+                    let rejected = self.settled_task_handle(
+                        caller_task,
+                        Err(self.alloc_string_value(error.to_string())),
+                    );
+                    return self.task_from_promise_handle(rejected);
+                };
+                let rejected = self.settled_task_handle(caller_task, Err(reason));
+                return self.task_from_promise_handle(rejected);
+            }
+        };
+
+        if !self.js_call_target_supported(then) {
+            return None;
+        }
+
+        let promise_handle = self.pending_task_handle(caller_task);
+        let promise_value = promise_handle.into_value();
+        let resolve = self.alloc_bound_native_value(
+            promise_value,
+            crate::compiler::native_id::TASK_RESOLVE_PENDING,
+        );
+        let reject = self.alloc_bound_native_value(
+            promise_value,
+            crate::compiler::native_id::TASK_REJECT_PENDING,
+        );
+
+        if let Err(error) = self.invoke_callable_sync_with_this(
+            then,
+            Some(value),
+            &[resolve, reject],
+            caller_task,
+            &caller_module,
+        ) {
+            if let Some(pending_task) = self.task_from_promise_handle(promise_handle) {
+                let reason = if caller_task.has_exception() {
+                    let reason = caller_task.current_exception().unwrap_or(Value::undefined());
+                    caller_task.clear_exception();
+                    reason
+                } else {
+                    self.alloc_string_value(error.to_string())
+                };
+                self.reject_task_handle_with_exception(&pending_task, reason);
+            }
+        }
+
+        self.task_from_promise_handle(promise_handle)
     }
 
     fn queue_or_attach_promise_reaction(
@@ -1150,6 +1223,27 @@ impl<'a> Interpreter<'a> {
         Ok(target_handle.into_value())
     }
 
+    fn async_generator_yield_handle(
+        &mut self,
+        caller_task: &Arc<Task>,
+        iterator: Value,
+        yielded: Value,
+    ) -> Value {
+        let target_handle = self.pending_task_handle(caller_task);
+        let target_task_id = target_handle.task_id();
+        let source_task = self.normalize_promise_source_task(yielded, caller_task);
+        self.queue_or_attach_promise_reaction(
+            &source_task,
+            PromiseReaction {
+                target_task_id,
+                kind: PromiseReactionKind::AsyncGeneratorYield { iterator },
+                on_fulfilled: Value::undefined(),
+                on_rejected: Value::undefined(),
+            },
+        );
+        target_handle.into_value()
+    }
+
     pub(crate) fn run_promise_reaction(
         &mut self,
         source_task: &Arc<Task>,
@@ -1301,6 +1395,23 @@ impl<'a> Interpreter<'a> {
                     },
                 );
             }
+            PromiseReactionKind::AsyncGeneratorYield { iterator } => {
+                if source_failed {
+                    if let Some(iterator_ptr) = checked_object_ptr(iterator) {
+                        let iterator = unsafe { &mut *iterator_ptr.as_ptr() };
+                        if let Some(generator) = iterator.generator_state.as_deref_mut() {
+                            generator.closed = true;
+                            generator.pending_return_completion = None;
+                            generator.completion = Value::undefined();
+                            generator.completion_emitted = true;
+                        }
+                    }
+                    let _ = self.settle_existing_task_handle(target_handle, Err(source_reason));
+                } else {
+                    let result = self.generator_result_object(source_result, false);
+                    let _ = self.settle_existing_task_handle(target_handle, Ok(result));
+                }
+            }
         }
     }
 
@@ -1431,7 +1542,9 @@ impl<'a> Interpreter<'a> {
         }
         match value {
             Ok(result) => {
-                if let Some(source_task) = self.task_from_handle_value(result) {
+                if let Some(source_task) =
+                    self.promise_resolution_source_task(result, &pending_task)
+                {
                     if source_task.id() == pending_task.id() {
                         let error = VmError::TypeError(
                             "Promise cannot be resolved with itself".to_string(),
@@ -4129,6 +4242,46 @@ impl<'a> Interpreter<'a> {
         Ok(None)
     }
 
+    fn reference_from_captured_identifier_env(&mut self, env: Value) -> Option<JsReference> {
+        if env.is_undefined() || env.is_null() {
+            return None;
+        }
+        self.ensure_runtime_env_record(env, EnvRecordKind::Declarative);
+        if let Some(target) = self.env_with_target_value(env) {
+            return Some(JsReference::IdentifierRef {
+                env_record: JsEnvRecord::ObjectWith {
+                    handle: env,
+                    target: self.proxy_wrapper_proxy_value(target).unwrap_or(target),
+                },
+            });
+        }
+        Some(JsReference::IdentifierRef {
+            env_record: JsEnvRecord::Declarative { handle: env },
+        })
+    }
+
+    fn activation_eval_env_capture_identifier(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        key: &str,
+    ) -> Result<Value, VmError> {
+        Ok(match self.resolve_activation_identifier_reference(
+            task,
+            module,
+            key,
+            JsEnvLookupMode::RespectWith,
+        )? {
+            Some(JsReference::IdentifierRef {
+                env_record: JsEnvRecord::ObjectWith { handle, .. },
+            }) => handle,
+            Some(JsReference::IdentifierRef {
+                env_record: JsEnvRecord::Declarative { handle },
+            }) => handle,
+            None => Value::undefined(),
+        })
+    }
+
     fn read_identifier_reference(
         &mut self,
         task: &Arc<Task>,
@@ -4211,6 +4364,47 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn read_captured_identifier_reference(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        env: Value,
+        key: &str,
+        non_throwing: bool,
+        stack: Option<*mut Stack>,
+    ) -> Result<Value, VmError> {
+        if let Some(reference) = self.reference_from_captured_identifier_env(env) {
+            return Ok(self
+                .read_identifier_reference(task, module, key, reference, stack)?
+                .unwrap_or(Value::undefined()));
+        }
+
+        match self.shared_js_global_binding_value(key) {
+            Ok(Some(value)) => Ok(value),
+            Ok(None) => {
+                if let Some(value) = self.ensure_builtin_global_value(key, task)? {
+                    return Ok(value);
+                }
+                if let Some(global_this) = self.ensure_builtin_global_value("globalThis", task)? {
+                    if let Some(value) = self.get_property_value_via_js_semantics_with_context(
+                        global_this,
+                        key,
+                        task,
+                        module,
+                    )? {
+                        return Ok(value);
+                    }
+                }
+                if non_throwing {
+                    Ok(Value::undefined())
+                } else {
+                    Err(self.raise_unresolved_identifier_error(task, key))
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn write_identifier_reference(
         &mut self,
         task: &Arc<Task>,
@@ -4223,7 +4417,28 @@ impl<'a> Interpreter<'a> {
         match reference {
             JsReference::IdentifierRef {
                 env_record: JsEnvRecord::ObjectWith { target, .. },
-            } => self.set_property_value_via_js_semantics(target, key, value, target, task, module),
+            } => {
+                let strict = self.current_function_is_strict_js(task, module);
+                let still_exists =
+                    self.has_property_via_js_semantics_with_context(target, key, task, module)?;
+                if strict && !still_exists {
+                    return Err(self.raise_task_builtin_error(
+                        task,
+                        "ReferenceError",
+                        format!("{key} is not defined"),
+                    ));
+                }
+                let written =
+                    self.set_property_value_via_js_semantics(target, key, value, target, task, module)?;
+                if strict && !written {
+                    return Err(self.raise_task_builtin_error(
+                        task,
+                        "TypeError",
+                        format!("Cannot assign to non-writable property '{key}'"),
+                    ));
+                }
+                Ok(written)
+            }
             JsReference::IdentifierRef {
                 env_record: JsEnvRecord::Declarative { handle },
             } => {
@@ -4307,6 +4522,55 @@ impl<'a> Interpreter<'a> {
                 Ok(written)
             }
         }
+    }
+
+    fn write_captured_identifier_reference(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        env: Value,
+        key: &str,
+        value: Value,
+        stack: Option<*mut Stack>,
+    ) -> Result<bool, VmError> {
+        if let Some(reference) = self.reference_from_captured_identifier_env(env) {
+            let publish_to_script_global = self.active_direct_eval_uses_script_global_bindings(task)
+                && match reference {
+                    JsReference::IdentifierRef {
+                        env_record: JsEnvRecord::Declarative { handle },
+                    } => !self.direct_eval_binding_is_lexical(handle, key),
+                    JsReference::IdentifierRef {
+                        env_record: JsEnvRecord::ObjectWith { .. },
+                    } => false,
+                };
+            let written =
+                self.write_identifier_reference(task, module, key, value, reference, stack)?;
+            if written && publish_to_script_global {
+                let _ = self.set_shared_js_global_binding_value(key, value, task, module)?;
+                self.sync_existing_script_global_property(key, value, task, module)?;
+            }
+            return Ok(written);
+        }
+
+        if let Ok(true) = self.set_shared_js_global_binding_value(key, value, task, module) {
+            return Ok(true);
+        }
+
+        let has_global_binding = self
+            .ensure_builtin_global_value("globalThis", task)
+            .ok()
+            .flatten()
+            .is_some_and(|global_this| self.has_property_via_js_semantics(global_this, key));
+        if self.current_function_is_strict_js(task, module) && !has_global_binding {
+            return Err(self.raise_task_builtin_error(
+                task,
+                "ReferenceError",
+                format!("{key} is not defined"),
+            ));
+        }
+
+        self.bind_script_global_property(key, value, true, task, module)?;
+        Ok(true)
     }
 
     fn sync_activation_eval_snapshot_binding(
@@ -5451,9 +5715,7 @@ impl<'a> Interpreter<'a> {
                 module,
             )?;
             self.clear_direct_eval_binding_outer_snapshot(env, key, task, module)?;
-        } else if !local_has_binding
-            && !(self.active_direct_eval_persist_caller_declarations(task) && outer_has_binding)
-        {
+        } else if !local_has_binding {
             let _ = self.activation_eval_env_create_mutable_binding(
                 task,
                 module,
@@ -8263,7 +8525,7 @@ impl<'a> Interpreter<'a> {
             rustc_hash::FxHashMap::default();
 
         for member in prototype_members {
-            if member.name.is_empty() || member.name.starts_with('#') {
+            if member.name.starts_with('#') {
                 continue;
             }
             // Only skip if the prototype already has a materialized own property.
@@ -11009,6 +11271,11 @@ impl<'a> Interpreter<'a> {
                     .as_ref()
                     .is_some_and(|collector| !collector.is_empty());
             let runtime_env = if !requires_fresh_eval_env {
+                runtime_outer_env
+            } else if in_parameter_initializer && behavior.persist_caller_declarations {
+                // Parameter-scope direct eval must remain observable to closures
+                // created earlier in the same parameter list. Reusing the
+                // activation env here preserves that shared binding surface.
                 runtime_outer_env
             } else if behavior.publish_script_global_bindings {
                 // Sloppy direct eval still needs a fresh lexical environment even
@@ -15691,6 +15958,30 @@ impl<'a> Interpreter<'a> {
         Ok(value)
     }
 
+    pub(in crate::vm::interpreter) fn cached_iterator_next_method(
+        &self,
+        iterator: Value,
+    ) -> Option<Value> {
+        self.metadata.lock().get_metadata_property(
+            ITERATOR_RUNTIME_METADATA_KEY,
+            iterator,
+            "next",
+        )
+    }
+
+    pub(in crate::vm::interpreter) fn cache_iterator_next_method(
+        &self,
+        iterator: Value,
+        method: Value,
+    ) {
+        self.metadata.lock().define_metadata_property(
+            ITERATOR_RUNTIME_METADATA_KEY.to_string(),
+            method,
+            iterator,
+            "next".to_string(),
+        );
+    }
+
     fn synthesize_data_property_descriptor(
         &self,
         target: Value,
@@ -17471,6 +17762,29 @@ impl<'a> Interpreter<'a> {
                         return OpcodeResult::Continue;
                     }
 
+                    id if id
+                        == crate::compiler::native_id::OBJECT_REQUIRE_SUPER_THIS_INITIALIZED =>
+                    {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.requireSuperThisInitialized expects exactly one receiver argument"
+                                    .to_string(),
+                            ));
+                        }
+                        if !self.super_this_is_initialized(args[0]) {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "ReferenceError",
+                                "Must call super constructor in derived class before accessing 'this'"
+                                    .to_string(),
+                            ));
+                        }
+                        if let Err(error) = stack.push(args[0]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        return OpcodeResult::Continue;
+                    }
+
                     id if id == crate::compiler::native_id::TRY_GET_GLOBAL => {
                         // Non-throwing global lookup: returns value or undefined.
                         // Checks builtin_global_slots, then globalThis properties.
@@ -17699,7 +18013,7 @@ impl<'a> Interpreter<'a> {
                                     ));
                                 }
                                 if let Err(error) = self.bind_script_global_property(
-                                    &name.data, args[1], false, task, module,
+                                    &name.data, args[1], true, task, module,
                                 ) {
                                     return OpcodeResult::Error(error);
                                 }
@@ -17707,6 +18021,92 @@ impl<'a> Interpreter<'a> {
                             Err(error) => return OpcodeResult::Error(error),
                         }
                         if let Err(error) = stack.push(args[1]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_JS_CAPTURE_IDENTIFIER_ENV => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "capture identifier env expects exactly one string argument"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "capture identifier env expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let env = match self.activation_eval_env_capture_identifier(
+                            task,
+                            module,
+                            &name.data,
+                        ) {
+                            Ok(env) => env,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(env) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_JS_GET_IDENTIFIER_FROM_ENV => {
+                        if args.len() != 3 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "captured identifier get expects env, name, and typeof flag"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[1].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "captured identifier get expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let value = match self.read_captured_identifier_reference(
+                            task,
+                            module,
+                            args[0],
+                            &name.data,
+                            args[2].is_truthy(),
+                            Some(stack as *mut Stack),
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_JS_SET_IDENTIFIER_IN_ENV => {
+                        if args.len() != 3 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "captured identifier set expects env, name, and value"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[1].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "captured identifier set expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        if let Err(error) = self.write_captured_identifier_reference(
+                            task,
+                            module,
+                            args[0],
+                            &name.data,
+                            args[2],
+                            Some(stack as *mut Stack),
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(args[2]) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
@@ -17794,18 +18194,12 @@ impl<'a> Interpreter<'a> {
                                 return OpcodeResult::Error(error);
                             }
                         } else {
-                            let outer_has_binding =
-                                self.direct_eval_outer_env(env).is_some_and(|outer_env| {
-                                    self.resolve_own_property_shape(outer_env, &name.data)
-                                        .is_some()
-                                });
-                            let use_outer_binding = self
-                                .active_direct_eval_persist_caller_declarations(task)
-                                && outer_has_binding;
-                            if !use_outer_binding {
-                                if let Err(error) = self.activation_eval_env_create_mutable_binding(
-                                    task, module, &name.data, args[1],
-                                ) {
+                            if self.resolve_own_property_shape(env, &name.data).is_none() {
+                                if let Err(error) =
+                                    self.activation_eval_env_create_mutable_binding(
+                                        task, module, &name.data, args[1],
+                                    )
+                                {
                                     return OpcodeResult::Error(error);
                                 }
                             }
@@ -17907,6 +18301,14 @@ impl<'a> Interpreter<'a> {
                         let value = self
                             .current_js_new_target(task)
                             .unwrap_or(Value::undefined());
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_CURRENT_CLOSURE => {
+                        let value = task.current_closure().unwrap_or(Value::undefined());
                         if let Err(error) = stack.push(value) {
                             return OpcodeResult::Error(error);
                         }
@@ -20538,6 +20940,20 @@ impl<'a> Interpreter<'a> {
                                 module,
                             ),
                             1 | 2 => {
+                                let mut existing_get = Value::undefined();
+                                let mut existing_set = Value::undefined();
+                                if let Some(existing_descriptor) =
+                                    self.get_descriptor_metadata(target, &key)
+                                {
+                                    if let Some(OrdinaryOwnProperty::Accessor { get, set, .. }) =
+                                        self.ordinary_own_property_from_descriptor_value(
+                                            existing_descriptor,
+                                        )
+                                    {
+                                        existing_get = get;
+                                        existing_set = set;
+                                    }
+                                }
                                 let descriptor = match self.alloc_object_descriptor() {
                                     Ok(descriptor) => descriptor,
                                     Err(error) => return OpcodeResult::Error(error),
@@ -20550,17 +20966,37 @@ impl<'a> Interpreter<'a> {
                                     ));
                                 };
                                 let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
-                                let accessor_field = if kind == 1 { "get" } else { "set" };
-                                if let Some(field_index) =
-                                    self.get_field_index_for_value(descriptor, accessor_field)
-                                {
-                                    if let Err(error) =
-                                        descriptor_obj.set_field(field_index, closure_value)
+                                for (field_name, field_value) in [
+                                    (
+                                        "get",
+                                        if kind == 1 {
+                                            closure_value
+                                        } else {
+                                            existing_get
+                                        },
+                                    ),
+                                    (
+                                        "set",
+                                        if kind == 2 {
+                                            closure_value
+                                        } else {
+                                            existing_set
+                                        },
+                                    ),
+                                ] {
+                                    if let Some(field_index) =
+                                        self.get_field_index_for_value(descriptor, field_name)
                                     {
-                                        return OpcodeResult::Error(VmError::RuntimeError(error));
+                                        if let Err(error) =
+                                            descriptor_obj.set_field(field_index, field_value)
+                                        {
+                                            return OpcodeResult::Error(VmError::RuntimeError(
+                                                error,
+                                            ));
+                                        }
                                     }
+                                    self.set_descriptor_field_present(descriptor, field_name, true);
                                 }
-                                self.set_descriptor_field_present(descriptor, accessor_field, true);
                                 for (field_name, field_value) in [
                                     ("enumerable", Value::bool(false)),
                                     ("configurable", Value::bool(true)),
@@ -21112,6 +21548,13 @@ impl<'a> Interpreter<'a> {
                         }
 
                         let run_result = self.run(&generator_task);
+                        let yielded_async_result = is_async
+                            && matches!(
+                                &run_result,
+                                ExecutionResult::Suspended(
+                                    crate::vm::scheduler::SuspendReason::JsGeneratorYield { .. }
+                                )
+                            );
                         let result = match run_result {
                             ExecutionResult::Completed(value) => {
                                 let obj = unsafe { &mut *obj_ptr.as_ptr() };
@@ -21139,7 +21582,11 @@ impl<'a> Interpreter<'a> {
                                 generator_task.suspend(
                                     crate::vm::scheduler::SuspendReason::JsGeneratorYield { value },
                                 );
-                                self.generator_result_object(value, false)
+                                if is_async {
+                                    self.async_generator_yield_handle(task, receiver, value)
+                                } else {
+                                    self.generator_result_object(value, false)
+                                }
                             }
                             ExecutionResult::Suspended(reason) => {
                                 generator_task.suspend(reason);
@@ -21197,7 +21644,7 @@ impl<'a> Interpreter<'a> {
                                 }
                             }
                         };
-                        let result = if is_async {
+                        let result = if is_async && !yielded_async_result {
                             self.settled_task_handle(task, Ok(result)).into_value()
                         } else {
                             result
@@ -21256,6 +21703,13 @@ impl<'a> Interpreter<'a> {
                             .set_resume_value(self.generator_return_signal(completion_override));
 
                         let run_result = self.run(&generator_task);
+                        let yielded_async_result = is_async
+                            && matches!(
+                                &run_result,
+                                ExecutionResult::Suspended(
+                                    crate::vm::scheduler::SuspendReason::JsGeneratorYield { .. }
+                                )
+                            );
                         let result = match run_result {
                             ExecutionResult::Completed(value) => {
                                 let obj = unsafe { &mut *obj_ptr.as_ptr() };
@@ -21284,7 +21738,11 @@ impl<'a> Interpreter<'a> {
                                     crate::vm::scheduler::SuspendReason::JsGeneratorYield { value },
                                 );
                                 generator.pending_return_completion = Some(completion_override);
-                                self.generator_result_object(value, false)
+                                if is_async {
+                                    self.async_generator_yield_handle(task, receiver, value)
+                                } else {
+                                    self.generator_result_object(value, false)
+                                }
                             }
                             ExecutionResult::Suspended(reason) => {
                                 generator_task.suspend(reason);
@@ -21342,7 +21800,7 @@ impl<'a> Interpreter<'a> {
                                 }
                             }
                         };
-                        let result = if is_async {
+                        let result = if is_async && !yielded_async_result {
                             self.settled_task_handle(task, Ok(result)).into_value()
                         } else {
                             result
@@ -21402,6 +21860,13 @@ impl<'a> Interpreter<'a> {
                         generator_task.set_resume_value(self.generator_throw_signal(thrown));
 
                         let run_result = self.run(&generator_task);
+                        let yielded_async_result = is_async
+                            && matches!(
+                                &run_result,
+                                ExecutionResult::Suspended(
+                                    crate::vm::scheduler::SuspendReason::JsGeneratorYield { .. }
+                                )
+                            );
                         let result = match run_result {
                             ExecutionResult::Completed(value) => {
                                 let obj = unsafe { &mut *obj_ptr.as_ptr() };
@@ -21430,7 +21895,11 @@ impl<'a> Interpreter<'a> {
                                     crate::vm::scheduler::SuspendReason::JsGeneratorYield { value },
                                 );
                                 generator.pending_return_completion = None;
-                                self.generator_result_object(value, false)
+                                if is_async {
+                                    self.async_generator_yield_handle(task, receiver, value)
+                                } else {
+                                    self.generator_result_object(value, false)
+                                }
                             }
                             ExecutionResult::Suspended(reason) => {
                                 generator_task.suspend(reason);
@@ -21467,7 +21936,7 @@ impl<'a> Interpreter<'a> {
                                 }
                             }
                         };
-                        let result = if is_async {
+                        let result = if is_async && !yielded_async_result {
                             self.settled_task_handle(task, Ok(result)).into_value()
                         } else {
                             result

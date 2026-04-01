@@ -61,6 +61,55 @@ fn expect_node_compat_async_global_string(source: &str, expected: &str) {
 }
 
 #[test]
+fn test_node_compat_with_unscopables_assignment_falls_back_to_local_binding() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            var v = 1;
+            globalThis[Symbol.unscopables] = { v: true };
+
+            let ref = (x) => {
+                var v = x;
+                with (globalThis) {
+                    v = 20;
+                }
+                return v == 20 && globalThis.v == 1;
+            };
+
+            return ref(10);
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_named_async_function_expression_self_binding_is_stable_in_sloppy_mode() {
+    expect_node_compat_async_global_string(
+        r#"
+        async function run() {
+            let ref = async function BindingIdentifier() {
+                (() => {
+                    BindingIdentifier = 1;
+                })();
+                return BindingIdentifier;
+            };
+            return (await ref()) === ref;
+        }
+
+        globalThis.__result = String(await run());
+        "#,
+        "true",
+    );
+}
+
+#[test]
 fn test_node_compat_define_property_preserves_value_for_writable_false() {
     let runtime = Runtime::with_options(RuntimeOptions {
         builtin_mode: BuiltinMode::NodeCompat,
@@ -713,5 +762,39 @@ fn test_node_compat_async_generator_return_completes_iterator() {
         return null;
         "#,
         r#"[1,false,9,true,null,true]"#,
+    );
+}
+
+#[test]
+fn test_node_compat_async_generator_for_await_rejects_inner_promise_value() {
+    expect_node_compat_async_global_string(
+        r#"
+        let error = new Error("boom");
+        async function* readFile() {
+            yield Promise.reject(error);
+            yield "unreachable";
+        }
+        async function* gen() {
+            for await (let line of readFile()) {
+                yield line;
+            }
+        }
+        let iter = gen();
+        iter.next().then(() => {
+            globalThis.__result = "resolved";
+        }, rejectValue => {
+            iter.next().then(({done, value}) => {
+                globalThis.__result = JSON.stringify([
+                    rejectValue === error,
+                    done,
+                    value === undefined
+                ]);
+            }, err => {
+                globalThis.__result = "err:second:" + err;
+            });
+        });
+        return null;
+        "#,
+        r#"[true,true,true]"#,
     );
 }

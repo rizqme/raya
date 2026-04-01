@@ -95,7 +95,7 @@ impl<'a> Lowerer<'a> {
         self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_DEFINE_CLASS_PROPERTY, vec![target, key_reg, func_id_reg, kind_reg]);
     }
 
-    fn emit_static_elements_for_class(
+    pub(super) fn emit_static_elements_for_class(
         &mut self,
         class: &ast::ClassDecl,
         nominal_type_id: crate::compiler::ir::NominalTypeId,
@@ -149,10 +149,29 @@ impl<'a> Lowerer<'a> {
                         &mut prototype_value,
                     );
                 }
-                ast::ClassMember::Field(field) if field.is_static => {
-                    let Some(initializer) = &field.initializer else {
+                ast::ClassMember::Field(field) if !field.is_static => {
+                    let Some(dynamic_field) = self
+                        .class_info_map
+                        .get(&nominal_type_id)
+                        .and_then(|info| {
+                            info.dynamic_fields
+                                .iter()
+                                .find(|dynamic_field| dynamic_field.order == member_idx)
+                                .cloned()
+                        })
+                    else {
                         continue;
                     };
+
+                    let key_reg = self.lower_runtime_property_key(&dynamic_field.key);
+                    self.global_type_map
+                        .insert(dynamic_field.key_global_index, key_reg.ty);
+                    self.emit(IrInstr::StoreGlobal {
+                        index: dynamic_field.key_global_index,
+                        value: key_reg,
+                    });
+                }
+                ast::ClassMember::Field(field) if field.is_static => {
                     let field_symbol = self.known_class_member_symbol(&field.name);
                     let global_index = field_symbol.and_then(|field_symbol| {
                         self.class_info_map.get(&nominal_type_id).and_then(|info| {
@@ -162,7 +181,16 @@ impl<'a> Lowerer<'a> {
                                 .map(|static_field| static_field.global_index)
                         })
                     });
-                    let value_reg = self.lower_expr(initializer);
+                    let value_reg = if let Some(initializer) = &field.initializer {
+                        self.lower_expr(initializer)
+                    } else {
+                        let undefined = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: undefined.clone(),
+                            value: IrValue::Constant(IrConstant::Undefined),
+                        });
+                        undefined
+                    };
                     if let Some(global_index) = global_index {
                         self.emit(IrInstr::StoreGlobal {
                             index: global_index,
@@ -171,7 +199,14 @@ impl<'a> Lowerer<'a> {
                     }
 
                     let key_reg = self.lower_class_property_key(&field.name, member_idx);
-                    self.emit_vm_native_call(None, crate::compiler::native_id::REFLECT_SET, vec![class_value.clone(), key_reg, value_reg]);
+                    let descriptor =
+                        self.lower_data_property_descriptor(value_reg, true, true, true);
+                    let define_result = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                    self.emit_vm_native_call(
+                        Some(define_result),
+                        crate::compiler::native_id::OBJECT_DEFINE_PROPERTY,
+                        vec![class_value.clone(), key_reg, descriptor],
+                    );
                 }
                 ast::ClassMember::StaticBlock(block) => {
                     for stmt in &block.statements {
@@ -225,23 +260,7 @@ impl<'a> Lowerer<'a> {
         key: &ast::PropertyKey,
         _fallback_idx: usize,
     ) -> Register {
-        match key {
-            ast::PropertyKey::Identifier(id) => {
-                self.emit_named_key_register(self.interner.resolve(id.name))
-            }
-            ast::PropertyKey::StringLiteral(lit) => self.lower_string_literal(lit),
-            ast::PropertyKey::IntLiteral(lit) => self.lower_int_literal(lit),
-            ast::PropertyKey::Computed(ast::Expression::StringLiteral(lit)) => {
-                self.lower_string_literal(lit)
-            }
-            ast::PropertyKey::Computed(ast::Expression::IntLiteral(lit)) => {
-                self.lower_int_literal(lit)
-            }
-            ast::PropertyKey::Computed(ast::Expression::Parenthesized(expr)) => {
-                self.lower_expr(&expr.expression)
-            }
-            ast::PropertyKey::Computed(expr) => self.lower_expr(expr),
-        }
+        self.lower_runtime_property_key(key)
     }
 
     fn coerce_value_to_annotation_type(
@@ -268,7 +287,7 @@ impl<'a> Lowerer<'a> {
         value
     }
 
-    fn materialize_current_locals_for_method_env(
+    pub(super) fn materialize_current_locals_for_method_env(
         &mut self,
     ) -> FxHashMap<crate::parser::Symbol, super::MethodEnvBinding> {
         let mut env_globals = FxHashMap::default();
@@ -719,7 +738,11 @@ impl<'a> Lowerer<'a> {
 
         let (_, elem_ty, _) = self.classify_for_of_iterable(&for_of.right);
         let iterable_reg = self.lower_expr(&for_of.right);
-        let iterator_reg = self.emit_iterator_get_helper(iterable_reg);
+        let iterator_reg = if for_of.is_await {
+            self.emit_async_iterator_get_helper(iterable_reg)
+        } else {
+            self.emit_iterator_get_helper(iterable_reg)
+        };
 
         let header_block = self.alloc_block();
         let body_block = self.alloc_block();
@@ -735,7 +758,26 @@ impl<'a> Lowerer<'a> {
             ));
         self.current_block = header_block;
 
-        let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
+        let step_result = if for_of.is_await {
+            let undefined = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Assign {
+                dest: undefined.clone(),
+                value: crate::ir::IrValue::Constant(crate::ir::IrConstant::Undefined),
+            });
+            let next_result = self.emit_iterator_resume_helper(
+                crate::vm::iteration::ResumeCompletionKind::Next,
+                iterator_reg.clone(),
+                undefined,
+            );
+            let awaited_step = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Await {
+                dest: awaited_step.clone(),
+                task: next_result,
+            });
+            awaited_step
+        } else {
+            self.emit_iterator_step_helper(iterator_reg.clone())
+        };
         self.set_terminator(Terminator::BranchIfNull {
             value: step_result.clone(),
             null_block: exit_block,
@@ -759,6 +801,16 @@ impl<'a> Lowerer<'a> {
         self.current_block = body_block;
 
         let raw_elem_reg = self.emit_iterator_value_helper(step_result);
+        let raw_elem_reg = if for_of.is_await {
+            let awaited_elem = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Await {
+                dest: awaited_elem.clone(),
+                task: raw_elem_reg,
+            });
+            awaited_elem
+        } else {
+            raw_elem_reg
+        };
         let elem_reg = if elem_ty.as_u32() == UNRESOLVED_TYPE_ID {
             raw_elem_reg
         } else {

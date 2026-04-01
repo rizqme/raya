@@ -1633,6 +1633,9 @@ impl<'a> EarlyErrorPass<'a> {
                         }
                     }
                     ClassMember::Method(method) => {
+                        let body_has_use_strict = method.body.as_ref().is_some_and(|body| {
+                            Self::directive_prologue_is_strict(&body.statements, self.interner)
+                        });
                         match method.kind {
                             MethodKind::Getter if !method.params.is_empty() => {
                                 this.error("Getter must not declare parameters", method.span)
@@ -1645,7 +1648,7 @@ impl<'a> EarlyErrorPass<'a> {
                         this.check_parameter_list(
                             &method.params,
                             true,
-                            false,
+                            body_has_use_strict,
                             method.span,
                             ParameterListKind::OrdinaryFunction,
                             false,
@@ -1683,10 +1686,12 @@ impl<'a> EarlyErrorPass<'a> {
                         if constructor_count > 1 {
                             this.error("Class must not declare multiple constructors", ctor.span);
                         }
+                        let body_has_use_strict =
+                            Self::directive_prologue_is_strict(&ctor.body.statements, self.interner);
                         this.check_parameter_list(
                             &ctor.params,
                             true,
-                            false,
+                            body_has_use_strict,
                             ctor.span,
                             ParameterListKind::OrdinaryFunction,
                             false,

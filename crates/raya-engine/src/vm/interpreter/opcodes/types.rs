@@ -384,64 +384,69 @@ impl<'a> Interpreter<'a> {
     }
 
     fn property_value_with_protocol_alias(&self, target: Value, key: &str) -> Option<Value> {
-        // Check fields first
-        if let Some(value) = self.get_field_value_by_name(target, key) {
-            return Some(value);
-        }
-        // Check dyn_props
-        if let Some(obj_ptr) = checked_object_ptr(target) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            let key_id = self.intern_prop_key(key);
-            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
-                if !prop.is_accessor {
-                    return Some(prop.value);
+        for candidate in std::iter::once(key).chain(protocol_alias_names(key).iter().copied()) {
+            // Check fields first
+            if let Some(value) = self.get_field_value_by_name(target, candidate) {
+                return Some(value);
+            }
+            // Check dyn_props
+            if let Some(obj_ptr) = checked_object_ptr(target) {
+                let obj = unsafe { &*obj_ptr.as_ptr() };
+                let key_id = self.intern_prop_key(candidate);
+                if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
+                    if !prop.is_accessor {
+                        return Some(prop.value);
+                    }
                 }
             }
-        }
-        // Check method vtable
-        if let Some(obj_ptr) = checked_object_ptr(target) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            if let Some(method_slot) = obj.nominal_type_id_usize().and_then(|ntid| {
-                let class_metadata = self.class_metadata.read();
-                class_metadata
-                    .get(ntid)
-                    .and_then(|meta| meta.get_method_index(key))
-                    .or_else(|| {
-                        drop(class_metadata);
-                        let classes = self.classes.read();
-                        let class = classes.get_class(ntid)?;
-                        let module = class.module.as_ref()?;
-                        module
-                            .classes
-                            .iter()
-                            .find(|cd| cd.name == class.name)
-                            .and_then(|cd| {
-                                cd.methods.iter().find_map(|m| {
-                                    let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
-                                    if m.name == key || plain == key {
-                                        Some(m.slot)
-                                    } else {
-                                        None
-                                    }
+            // Check method vtable
+            if let Some(obj_ptr) = checked_object_ptr(target) {
+                let obj = unsafe { &*obj_ptr.as_ptr() };
+                if let Some(method_slot) = obj.nominal_type_id_usize().and_then(|ntid| {
+                    let class_metadata = self.class_metadata.read();
+                    class_metadata
+                        .get(ntid)
+                        .and_then(|meta| meta.get_method_index(candidate))
+                        .or_else(|| {
+                            drop(class_metadata);
+                            let classes = self.classes.read();
+                            let class = classes.get_class(ntid)?;
+                            let module = class.module.as_ref()?;
+                            module
+                                .classes
+                                .iter()
+                                .find(|cd| cd.name == class.name)
+                                .and_then(|cd| {
+                                    cd.methods.iter().find_map(|m| {
+                                        let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
+                                        if m.name == candidate || plain == candidate {
+                                            Some(m.slot)
+                                        } else {
+                                            None
+                                        }
+                                    })
                                 })
-                            })
-                    })
-            }) {
-                if let Ok(value) = self.bound_method_value_for_slot(target, method_slot) {
-                    return Some(value);
+                        })
+                }) {
+                    if let Ok(value) = self.bound_method_value_for_slot(target, method_slot) {
+                        return Some(value);
+                    }
                 }
             }
-        }
-        if let Some(value) = self.task_promise_method_value(target, key) {
-            return Some(value);
-        }
-        // Check builtin native methods
-        if let Some(native_id) = builtin_handle_native_method_id(self.pinned_handles, target, key) {
-            let method = Object::new_bound_native(target, native_id);
-            let method_ptr = self.gc.lock().allocate(method);
-            let val =
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) };
-            return Some(val);
+            if let Some(value) = self.task_promise_method_value(target, candidate) {
+                return Some(value);
+            }
+            // Check builtin native methods
+            if let Some(native_id) =
+                builtin_handle_native_method_id(self.pinned_handles, target, candidate)
+            {
+                let method = Object::new_bound_native(target, native_id);
+                let method_ptr = self.gc.lock().allocate(method);
+                let val = unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap())
+                };
+                return Some(val);
+            }
         }
         None
     }
@@ -534,6 +539,12 @@ impl<'a> Interpreter<'a> {
         }
         if let Some(value) =
             self.descriptor_data_value_with_protocol_alias(object_value, symbol_key)
+        {
+            return Ok(Some(value));
+        }
+        if let Some(value) = self
+            .property_value_with_protocol_alias(object_value, symbol_key)
+            .or_else(|| self.prototype_chain_property_value_with_protocol_alias(object_value, symbol_key))
         {
             return Ok(Some(value));
         }

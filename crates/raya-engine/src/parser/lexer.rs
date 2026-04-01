@@ -637,11 +637,14 @@ fn line_terminator_width(source: &str, pos: usize) -> Option<(usize, bool)> {
 }
 
 fn is_identifier_start_char(ch: char) -> bool {
-    ch == '_' || ch == '$' || ch.is_alphabetic()
+    ch == '_'
+        || ch == '$'
+        || ch.is_alphabetic()
+        || matches!(ch, '\u{2118}' | '\u{212E}' | '\u{309B}' | '\u{309C}')
 }
 
 fn is_identifier_continue_char(ch: char) -> bool {
-    is_identifier_start_char(ch) || ch.is_ascii_digit()
+    is_identifier_start_char(ch) || ch.is_ascii_digit() || ch == '\u{200C}' || ch == '\u{200D}'
 }
 
 fn keyword_token_for_identifier(name: &str) -> Option<Token> {
@@ -1014,6 +1017,16 @@ impl<'a> Lexer<'a> {
             }
 
             if let Some((next_pos, next_line, next_column)) =
+                self.scan_private_identifier_like(pos, line, column, line_break_before)
+            {
+                pos = next_pos;
+                line = next_line;
+                column = next_column;
+                line_break_before = false;
+                continue;
+            }
+
+            if let Some((next_pos, next_line, next_column)) =
                 self.scan_identifier_like(pos, line, column, line_break_before)
             {
                 pos = next_pos;
@@ -1248,7 +1261,7 @@ impl<'a> Lexer<'a> {
             cursor += ch.len_utf8();
         }
 
-        if !had_escape {
+        if !had_escape && decoded.is_ascii() {
             return None;
         }
 
@@ -1257,6 +1270,72 @@ impl<'a> Lexer<'a> {
         let span = Span::new(pos, cursor, line, column);
         let mut lexed = LexedToken::new(token, span, line_break_before);
         lexed.identifier_escape = true;
+        self.tokens.push(lexed);
+
+        let consumed_width = self.source[pos..cursor].chars().count() as u32;
+        Some((cursor, line, column + consumed_width))
+    }
+
+    fn scan_private_identifier_like(
+        &mut self,
+        pos: usize,
+        line: u32,
+        column: u32,
+        line_break_before: bool,
+    ) -> Option<(usize, u32, u32)> {
+        if self.source.as_bytes().get(pos) != Some(&b'#') {
+            return None;
+        }
+
+        let mut cursor = pos + 1;
+        let mut decoded = String::new();
+        let mut had_escape = false;
+
+        let first = self.source[cursor..].chars().next()?;
+        let (first_char, next_cursor) = if first == '\\' {
+            let (decoded_char, next_cursor) = self.decode_identifier_escape(cursor)?;
+            if !is_identifier_start_char(decoded_char) {
+                return None;
+            }
+            had_escape = true;
+            (decoded_char, next_cursor)
+        } else if is_identifier_start_char(first) {
+            (first, cursor + first.len_utf8())
+        } else {
+            return None;
+        };
+        decoded.push(first_char);
+        cursor = next_cursor;
+
+        while cursor < self.source.len() {
+            let ch = self.source[cursor..].chars().next()?;
+            if ch == '\\' {
+                let Some((decoded_char, next_cursor)) = self.decode_identifier_escape(cursor)
+                else {
+                    break;
+                };
+                if !is_identifier_continue_char(decoded_char) {
+                    break;
+                }
+                had_escape = true;
+                decoded.push(decoded_char);
+                cursor = next_cursor;
+                continue;
+            }
+            if !is_identifier_continue_char(ch) {
+                break;
+            }
+            decoded.push(ch);
+            cursor += ch.len_utf8();
+        }
+
+        let span = Span::new(pos, cursor, line, column);
+        let mut lexed = LexedToken::new(
+            Token::PrivateIdentifier(self.interner.intern(&decoded)),
+            span,
+            line_break_before,
+        );
+        lexed.identifier_escape = had_escape;
         self.tokens.push(lexed);
 
         let consumed_width = self.source[pos..cursor].chars().count() as u32;

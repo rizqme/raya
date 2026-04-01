@@ -1,6 +1,6 @@
 use crate::error::RuntimeError;
 use raya_engine::parser::ast::{ExportDecl, Statement};
-use raya_engine::parser::Parser;
+use raya_engine::parser::{ParseGoal, Parser};
 use raya_engine::semantics::SemanticProfile;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -185,7 +185,11 @@ impl ProgramGraphBuilder {
                     .collect::<Vec<_>>()
                     .join("\n"),
             )
-        })?;
+        })?
+        .with_goal(match importer {
+            ModuleKey::File(path) => ParseGoal::from_path(path),
+            ModuleKey::Std(_) => ParseGoal::Script,
+        });
         let (ast, interner) = parser.parse().map_err(|errors| {
             RuntimeError::Parse(
                 errors

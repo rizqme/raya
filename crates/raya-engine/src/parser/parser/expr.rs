@@ -112,6 +112,54 @@ pub(super) fn parse_assignment_expression(parser: &mut Parser) -> Result<Express
     parse_expression_with_precedence(parser, Precedence::Assignment)
 }
 
+fn is_valid_assignment_target_syntax(
+    expr: &Expression,
+    allow_pattern_targets: bool,
+    allow_pattern_defaults: bool,
+) -> bool {
+    match expr {
+        Expression::Identifier(_) => true,
+        Expression::Member(member) => !member.optional,
+        Expression::Index(index) => !index.optional,
+        Expression::Parenthesized(paren) => match paren.expression.as_ref() {
+            Expression::Identifier(_)
+            | Expression::Member(_)
+            | Expression::Index(_)
+            | Expression::Parenthesized(_) => is_valid_assignment_target_syntax(
+                &paren.expression,
+                allow_pattern_targets,
+                allow_pattern_defaults,
+            ),
+            _ => false,
+        },
+        Expression::Assignment(assign) => {
+            allow_pattern_defaults
+                && assign.operator == AssignmentOperator::Assign
+                && is_valid_assignment_target_syntax(&assign.left, true, true)
+        }
+        Expression::Array(array) => {
+            allow_pattern_targets
+                && array.elements.iter().flatten().all(|elem| match elem {
+                    ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
+                        is_valid_assignment_target_syntax(expr, true, true)
+                    }
+                })
+        }
+        Expression::Object(obj) => {
+            allow_pattern_targets
+                && obj.properties.iter().all(|prop| match prop {
+                    ObjectProperty::Property(prop) => {
+                        is_valid_assignment_target_syntax(&prop.value, true, true)
+                    }
+                    ObjectProperty::Spread(spread) => {
+                        is_valid_assignment_target_syntax(&spread.argument, true, true)
+                    }
+                })
+        }
+        _ => false,
+    }
+}
+
 /// Parse an expression with precedence climbing.
 ///
 /// Standard precedence climbing algorithm:
@@ -124,7 +172,7 @@ fn parse_expression_with_precedence(
     parser: &mut Parser,
     min_precedence: Precedence,
 ) -> Result<Expression, ParseError> {
-    let mut left = parse_prefix(parser)?;
+    let mut left = parse_prefix(parser, min_precedence)?;
 
     loop {
         let current_precedence = get_precedence(parser.current());
@@ -189,13 +237,28 @@ fn looks_like_generic_call_suffix(parser: &mut Parser) -> bool {
 }
 
 /// Parse a prefix expression (unary operators and primary expressions).
-fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
+fn parse_prefix(parser: &mut Parser, min_precedence: Precedence) -> Result<Expression, ParseError> {
     let start_span = parser.current_span();
 
     match parser.current() {
-        Token::Class => parse_class_expression(parser),
+        Token::Class | Token::At => parse_class_expression(parser),
+        Token::Yield if parser.current_identifier_had_escape() => {
+            let ident = parser.expect_identifier_like()?;
+            Ok(Expression::Identifier(Identifier {
+                name: ident.name,
+                span: ident.span,
+            }))
+        }
+        Token::Yield if parser.is_js_mode() && !parser.yield_expression_allowed() => {
+            let ident = parser.expect_identifier_like()?;
+            Ok(Expression::Identifier(Identifier {
+                name: ident.name,
+                span: ident.span,
+            }))
+        }
         Token::Yield
             if !matches!(parser.mode(), crate::parser::checker::TypeSystemMode::Raya)
+                && min_precedence <= Precedence::Assignment
                 && parser.yield_expression_allowed() =>
         {
             parse_yield_expression(parser)
@@ -273,6 +336,15 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
         // await expression
         Token::Await => {
+            if parser.current_identifier_had_escape()
+                || (parser.is_js_mode() && !parser.await_expression_allowed())
+            {
+                let ident = parser.expect_identifier_like()?;
+                return Ok(Expression::Identifier(Identifier {
+                    name: ident.name,
+                    span: ident.span,
+                }));
+            }
             parser.advance();
             let argument = parse_expression_with_precedence(parser, Precedence::Unary)?;
             let span = parser.combine_spans(&start_span, argument.span());
@@ -372,19 +444,21 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                     parser.advance(); // consume =>
 
                     // Parse body - could be expression or block
-                    let (body, body_span) = if parser.check(&Token::LeftBrace) {
-                        parser.advance(); // consume {
-                        let block = parse_block_statement(parser)?;
-                        let span = block.span;
-                        (crate::parser::ast::ArrowBody::Block(block), span)
-                    } else {
-                        let expr = parse_assignment_expression(parser)?;
-                        let span = *expr.span();
-                        (
-                            crate::parser::ast::ArrowBody::Expression(Box::new(expr)),
-                            span,
-                        )
-                    };
+                    let (body, body_span) = parser.with_await_context(true, |parser| {
+                        if parser.check(&Token::LeftBrace) {
+                            parser.advance(); // consume {
+                            let block = parse_block_statement(parser)?;
+                            let span = block.span;
+                            Ok((crate::parser::ast::ArrowBody::Block(block), span))
+                        } else {
+                            let expr = parse_assignment_expression(parser)?;
+                            let span = *expr.span();
+                            Ok((
+                                crate::parser::ast::ArrowBody::Expression(Box::new(expr)),
+                                span,
+                            ))
+                        }
+                    })?;
 
                     let span = parser.combine_spans(&start_span, &body_span);
                     Ok(Expression::Arrow(ArrowFunction {
@@ -442,19 +516,21 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                     };
 
                     // Parse body
-                    let (body, body_span) = if parser.check(&Token::LeftBrace) {
-                        parser.advance(); // consume {
-                        let block = parse_block_statement(parser)?;
-                        let span = block.span;
-                        (crate::parser::ast::ArrowBody::Block(block), span)
-                    } else {
-                        let expr = parse_assignment_expression(parser)?;
-                        let span = *expr.span();
-                        (
-                            crate::parser::ast::ArrowBody::Expression(Box::new(expr)),
-                            span,
-                        )
-                    };
+                    let (body, body_span) = parser.with_await_context(true, |parser| {
+                        if parser.check(&Token::LeftBrace) {
+                            parser.advance(); // consume {
+                            let block = parse_block_statement(parser)?;
+                            let span = block.span;
+                            Ok((crate::parser::ast::ArrowBody::Block(block), span))
+                        } else {
+                            let expr = parse_assignment_expression(parser)?;
+                            let span = *expr.span();
+                            Ok((
+                                crate::parser::ast::ArrowBody::Expression(Box::new(expr)),
+                                span,
+                            ))
+                        }
+                    })?;
 
                     let span = parser.combine_spans(&start_span, &body_span);
                     Ok(Expression::Arrow(ArrowFunction {
@@ -638,7 +714,7 @@ fn parse_yield_expression(parser: &mut Parser) -> Result<Expression, ParseError>
         ) {
         None
     } else {
-        Some(Box::new(parse_expression(parser)?))
+        Some(Box::new(parse_assignment_expression(parser)?))
     };
 
     let span = if let Some(ref value) = value {
@@ -656,15 +732,16 @@ fn parse_yield_expression(parser: &mut Parser) -> Result<Expression, ParseError>
 
 fn parse_class_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
     let start_span = parser.current_span();
+
+    let decorators = super::stmt::parse_decorators(parser)?;
     parser.expect(Token::Class)?;
 
-    let explicit_name = if let Token::Identifier(name) = parser.current() {
-        let name = *name;
-        let span = parser.current_span();
-        parser.advance();
-        Some(Identifier { name, span })
-    } else {
-        None
+    let explicit_name = match parser.current() {
+        Token::Identifier(_) => Some(parser.expect_identifier_like()?),
+        Token::Await if parser.is_js_mode() && !parser.is_module_goal() => {
+            Some(parser.expect_identifier_like()?)
+        }
+        _ => None,
     };
 
     let type_params = if parser.check(&Token::Less) {
@@ -712,7 +789,7 @@ fn parse_class_expression(parser: &mut Parser) -> Result<Expression, ParseError>
     });
 
     let class_decl = Statement::ClassDecl(ClassDecl {
-        decorators: Vec::new(),
+        decorators,
         annotations: Vec::new(),
         is_abstract: false,
         name: class_name.clone(),
@@ -812,6 +889,19 @@ fn parse_infix(
             Token::QuestionQuestionEqual => AssignmentOperator::NullCoalesceAssign,
             _ => unreachable!(),
         };
+
+        let allow_pattern_targets = operator == AssignmentOperator::Assign;
+        let allow_pattern_defaults = operator == AssignmentOperator::Assign;
+        if !is_valid_assignment_target_syntax(
+            &left,
+            allow_pattern_targets,
+            allow_pattern_defaults,
+        ) {
+            return Err(ParseError::invalid_syntax(
+                "Invalid assignment target",
+                *left.span(),
+            ));
+        }
 
         let right = parse_expression_with_precedence(parser, Precedence::Assignment)?;
         let span = parser.combine_spans(&start_span, right.span());
@@ -1334,6 +1424,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
         // Integer literal
         Token::IntLiteral(value) => {
             let value = *value;
+            let _ = parser.intern(&value.to_string());
             parser.advance();
             Ok(Expression::IntLiteral(IntLiteral {
                 value,
@@ -1358,6 +1449,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
         // Float literal
         Token::FloatLiteral(value) => {
             let value = *value;
+            let _ = parser.intern(&value.to_string());
             parser.advance();
             Ok(Expression::FloatLiteral(FloatLiteral {
                 value,
@@ -1739,6 +1831,7 @@ pub(super) fn parse_object_property_key(
         }))
     } else if let Token::IntLiteral(n) = parser.current() {
         let n = *n;
+        let _ = parser.intern(&n.to_string());
         parser.advance();
         Ok(PropertyKey::IntLiteral(IntLiteral {
             value: n,
@@ -1746,9 +1839,17 @@ pub(super) fn parse_object_property_key(
             raw_text: None,
             span: start_span,
         }))
+    } else if let Token::FloatLiteral(n) = parser.current() {
+        let n = *n;
+        let _ = parser.intern(&n.to_string());
+        parser.advance();
+        Ok(PropertyKey::Computed(Expression::FloatLiteral(FloatLiteral {
+            value: n,
+            span: start_span,
+        })))
     } else if parser.check(&Token::LeftBracket) {
         parser.advance();
-        let expr = parse_expression(parser)?;
+        let expr = parser.with_allow_in(parse_assignment_expression)?;
         parser.expect(Token::RightBracket)?;
         Ok(PropertyKey::Computed(expr))
     } else {
@@ -1793,27 +1894,29 @@ fn parse_object_method(
 ) -> Result<ObjectProperty, ParseError> {
     let (type_params, params, return_type, body) =
         parser.with_yield_context(is_generator, |parser| {
-            let type_params = if parser.check(&Token::Less) {
-                parser.advance();
-                Some(super::stmt::parse_type_parameters(parser)?)
-            } else {
-                None
-            };
+            parser.with_await_context(is_async, |parser| {
+                let type_params = if parser.check(&Token::Less) {
+                    parser.advance();
+                    Some(super::stmt::parse_type_parameters(parser)?)
+                } else {
+                    None
+                };
 
-            parser.expect(Token::LeftParen)?;
-            let params = super::stmt::parse_function_parameters(parser)?;
-            parser.expect(Token::RightParen)?;
+                parser.expect(Token::LeftParen)?;
+                let params = super::stmt::parse_function_parameters(parser)?;
+                parser.expect(Token::RightParen)?;
 
-            let return_type = if parser.check(&Token::Colon) {
-                parser.advance();
-                Some(super::types::parse_type_annotation(parser)?)
-            } else {
-                None
-            };
+                let return_type = if parser.check(&Token::Colon) {
+                    parser.advance();
+                    Some(super::types::parse_type_annotation(parser)?)
+                } else {
+                    None
+                };
 
-            parser.expect(Token::LeftBrace)?;
-            let body = super::stmt::parse_block_statement(parser)?;
-            Ok((type_params, params, return_type, body))
+                parser.expect(Token::LeftBrace)?;
+                let body = super::stmt::parse_block_statement(parser)?;
+                Ok((type_params, params, return_type, body))
+            })
         })?;
     let span = parser.combine_spans(&start_span, &body.span);
     let value = Expression::Function(FunctionExpression {
@@ -1994,7 +2097,12 @@ fn convert_template_parts(
             crate::parser::token::TemplatePart::Expression(tokens) => {
                 // Parse the token sequence into an expression using a sub-parser
                 let interner = parser.interner_clone();
-                let mut sub_parser = Parser::from_tokens_with_mode(tokens, interner, parser.mode());
+                let mut sub_parser = Parser::from_tokens_with_mode_and_goal(
+                    tokens,
+                    interner,
+                    parser.mode(),
+                    parser.goal(),
+                );
                 let expr = sub_parser.parse_single_expression()?;
                 result.push(TemplatePart::Expression(Box::new(expr)));
             }
