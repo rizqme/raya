@@ -572,14 +572,6 @@ impl std::fmt::Debug for GeneratorStateData {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct GeneratorSnapshotData {
-    pub yielded: Vec<Value>,
-    pub next_index: usize,
-    pub completion: Value,
-    pub completion_emitted: bool,
-}
-
 /// Object instance (heap-allocated)
 #[derive(Debug, Clone)]
 pub struct Object {
@@ -597,8 +589,6 @@ pub struct Object {
     pub callable: Option<Box<CallableData>>,
     /// Optional arguments-exotic payload.
     pub arguments: Option<Box<ArgumentsObjectData>>,
-    /// Optional eager generator snapshot payload retained for `yield*` fallback lowering.
-    pub generator_snapshot: Option<Box<GeneratorSnapshotData>>,
     /// Optional live generator state for JS generator iterators.
     pub generator_state: Option<Box<GeneratorStateData>>,
     /// Optional ECMAScript environment-record payload for eval/with/global resolution.
@@ -620,7 +610,6 @@ impl Object {
             prototype: Value::null(),
             callable: None,
             arguments: None,
-            generator_snapshot: None,
             generator_state: None,
             env_record: None,
         }
@@ -636,7 +625,6 @@ impl Object {
             prototype: Value::null(),
             callable: None,
             arguments: None,
-            generator_snapshot: None,
             generator_state: None,
             env_record: None,
         }

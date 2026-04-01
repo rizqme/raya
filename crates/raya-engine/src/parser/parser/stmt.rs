@@ -2755,6 +2755,31 @@ const value = {
     }
 
     #[test]
+    fn test_ts_mode_parses_yield_star_expression_position() {
+        let parser = Parser::new_with_mode(
+            "function* gen() { const value = yield* other; return value; }",
+            crate::parser::checker::TypeSystemMode::Ts,
+        )
+        .expect("should lex");
+        let (module, _) = parser.parse().expect("should parse");
+        let crate::parser::ast::Statement::FunctionDecl(func) = &module.statements[0] else {
+            panic!("Expected function declaration");
+        };
+        let crate::parser::ast::Statement::VariableDecl(decl) = &func.body.statements[0] else {
+            panic!("Expected variable declaration");
+        };
+        let Some(init) = decl.initializer.as_ref() else {
+            panic!("Expected initializer");
+        };
+        let crate::parser::ast::Expression::Yield(yld) = init else {
+            panic!("Expected yield expression");
+        };
+
+        assert!(yld.is_delegate);
+        assert!(yld.value.is_some());
+    }
+
+    #[test]
     fn test_object_pattern_accepts_string_and_numeric_keys() {
         let parser =
             Parser::new(r#"const { "name": alias, 0: zero } = value;"#).expect("should lex");

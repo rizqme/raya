@@ -123,12 +123,17 @@ pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
             KERNEL_ITERATOR_BASE
                 + match kind {
                     crate::semantics::IteratorOpKind::GetIterator => 0,
-                    crate::semantics::IteratorOpKind::Step => 1,
-                    crate::semantics::IteratorOpKind::Value => 2,
-                    crate::semantics::IteratorOpKind::Close => 3,
-                    crate::semantics::IteratorOpKind::CloseOnThrow => 4,
-                    crate::semantics::IteratorOpKind::CloseCompletion => 5,
-                    crate::semantics::IteratorOpKind::AppendToArray => 6,
+                    crate::semantics::IteratorOpKind::GetAsyncIterator => 1,
+                    crate::semantics::IteratorOpKind::Step => 2,
+                    crate::semantics::IteratorOpKind::Done => 3,
+                    crate::semantics::IteratorOpKind::Value => 4,
+                    crate::semantics::IteratorOpKind::ResumeNext => 5,
+                    crate::semantics::IteratorOpKind::ResumeReturn => 6,
+                    crate::semantics::IteratorOpKind::ResumeThrow => 7,
+                    crate::semantics::IteratorOpKind::Close => 8,
+                    crate::semantics::IteratorOpKind::CloseOnThrow => 9,
+                    crate::semantics::IteratorOpKind::CloseCompletion => 10,
+                    crate::semantics::IteratorOpKind::AppendToArray => 11,
                 }
         }
         KernelOp::HostHandle(kind) => {
@@ -162,12 +167,17 @@ pub fn decode_kernel_op_id(id: KernelOpId) -> Option<KernelOp> {
     if id >= KERNEL_ITERATOR_BASE {
         return Some(KernelOp::Iterator(match id - KERNEL_ITERATOR_BASE {
             0 => crate::semantics::IteratorOpKind::GetIterator,
-            1 => crate::semantics::IteratorOpKind::Step,
-            2 => crate::semantics::IteratorOpKind::Value,
-            3 => crate::semantics::IteratorOpKind::Close,
-            4 => crate::semantics::IteratorOpKind::CloseOnThrow,
-            5 => crate::semantics::IteratorOpKind::CloseCompletion,
-            6 => crate::semantics::IteratorOpKind::AppendToArray,
+            1 => crate::semantics::IteratorOpKind::GetAsyncIterator,
+            2 => crate::semantics::IteratorOpKind::Step,
+            3 => crate::semantics::IteratorOpKind::Done,
+            4 => crate::semantics::IteratorOpKind::Value,
+            5 => crate::semantics::IteratorOpKind::ResumeNext,
+            6 => crate::semantics::IteratorOpKind::ResumeReturn,
+            7 => crate::semantics::IteratorOpKind::ResumeThrow,
+            8 => crate::semantics::IteratorOpKind::Close,
+            9 => crate::semantics::IteratorOpKind::CloseOnThrow,
+            10 => crate::semantics::IteratorOpKind::CloseCompletion,
+            11 => crate::semantics::IteratorOpKind::AppendToArray,
             _ => return None,
         }));
     }

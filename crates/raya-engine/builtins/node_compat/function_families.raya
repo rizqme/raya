@@ -7,6 +7,7 @@ const FUNCTION_BIND_HELPER: number = 0x0010;
 const FUNCTION_CONSTRUCTOR_HELPER: number = 0x0012;
 const OBJECT_GENERATOR_NEXT: number = 0x0045;
 const OBJECT_GENERATOR_RETURN: number = 0x0046;
+const OBJECT_GENERATOR_THROW: number = 0x0061;
 
 class Function {
     constructor(...parts: any[]) {
@@ -70,6 +71,22 @@ class AsyncFunction extends Function {
 
 class Generator {
     constructor() {}
+
+    next(value: any = undefined): any {
+        return __NATIVE_CALL<any>(OBJECT_GENERATOR_NEXT, this, value);
+    }
+
+    return(value: any = undefined): any {
+        return __NATIVE_CALL<any>(OBJECT_GENERATOR_RETURN, this, value);
+    }
+
+    throw(value: any = undefined): any {
+        return __NATIVE_CALL<any>(OBJECT_GENERATOR_THROW, this, value);
+    }
+
+    __iteratorObject(): any {
+        return this;
+    }
 }
 
 class AsyncGenerator {
@@ -81,6 +98,10 @@ class AsyncGenerator {
 
     return(value: any = undefined): Promise<any> {
         return __NATIVE_CALL<any>(OBJECT_GENERATOR_RETURN, this, value);
+    }
+
+    throw(value: any = undefined): Promise<any> {
+        return __NATIVE_CALL<any>(OBJECT_GENERATOR_THROW, this, value);
     }
 
     __asyncIteratorObject(): any {

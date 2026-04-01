@@ -109,39 +109,8 @@ struct ArrowBodyVarRefCollector<'a> {
     referenced: &'a mut FxHashSet<Symbol>,
 }
 
-struct GeneratorRequirementCollector {
-    requires_snapshot: bool,
-}
-
 struct YieldPresenceCollector {
     has_yield: bool,
-}
-
-impl Visitor for GeneratorRequirementCollector {
-    fn visit_statement(&mut self, stmt: &Statement) {
-        if let Statement::Yield(yield_stmt) = stmt {
-            if yield_stmt.is_delegate {
-                self.requires_snapshot = true;
-                return;
-            }
-        }
-        walk_statement(self, stmt);
-    }
-
-    fn visit_expression(&mut self, expr: &Expression) {
-        if let Expression::Yield(yield_expr) = expr {
-            if yield_expr.is_delegate {
-                self.requires_snapshot = true;
-                return;
-            }
-        }
-        walk_expression(self, expr);
-    }
-
-    fn visit_function_decl(&mut self, _decl: &ast::FunctionDecl) {}
-    fn visit_function_expression(&mut self, _func: &ast::FunctionExpression) {}
-    fn visit_arrow_function(&mut self, _func: &ast::ArrowFunction) {}
-    fn visit_class_decl(&mut self, _decl: &ast::ClassDecl) {}
 }
 
 impl Visitor for YieldPresenceCollector {
@@ -961,8 +930,9 @@ pub struct Lowerer<'a> {
     eval_completion_local: Option<u16>,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
     refcell_inner_types: FxHashMap<u16, TypeId>,
-    /// Active per-function array local used to collect lowered generator `yield` values.
-    generator_yield_array_local: Option<u16>,
+    /// Active per-function array local used to collect yielded values for
+    /// non-JS Raya callables that materialize yields into an array result.
+    yield_buffer_local: Option<u16>,
 }
 
 // ─── Standalone helpers for closure capture pre-scan ───────────────────────
@@ -1665,7 +1635,7 @@ impl<'a> Lowerer<'a> {
             body_scope_eval_mode: false,
             parameter_symbols: FxHashSet::default(),
             eval_completion_local: None,
-            generator_yield_array_local: None,
+            yield_buffer_local: None,
         }
     }
 
@@ -1798,16 +1768,13 @@ impl<'a> Lowerer<'a> {
         self.semantic_plan.uses_js_async_runtime_semantics() && Self::callable_is_generator(kind)
     }
 
-    fn callable_collects_yields_eagerly(
+    fn callable_materializes_yields(
         &self,
         kind: CallableKind,
         body: &ast::BlockStatement,
     ) -> bool {
-        if self.semantic_plan.uses_js_async_runtime_semantics() {
-            Self::callable_is_generator(kind) && self.function_uses_generator_snapshot(body)
-        } else {
-            Self::callable_is_generator(kind) || self.function_uses_yield(body)
-        }
+        !self.semantic_plan.uses_js_async_runtime_semantics()
+            && (Self::callable_is_generator(kind) || self.function_uses_yield(body))
     }
 
     /// Report an unresolved type error at a dispatch point.
@@ -1935,7 +1902,7 @@ impl<'a> Lowerer<'a> {
         std::mem::take(&mut self.native_function_table)
     }
 
-    pub(super) fn init_generator_yield_array(&mut self) {
+    pub(super) fn init_yield_buffer(&mut self) {
         let local_idx = self.allocate_anonymous_local();
         let len = self.emit_i32_const(0);
         let array_reg = self.alloc_register(TypeId::new(ARRAY_TYPE_ID));
@@ -1948,25 +1915,17 @@ impl<'a> Lowerer<'a> {
             index: local_idx,
             value: array_reg,
         });
-        self.generator_yield_array_local = Some(local_idx);
+        self.yield_buffer_local = Some(local_idx);
     }
 
-    pub(super) fn load_generator_yield_array(&mut self) -> Option<Register> {
-        let local_idx = self.generator_yield_array_local?;
+    pub(super) fn load_yield_buffer(&mut self) -> Option<Register> {
+        let local_idx = self.yield_buffer_local?;
         let array_reg = self.alloc_register(TypeId::new(ARRAY_TYPE_ID));
         self.emit(IrInstr::LoadLocal {
             dest: array_reg.clone(),
             index: local_idx,
         });
         Some(array_reg)
-    }
-
-    pub(super) fn function_uses_generator_snapshot(&self, body: &ast::BlockStatement) -> bool {
-        let mut collector = GeneratorRequirementCollector {
-            requires_snapshot: false,
-        };
-        walk_block_statement(&mut collector, body);
-        collector.requires_snapshot
     }
 
     pub(super) fn function_uses_yield(&self, body: &ast::BlockStatement) -> bool {
@@ -1976,7 +1935,7 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn emit_function_return(&mut self, value: Option<Register>) {
-        let return_value = if let Some(yield_array) = self.load_generator_yield_array() {
+        let return_value = if let Some(yield_array) = self.load_yield_buffer() {
             if !self.semantic_plan.uses_js_async_runtime_semantics() {
                 if let Some(value) = value {
                     Some(value)
@@ -1984,19 +1943,7 @@ impl<'a> Lowerer<'a> {
                     Some(yield_array)
                 }
             } else {
-                let completion = if let Some(value) = value {
-                    value
-                } else {
-                    let undefined = self.alloc_register(UNRESOLVED);
-                    self.emit(IrInstr::Assign {
-                        dest: undefined.clone(),
-                        value: IrValue::Constant(IrConstant::Undefined),
-                    });
-                    undefined
-                };
-                let iterator = self.alloc_register(UNRESOLVED);
-                self.emit_vm_native_call(Some(iterator.clone()), crate::compiler::native_id::OBJECT_GENERATOR_SNAPSHOT_NEW, vec![yield_array, completion]);
-                Some(iterator)
+                Some(yield_array)
             }
         } else {
             value
@@ -4046,7 +3993,7 @@ impl<'a> Lowerer<'a> {
     fn lower_function(&mut self, func: &ast::FunctionDecl) -> IrFunction {
         // Track that we're inside a function (prevents var decls from hijacking module globals)
         self.function_depth += 1;
-        self.generator_yield_array_local = None;
+        self.yield_buffer_local = None;
         let has_js_this_slot = self.js_this_binding_compat;
 
         // Check if any parameters use destructuring
@@ -4420,8 +4367,8 @@ impl<'a> Lowerer<'a> {
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
-        if self.callable_collects_yields_eagerly(callable_kind, &func.body) {
-            self.init_generator_yield_array();
+        if self.callable_materializes_yields(callable_kind, &func.body) {
+            self.init_yield_buffer();
         }
         if runtime_generator {
             self.emit(IrInstr::GeneratorInitSuspend);
@@ -4523,7 +4470,7 @@ impl<'a> Lowerer<'a> {
             self.emit_fallthrough_return();
         }
 
-        self.generator_yield_array_local = None;
+        self.yield_buffer_local = None;
 
         self.current_function.take().unwrap()
     }
@@ -5164,7 +5111,7 @@ impl<'a> Lowerer<'a> {
                     self.current_function = Some(ir_func);
                     let saved_js_strict_context = self.js_strict_context;
                     let saved_in_direct_eval_function = self.in_direct_eval_function;
-                    let saved_generator_yield_array_local = self.generator_yield_array_local.take();
+                    let saved_yield_buffer_local = self.yield_buffer_local.take();
                     self.js_strict_context = true;
                     self.in_direct_eval_function = false;
                     let arguments_symbol = self.find_js_arguments_symbol(&method.params, body);
@@ -5248,8 +5195,8 @@ impl<'a> Lowerer<'a> {
                     self.emit_js_function_captured_lexical_prebindings(&body.statements);
                     self.emit_js_function_decl_hoists(&body.statements);
 
-                    if self.callable_collects_yields_eagerly(callable_kind, body) {
-                        self.init_generator_yield_array();
+                    if self.callable_materializes_yields(callable_kind, body) {
+                        self.init_yield_buffer();
                     }
                     if runtime_generator {
                         self.emit(IrInstr::GeneratorInitSuspend);
@@ -5295,7 +5242,7 @@ impl<'a> Lowerer<'a> {
                         .push((func_id.as_u32(), ir_func));
                     self.js_strict_context = saved_js_strict_context;
                     self.in_direct_eval_function = saved_in_direct_eval_function;
-                    self.generator_yield_array_local = saved_generator_yield_array_local;
+                    self.yield_buffer_local = saved_yield_buffer_local;
 
                     let ir_method_kind = match method.kind {
                         ast::MethodKind::Normal => IrMethodKind::Normal,

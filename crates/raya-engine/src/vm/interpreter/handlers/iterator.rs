@@ -8,6 +8,7 @@
 use crate::compiler::Module;
 use crate::vm::interpreter::opcodes::native::checked_string_ptr;
 use crate::vm::interpreter::Interpreter;
+use crate::vm::iteration::{ResumeCompletion, ResumeCompletionKind};
 use crate::vm::object::{Array, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::value::Value;
@@ -15,6 +16,47 @@ use crate::vm::VmError;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    fn iterator_result_object(&self, value: Value, done: bool) -> Value {
+        let mut result = crate::vm::object::Object::new_dynamic(
+            crate::vm::object::layout_id_from_ordered_names(&[]),
+            0,
+        );
+        {
+            let dyn_props = result.ensure_dyn_props();
+            dyn_props.insert(
+                self.intern_prop_key("value"),
+                crate::vm::object::DynProp::data_with_attrs(value, true, true, true),
+            );
+            dyn_props.insert(
+                self.intern_prop_key("done"),
+                crate::vm::object::DynProp::data_with_attrs(Value::bool(done), true, true, true),
+            );
+        }
+        if let Some(object_ctor) = self.builtin_global_value("Object") {
+            if let Some(prototype) = self.constructor_prototype_value(object_ctor) {
+                result.prototype = prototype;
+            }
+        }
+        let result_ptr = self.gc.lock().allocate(result);
+        unsafe {
+            Value::from_ptr(
+                std::ptr::NonNull::new(result_ptr.as_ptr()).expect("iterator result ptr"),
+            )
+        }
+    }
+
+    fn iterator_method_value(
+        &mut self,
+        iterator: Value,
+        property: &str,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        Ok(self
+            .get_property_value_via_js_semantics_with_context(iterator, property, task, module)?
+            .unwrap_or(Value::undefined()))
+    }
+
     fn string_iterator_fallback(
         &mut self,
         iterable: Value,
@@ -53,9 +95,7 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
-        Ok(self
-            .get_property_value_via_js_semantics_with_context(iterator, "next", task, module)?
-            .unwrap_or(Value::undefined()))
+        self.iterator_method_value(iterator, "next", task, module)
     }
 
     fn normalize_iterator_candidate(
@@ -98,7 +138,7 @@ impl<'a> Interpreter<'a> {
         std::env::var("RAYA_DEBUG_ITERATOR_PROTOCOL").is_ok()
     }
 
-    fn iterator_result_is_done(
+    pub(in crate::vm::interpreter) fn iterator_result_is_done(
         &mut self,
         result: Value,
         task: &Arc<Task>,
@@ -186,6 +226,57 @@ impl<'a> Interpreter<'a> {
         Ok(Some(iterator))
     }
 
+    pub(in crate::vm::interpreter) fn try_get_async_iterator_from_value(
+        &mut self,
+        iterable: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(iterator_method) = self
+            .get_property_value_via_js_semantics_with_context(
+                iterable,
+                "Symbol.asyncIterator",
+                task,
+                module,
+            )?
+        else {
+            return self.try_get_iterator_from_value(iterable, task, module);
+        };
+        if iterator_method.is_null() || iterator_method.is_undefined() {
+            return self.try_get_iterator_from_value(iterable, task, module);
+        }
+        if !Self::is_callable_value(iterator_method) {
+            return Err(VmError::TypeError(
+                "Async iterator method is not callable".to_string(),
+            ));
+        }
+        let iterator_candidate = self.invoke_callable_sync_with_this(
+            iterator_method,
+            Some(iterable),
+            &[],
+            task,
+            module,
+        )?;
+        if !self.is_js_object_value(iterator_candidate)
+            && !Self::is_callable_value(iterator_candidate)
+        {
+            return Err(VmError::TypeError(
+                "Async iterator method must return an object".to_string(),
+            ));
+        }
+        Ok(Some(iterator_candidate))
+    }
+
+    pub(in crate::vm::interpreter) fn get_async_iterator_from_value(
+        &mut self,
+        iterable: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        self.try_get_async_iterator_from_value(iterable, task, module)?
+            .ok_or_else(|| VmError::TypeError("Value is not async iterable".to_string()))
+    }
+
     pub(in crate::vm::interpreter) fn get_iterator_from_value(
         &mut self,
         iterable: Value,
@@ -259,6 +350,57 @@ impl<'a> Interpreter<'a> {
             eprintln!("[iter] close iterator={:#x}", iterator.raw());
         }
         Ok(())
+    }
+
+    pub(in crate::vm::interpreter) fn iterator_resume_result(
+        &mut self,
+        iterator: Value,
+        completion: ResumeCompletion,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        let (method_name, missing_behavior) = match completion.kind {
+            ResumeCompletionKind::Next => ("next", None),
+            ResumeCompletionKind::Return => ("return", Some(ResumeCompletionKind::Return)),
+            ResumeCompletionKind::Throw => ("throw", Some(ResumeCompletionKind::Throw)),
+        };
+        let method = self.iterator_method_value(iterator, method_name, task, module)?;
+        if method.is_null() || method.is_undefined() {
+            return match missing_behavior {
+                Some(ResumeCompletionKind::Return) => {
+                    Ok(self.iterator_result_object(completion.value, true))
+                }
+                Some(ResumeCompletionKind::Throw) => {
+                    let _ = self.iterator_close(iterator, task, module);
+                    Err(VmError::TypeError(
+                        "Iterator is missing callable throw()".to_string(),
+                    ))
+                }
+                _ => Err(VmError::TypeError(
+                    "Iterator is missing callable next()".to_string(),
+                )),
+            };
+        }
+        if !Self::is_callable_value(method) {
+            return Err(VmError::TypeError(format!(
+                "Iterator {} is not callable",
+                method_name
+            )));
+        }
+        let result = self.invoke_callable_sync_with_this(
+            method,
+            Some(iterator),
+            &[completion.value],
+            task,
+            module,
+        )?;
+        if !self.is_js_object_value(result) && !Self::is_callable_value(result) {
+            return Err(VmError::TypeError(format!(
+                "Iterator {} must produce an object",
+                method_name
+            )));
+        }
+        Ok(result)
     }
 
     pub(in crate::vm::interpreter) fn append_iterable_to_array(

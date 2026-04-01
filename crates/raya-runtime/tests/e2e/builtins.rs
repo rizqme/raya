@@ -282,6 +282,148 @@ fn test_node_compat_live_generator_next_sequence_returns_each_step() {
 }
 
 #[test]
+fn test_node_compat_live_generator_throw_is_forwarded_to_generator_body() {
+    expect_string_runtime_node_compat(
+        r#"
+        function* gen() {
+            try {
+                yield 1;
+                yield 2;
+            } catch (err) {
+                return "caught:" + err;
+            }
+        }
+        let it = gen();
+        let a = it.next();
+        let b = it.throw("boom");
+        let c = it.next();
+        return JSON.stringify([a.value, a.done, b.value, b.done, c.value, c.done]);
+    "#,
+        r#"[1,false,"caught:boom",true,null,true]"#,
+    );
+}
+
+#[test]
+fn test_node_compat_yield_star_delegation_preserves_inner_return_value() {
+    expect_string_runtime_node_compat(
+        r#"
+        function* inner() {
+            yield 1;
+            yield 2;
+            return 3;
+        }
+        function* outer() {
+            let result = yield* inner();
+            return result + 4;
+        }
+        let it = outer();
+        let a = it.next();
+        let b = it.next();
+        let c = it.next();
+        return JSON.stringify([a.value, a.done, b.value, b.done, c.value, c.done]);
+    "#,
+        r#"[1,false,2,false,7,true]"#,
+    );
+}
+
+#[test]
+fn test_node_compat_yield_star_forwards_return_completion_to_delegate() {
+    expect_string_runtime_node_compat(
+        r#"
+        let calls = [];
+        let iterable = {
+            [Symbol.iterator]() {
+                return {
+                    next(value) {
+                        calls.push("next:" + value);
+                        return { value: 1, done: false };
+                    },
+                    return(value) {
+                        calls.push("return:" + value);
+                        return { value: "done:" + value, done: true };
+                    }
+                };
+            }
+        };
+        function* outer() {
+            return yield* iterable;
+        }
+        let it = outer();
+        let a = it.next("start");
+        let b = it.return(9);
+        return JSON.stringify([a.value, a.done, b.value, b.done, calls]);
+    "#,
+        r#"[1,false,"done:9",true,["next:undefined","return:9"]]"#,
+    );
+}
+
+#[test]
+fn test_node_compat_yield_star_forwards_resumed_next_value_to_delegate() {
+    expect_string_runtime_node_compat(
+        r#"
+        let calls = [];
+        let iterable = {
+            [Symbol.iterator]() {
+                let index = 0;
+                return {
+                    next(value) {
+                        calls.push("next:" + value);
+                        if (index === 0) {
+                            index = 1;
+                            return { value: 1, done: false };
+                        }
+                        return { value: "done:" + value, done: true };
+                    }
+                };
+            }
+        };
+        function* outer() {
+            return yield* iterable;
+        }
+        let it = outer();
+        let a = it.next("ignored");
+        let b = it.next(9);
+        return JSON.stringify([a.value, a.done, b.value, b.done, calls]);
+    "#,
+        r#"[1,false,"done:9",true,["next:undefined","next:9"]]"#,
+    );
+}
+
+#[test]
+fn test_node_compat_yield_star_throw_without_delegate_throw_closes_iterator() {
+    expect_string_runtime_node_compat(
+        r#"
+        let closed = false;
+        let iterable = {
+            [Symbol.iterator]() {
+                return {
+                    next() {
+                        return { value: 1, done: false };
+                    },
+                    return(value) {
+                        closed = value === undefined;
+                        return { value, done: true };
+                    }
+                };
+            }
+        };
+        function* outer() {
+            yield* iterable;
+        }
+        let it = outer();
+        it.next();
+        try {
+            it.throw("boom");
+            return "unexpected";
+        } catch (err) {
+            return JSON.stringify([closed, typeof err === "object" || typeof err === "string"]);
+        }
+    "#,
+        r#"[true,true]"#,
+    );
+}
+
+#[test]
 fn test_node_compat_generator_instance_uses_function_prototype() {
     expect_bool_runtime_node_compat(
         r#"

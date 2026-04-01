@@ -689,8 +689,13 @@ pub enum MetaobjectOpKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IteratorOpKind {
     GetIterator,
+    GetAsyncIterator,
     Step,
+    Done,
     Value,
+    ResumeNext,
+    ResumeReturn,
+    ResumeThrow,
     Close,
     CloseOnThrow,
     CloseCompletion,

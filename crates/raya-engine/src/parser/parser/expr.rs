@@ -194,7 +194,10 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
     match parser.current() {
         Token::Class => parse_class_expression(parser),
-        Token::Yield if parser.is_js_mode() && parser.yield_expression_allowed() => {
+        Token::Yield
+            if !matches!(parser.mode(), crate::parser::checker::TypeSystemMode::Raya)
+                && parser.yield_expression_allowed() =>
+        {
             parse_yield_expression(parser)
         }
         // Unary operators

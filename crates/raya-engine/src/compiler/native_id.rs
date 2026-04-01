@@ -122,14 +122,6 @@ pub const OBJECT_SET_CALLABLE_HOME_OBJECT: u16 = 0x0034;
 pub const OBJECT_PUSH_WITH_ENV: u16 = 0x0035;
 /// Pop the active `with` object environment from the JS env chain.
 pub const OBJECT_POP_WITH_ENV: u16 = 0x0036;
-/// Wrap eager generator snapshot data into an iterator-shaped object.
-pub const OBJECT_GENERATOR_SNAPSHOT_NEW: u16 = 0x0037;
-/// Advance a generator snapshot iterator.
-pub const OBJECT_GENERATOR_SNAPSHOT_NEXT: u16 = 0x0038;
-/// Close a generator snapshot iterator.
-pub const OBJECT_GENERATOR_SNAPSHOT_RETURN: u16 = 0x0039;
-/// Return the generator snapshot iterator itself for `@@iterator`.
-pub const OBJECT_GENERATOR_SNAPSHOT_ITERATOR: u16 = 0x003A;
 /// Parse a JS BigInt literal into an arbitrary-precision runtime primitive.
 pub const OBJECT_PARSE_BIGINT_LITERAL: u16 = 0x0040;
 /// Apply JS unary minus using ToNumeric semantics.
@@ -186,6 +178,22 @@ pub const OBJECT_PUSH_DECLARATIVE_ENV: u16 = 0x005E;
 pub const OBJECT_POP_DECLARATIVE_ENV: u16 = 0x005F;
 /// Replace the active declarative env with a sibling env cloned from the current iteration.
 pub const OBJECT_REPLACE_DECLARATIVE_ENV: u16 = 0x0060;
+/// Throw into a live JS generator iterator.
+pub const OBJECT_GENERATOR_THROW: u16 = 0x0061;
+/// Classify a generator resume payload as next, return, or throw.
+pub const OBJECT_GENERATOR_RESUME_KIND: u16 = 0x0062;
+/// Extract the logical resume value from a generator resume payload.
+pub const OBJECT_GENERATOR_RESUME_VALUE: u16 = 0x0063;
+/// Return the `done` flag from an iterator result object.
+pub const OBJECT_ITERATOR_DONE: u16 = 0x0064;
+/// Resume an iterator with `next(value)`.
+pub const OBJECT_ITERATOR_RESUME_NEXT: u16 = 0x0065;
+/// Resume an iterator with `return(value)`.
+pub const OBJECT_ITERATOR_RESUME_RETURN: u16 = 0x0066;
+/// Resume an iterator with `throw(value)`.
+pub const OBJECT_ITERATOR_RESUME_THROW: u16 = 0x0067;
+/// Acquire an async iterator using `@@asyncIterator`.
+pub const OBJECT_ASYNC_ITERATOR_GET: u16 = 0x0068;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -734,19 +742,23 @@ pub fn native_name(id: u16) -> &'static str {
         HOST_TEST262_ASYNC_DONE => "Host.test262AsyncDone",
         OBJECT_SET_SUPER_PROPERTY_STRICT => "Object.setSuperPropertyStrict",
         OBJECT_STRING_FROM_CHAR_CODE => "Object.stringFromCharCode",
-        OBJECT_GENERATOR_SNAPSHOT_NEW => "Object.generatorSnapshotNew",
-        OBJECT_GENERATOR_SNAPSHOT_NEXT => "Object.generatorSnapshotNext",
-        OBJECT_GENERATOR_SNAPSHOT_RETURN => "Object.generatorSnapshotReturn",
-        OBJECT_GENERATOR_SNAPSHOT_ITERATOR => "Object.generatorSnapshotIterator",
         OBJECT_GENERATOR_NEW => "Object.generatorNew",
         OBJECT_GENERATOR_NEXT => "Object.generatorNext",
         OBJECT_GENERATOR_RETURN => "Object.generatorReturn",
         OBJECT_GENERATOR_ITERATOR => "Object.generatorIterator",
+        OBJECT_GENERATOR_THROW => "Object.generatorThrow",
+        OBJECT_GENERATOR_RESUME_KIND => "Object.generatorResumeKind",
+        OBJECT_GENERATOR_RESUME_VALUE => "Object.generatorResumeValue",
         OBJECT_REQUIRE_OBJECT_COERCIBLE => "Object.requireObjectCoercible",
         OBJECT_GET_DESTRUCTURING_PROPERTY => "Object.getDestructuringProperty",
         OBJECT_ASSIGN_BINDING_NAME_IF_MISSING => "Object.assignBindingNameIfMissing",
         OBJECT_COPY_DATA_PROPERTIES_EXCLUDING => "Object.copyDataPropertiesExcluding",
         OBJECT_COERCE_PROPERTY_KEY => "Object.coercePropertyKey",
+        OBJECT_ITERATOR_DONE => "Object.iteratorDone",
+        OBJECT_ITERATOR_RESUME_NEXT => "Object.iteratorResumeNext",
+        OBJECT_ITERATOR_RESUME_RETURN => "Object.iteratorResumeReturn",
+        OBJECT_ITERATOR_RESUME_THROW => "Object.iteratorResumeThrow",
+        OBJECT_ASYNC_ITERATOR_GET => "Object.asyncIteratorGet",
         OBJECT_THROW_REFERENCE_ERROR => "Object.throwReferenceError",
         OBJECT_THROW_TYPE_ERROR => "Object.throwTypeError",
         OBJECT_CREATE_REFERENCE_ERROR => "Object.createReferenceError",

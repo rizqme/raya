@@ -647,3 +647,71 @@ fn test_node_compat_async_private_generator_method_resolves_after_next() {
         "1",
     );
 }
+
+#[test]
+fn test_node_compat_async_generator_throw_forwards_to_generator_body() {
+    expect_node_compat_async_global_string(
+        r#"
+        async function* gen() {
+            try {
+                yield 1;
+                yield 2;
+            } catch (err) {
+                return "caught:" + err;
+            }
+        }
+        let it = gen();
+        it.next().then(first => {
+            it.throw("boom").then(second => {
+                it.next().then(third => {
+                    globalThis.__result = JSON.stringify([
+                        first.value, first.done,
+                        second.value, second.done,
+                        third.value, third.done
+                    ]);
+                }, err => {
+                    globalThis.__result = "err:third:" + err;
+                });
+            }, err => {
+                globalThis.__result = "err:second:" + err;
+            });
+        }, err => {
+            globalThis.__result = "err:first:" + err;
+        });
+        return null;
+        "#,
+        r#"[1,false,"caught:boom",true,null,true]"#,
+    );
+}
+
+#[test]
+fn test_node_compat_async_generator_return_completes_iterator() {
+    expect_node_compat_async_global_string(
+        r#"
+        async function* gen() {
+            yield 1;
+            yield 2;
+        }
+        let it = gen();
+        it.next().then(first => {
+            it.return(9).then(second => {
+                it.next().then(third => {
+                    globalThis.__result = JSON.stringify([
+                        first.value, first.done,
+                        second.value, second.done,
+                        third.value, third.done
+                    ]);
+                }, err => {
+                    globalThis.__result = "err:third:" + err;
+                });
+            }, err => {
+                globalThis.__result = "err:second:" + err;
+            });
+        }, err => {
+            globalThis.__result = "err:first:" + err;
+        });
+        return null;
+        "#,
+        r#"[1,false,9,true,null,true]"#,
+    );
+}

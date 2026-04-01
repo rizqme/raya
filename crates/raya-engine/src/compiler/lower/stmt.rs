@@ -463,7 +463,7 @@ impl<'a> Lowerer<'a> {
                     let saved_current_block = self.current_block;
                     let saved_current_class = self.current_class.take();
                     let saved_this_register = self.this_register.take();
-                    let saved_generator_yield_array_local = self.generator_yield_array_local.take();
+                    let saved_yield_buffer_local = self.yield_buffer_local.take();
 
                     self.lower_class_declaration(class);
 
@@ -482,7 +482,7 @@ impl<'a> Lowerer<'a> {
                     self.current_block = saved_current_block;
                     self.current_class = saved_current_class;
                     self.this_register = saved_this_register;
-                    self.generator_yield_array_local = saved_generator_yield_array_local;
+                    self.yield_buffer_local = saved_yield_buffer_local;
                     self.pending_class_method_env_globals = saved_pending_method_env;
                 }
 
@@ -3362,8 +3362,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_yield(&mut self, yld: &ast::YieldStatement) {
-        if self.generator_yield_array_local.is_some() {
-            let Some(yield_array) = self.load_generator_yield_array() else {
+        if self.yield_buffer_local.is_some() {
+            let Some(yield_array) = self.load_yield_buffer() else {
                 return;
             };
 
@@ -3388,6 +3388,21 @@ impl<'a> Lowerer<'a> {
                     element: yielded,
                 });
             }
+            return;
+        }
+
+        if yld.is_delegate && self.semantic_plan.uses_js_async_runtime_semantics() {
+            let iterable = if let Some(value) = &yld.value {
+                self.lower_expr(value)
+            } else {
+                let undefined = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: IrValue::Constant(IrConstant::Undefined),
+                });
+                undefined
+            };
+            let _ = self.lower_delegate_yield_from_iterable(iterable);
             return;
         }
 

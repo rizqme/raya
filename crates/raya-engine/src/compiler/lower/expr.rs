@@ -2897,6 +2897,16 @@ impl<'a> Lowerer<'a> {
         iterator
     }
 
+    pub(super) fn emit_async_iterator_get_helper(&mut self, iterable: Register) -> Register {
+        let iterator = self.alloc_register(UNRESOLVED);
+        self.emit_builtin_kernel_call(
+            Some(iterator.clone()),
+            KernelOp::Iterator(crate::semantics::IteratorOpKind::GetAsyncIterator),
+            vec![iterable],
+        );
+        iterator
+    }
+
     pub(super) fn emit_iterator_step_helper(&mut self, iterator: Register) -> Register {
         let step = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
@@ -2907,6 +2917,16 @@ impl<'a> Lowerer<'a> {
         step
     }
 
+    pub(super) fn emit_iterator_done_helper(&mut self, step_result: Register) -> Register {
+        let done = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
+        self.emit_builtin_kernel_call(
+            Some(done.clone()),
+            KernelOp::Iterator(crate::semantics::IteratorOpKind::Done),
+            vec![step_result],
+        );
+        done
+    }
+
     pub(super) fn emit_iterator_value_helper(&mut self, step_result: Register) -> Register {
         let value = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
@@ -2915,6 +2935,28 @@ impl<'a> Lowerer<'a> {
             vec![step_result],
         );
         value
+    }
+
+    pub(super) fn emit_iterator_resume_helper(
+        &mut self,
+        kind: crate::vm::iteration::ResumeCompletionKind,
+        iterator: Register,
+        value: Register,
+    ) -> Register {
+        let result = self.alloc_register(UNRESOLVED);
+        let op = match kind {
+            crate::vm::iteration::ResumeCompletionKind::Next => {
+                crate::semantics::IteratorOpKind::ResumeNext
+            }
+            crate::vm::iteration::ResumeCompletionKind::Return => {
+                crate::semantics::IteratorOpKind::ResumeReturn
+            }
+            crate::vm::iteration::ResumeCompletionKind::Throw => {
+                crate::semantics::IteratorOpKind::ResumeThrow
+            }
+        };
+        self.emit_builtin_kernel_call(Some(result.clone()), KernelOp::Iterator(op), vec![iterator, value]);
+        result
     }
 
     pub(super) fn emit_iterator_close_helper(&mut self, iterator: Register) {
@@ -2957,6 +2999,26 @@ impl<'a> Lowerer<'a> {
             KernelOp::Iterator(crate::semantics::IteratorOpKind::AppendToArray),
             vec![target_array, iterable],
         );
+    }
+
+    pub(super) fn emit_generator_resume_kind_helper(&mut self, payload: Register) -> Register {
+        let kind = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit_vm_native_call(
+            Some(kind.clone()),
+            crate::compiler::native_id::OBJECT_GENERATOR_RESUME_KIND,
+            vec![payload],
+        );
+        kind
+    }
+
+    pub(super) fn emit_generator_resume_value_helper(&mut self, payload: Register) -> Register {
+        let value = self.alloc_register(UNRESOLVED);
+        self.emit_vm_native_call(
+            Some(value.clone()),
+            crate::compiler::native_id::OBJECT_GENERATOR_RESUME_VALUE,
+            vec![payload],
+        );
+        value
     }
 
     fn lower_call_argument_array(&mut self, args: &[ast::CallArgument]) -> Register {
@@ -3603,9 +3665,223 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    pub(super) fn lower_delegate_yield_from_iterable(&mut self, iterable: Register) -> Register {
+        let uses_async_protocol = self
+            .current_function
+            .as_ref()
+            .is_some_and(|function| function.is_async && function.is_generator);
+        let iterator = if uses_async_protocol {
+            self.emit_async_iterator_get_helper(iterable)
+        } else {
+            self.emit_iterator_get_helper(iterable)
+        };
+        let iterator_local = self.allocate_anonymous_local();
+        self.emit(IrInstr::StoreLocal {
+            index: iterator_local,
+            value: iterator,
+        });
+
+        let resume_kind_local = self.allocate_anonymous_local();
+        let resume_value_local = self.allocate_anonymous_local();
+        let result_local = self.allocate_anonymous_local();
+
+        let next_kind = self.emit_i32_const(
+            crate::vm::iteration::ResumeCompletionKind::Next.as_i32(),
+        );
+        let undefined = self.lower_undefined_literal();
+        self.emit(IrInstr::StoreLocal {
+            index: resume_kind_local,
+            value: next_kind,
+        });
+        self.emit(IrInstr::StoreLocal {
+            index: resume_value_local,
+            value: undefined,
+        });
+
+        let dispatch_block = self.alloc_block();
+        let return_check_block = self.alloc_block();
+        let throw_check_block = self.alloc_block();
+        let next_block = self.alloc_block();
+        let return_block = self.alloc_block();
+        let throw_block = self.alloc_block();
+        let inspect_block = self.alloc_block();
+        let yield_block = self.alloc_block();
+        let done_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+        let final_value = self.alloc_register(UNRESOLVED);
+
+        self.set_terminator(Terminator::Jump(dispatch_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(dispatch_block, "yield_star.dispatch"));
+        self.current_block = dispatch_block;
+        let current_kind = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::LoadLocal {
+            index: resume_kind_local,
+            dest: current_kind.clone(),
+        });
+        let next_const = self.emit_i32_const(
+            crate::vm::iteration::ResumeCompletionKind::Next.as_i32(),
+        );
+        let is_next = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: is_next.clone(),
+            op: crate::ir::BinaryOp::StrictEqual,
+            left: current_kind,
+            right: next_const,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: is_next,
+            then_block: next_block,
+            else_block: return_check_block,
+        });
+
+        self.current_function_mut().add_block(crate::ir::BasicBlock::with_label(
+            return_check_block,
+            "yield_star.return_check",
+        ));
+        self.current_block = return_check_block;
+        let current_kind = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::LoadLocal {
+            index: resume_kind_local,
+            dest: current_kind.clone(),
+        });
+        let return_const = self.emit_i32_const(
+            crate::vm::iteration::ResumeCompletionKind::Return.as_i32(),
+        );
+        let is_return = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: is_return.clone(),
+            op: crate::ir::BinaryOp::StrictEqual,
+            left: current_kind,
+            right: return_const,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: is_return,
+            then_block: return_block,
+            else_block: throw_check_block,
+        });
+
+        self.current_function_mut().add_block(crate::ir::BasicBlock::with_label(
+            throw_check_block,
+            "yield_star.throw_check",
+        ));
+        self.current_block = throw_check_block;
+        let current_kind = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::LoadLocal {
+            index: resume_kind_local,
+            dest: current_kind.clone(),
+        });
+        let throw_const = self.emit_i32_const(
+            crate::vm::iteration::ResumeCompletionKind::Throw.as_i32(),
+        );
+        let is_throw = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: is_throw.clone(),
+            op: crate::ir::BinaryOp::StrictEqual,
+            left: current_kind,
+            right: throw_const,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: is_throw,
+            then_block: throw_block,
+            else_block: next_block,
+        });
+
+        for (block, kind) in [
+            (next_block, crate::vm::iteration::ResumeCompletionKind::Next),
+            (return_block, crate::vm::iteration::ResumeCompletionKind::Return),
+            (throw_block, crate::vm::iteration::ResumeCompletionKind::Throw),
+        ] {
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(block, "yield_star.resume"));
+            self.current_block = block;
+            let iterator_reg = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::LoadLocal {
+                index: iterator_local,
+                dest: iterator_reg.clone(),
+            });
+            let resume_value = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::LoadLocal {
+                index: resume_value_local,
+                dest: resume_value.clone(),
+            });
+            let result = self.emit_iterator_resume_helper(kind, iterator_reg, resume_value);
+            self.emit(IrInstr::StoreLocal {
+                index: result_local,
+                value: result,
+            });
+            self.set_terminator(Terminator::Jump(inspect_block));
+        }
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(inspect_block, "yield_star.inspect"));
+        self.current_block = inspect_block;
+        let step_result = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: result_local,
+            dest: step_result.clone(),
+        });
+        let done = self.emit_iterator_done_helper(step_result.clone());
+        self.set_terminator(Terminator::Branch {
+            cond: done,
+            then_block: done_block,
+            else_block: yield_block,
+        });
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(done_block, "yield_star.done"));
+        self.current_block = done_block;
+        let step_result = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: result_local,
+            dest: step_result.clone(),
+        });
+        let completion = self.emit_iterator_value_helper(step_result);
+        self.emit(IrInstr::Assign {
+            dest: final_value.clone(),
+            value: IrValue::Register(completion),
+        });
+        self.set_terminator(Terminator::Jump(exit_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(yield_block, "yield_star.yield"));
+        self.current_block = yield_block;
+        let step_result = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: result_local,
+            dest: step_result.clone(),
+        });
+        let yielded = self.emit_iterator_value_helper(step_result);
+        self.emit(IrInstr::GeneratorYield { value: yielded });
+        let payload_local = self.allocate_anonymous_local();
+        self.emit(IrInstr::PopToLocal { index: payload_local });
+        let payload = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: payload_local,
+            dest: payload.clone(),
+        });
+        let resumed_kind = self.emit_generator_resume_kind_helper(payload.clone());
+        let resumed_value = self.emit_generator_resume_value_helper(payload);
+        self.emit(IrInstr::StoreLocal {
+            index: resume_kind_local,
+            value: resumed_kind,
+        });
+        self.emit(IrInstr::StoreLocal {
+            index: resume_value_local,
+            value: resumed_value,
+        });
+        self.set_terminator(Terminator::Jump(dispatch_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "yield_star.exit"));
+        self.current_block = exit_block;
+        final_value
+    }
+
     fn lower_yield_expression(&mut self, yield_expr: &ast::YieldExpression) -> Register {
-        if self.generator_yield_array_local.is_some() {
-            let Some(yield_array) = self.load_generator_yield_array() else {
+        if self.yield_buffer_local.is_some() {
+            let Some(yield_array) = self.load_yield_buffer() else {
                 return self.lower_undefined_literal();
             };
 
@@ -3629,6 +3905,15 @@ impl<'a> Lowerer<'a> {
             // Snapshot-mode generators cannot resume with a sent value, so the
             // expression result collapses to `undefined` along the same eager path.
             return self.lower_undefined_literal();
+        }
+
+        if yield_expr.is_delegate && self.semantic_plan.uses_js_async_runtime_semantics() {
+            let iterable = if let Some(value) = &yield_expr.value {
+                self.lower_expr(value)
+            } else {
+                self.lower_undefined_literal()
+            };
+            return self.lower_delegate_yield_from_iterable(iterable);
         }
 
         let yielded = if let Some(value) = &yield_expr.value {
@@ -10259,7 +10544,7 @@ impl<'a> Lowerer<'a> {
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
         let saved_js_arguments_local = self.js_arguments_local.take();
-        let saved_generator_yield_array_local = self.generator_yield_array_local.take();
+        let saved_yield_buffer_local = self.yield_buffer_local.take();
         let saved_closure_locals = std::mem::take(&mut self.closure_locals);
         let saved_parameter_symbols = self.parameter_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
@@ -10319,7 +10604,7 @@ impl<'a> Lowerer<'a> {
         self.refcell_registers.clear();
         self.captured_read_vars.clear();
         self.refcell_inner_types.clear();
-        self.generator_yield_array_local = None;
+        self.yield_buffer_local = None;
         self.current_method_is_static = false;
 
         let has_destructuring_params = func.params.iter().any(|p| {
@@ -10554,8 +10839,8 @@ impl<'a> Lowerer<'a> {
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
-        if self.callable_collects_yields_eagerly(callable_kind, &func.body) {
-            self.init_generator_yield_array();
+        if self.callable_materializes_yields(callable_kind, &func.body) {
+            self.init_yield_buffer();
         }
         if runtime_generator {
             self.emit(IrInstr::GeneratorInitSuspend);
@@ -10612,7 +10897,7 @@ impl<'a> Lowerer<'a> {
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
         self.js_arguments_local = saved_js_arguments_local;
-        self.generator_yield_array_local = saved_generator_yield_array_local;
+        self.yield_buffer_local = saved_yield_buffer_local;
         self.parameter_symbols = saved_parameter_symbols;
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
@@ -10828,7 +11113,7 @@ impl<'a> Lowerer<'a> {
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
         let saved_js_arguments_local = self.js_arguments_local.take();
-        let saved_generator_yield_array_local = self.generator_yield_array_local.take();
+        let saved_yield_buffer_local = self.yield_buffer_local.take();
         let saved_parameter_symbols = self.parameter_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
@@ -10918,7 +11203,7 @@ impl<'a> Lowerer<'a> {
         self.refcell_registers.clear();
         self.captured_read_vars.clear();
         self.refcell_inner_types.clear();
-        self.generator_yield_array_local = None;
+        self.yield_buffer_local = None;
 
         // Check if any parameters use destructuring
         let has_destructuring_params = arrow.params.iter().any(|p| {
@@ -11237,7 +11522,7 @@ impl<'a> Lowerer<'a> {
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
         self.js_arguments_local = saved_js_arguments_local;
-        self.generator_yield_array_local = saved_generator_yield_array_local;
+        self.yield_buffer_local = saved_yield_buffer_local;
         self.parameter_symbols = saved_parameter_symbols;
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
@@ -12691,7 +12976,7 @@ impl<'a> Lowerer<'a> {
         let saved_immutable_bindings = std::mem::take(&mut self.immutable_bindings);
         let saved_refcell_registers = std::mem::take(&mut self.refcell_registers);
         let saved_captured_read_vars = std::mem::take(&mut self.captured_read_vars);
-        let saved_generator_yield_array_local = self.generator_yield_array_local.take();
+        let saved_yield_buffer_local = self.yield_buffer_local.take();
 
         // Lower the specialized function
         let mut ir_func = self.lower_function(&func_ast);
@@ -12710,7 +12995,7 @@ impl<'a> Lowerer<'a> {
         self.immutable_bindings = saved_immutable_bindings;
         self.refcell_registers = saved_refcell_registers;
         self.captured_read_vars = saved_captured_read_vars;
-        self.generator_yield_array_local = saved_generator_yield_array_local;
+        self.yield_buffer_local = saved_yield_buffer_local;
 
         // Add to pending functions
         self.pending_arrow_functions

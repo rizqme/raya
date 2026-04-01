@@ -2970,6 +2970,41 @@ mod tests {
     }
 
     #[test]
+    fn test_semantic_plan_classifies_node_compat_generator_callable() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            function* gen() {
+                yield 1;
+            }
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.function_semantics.iter().any(|semantics| {
+            semantics.kind == raya_engine::CallableKind::GeneratorFunction
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_tracks_yield_star_as_suspension_point() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            function* gen() {
+                const result = yield* [1];
+                return result;
+            }
+            "#,
+            SemanticProfile::node_compat(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.suspension_points.iter().any(|point| {
+            point.kind == raya_engine::SuspensionKind::YieldStar
+        }));
+    }
+
+    #[test]
     fn test_semantic_plan_classifies_nominal_member_call() {
         let plan = inspect_semantic_plan_with_profile(
             r#"
