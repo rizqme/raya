@@ -629,6 +629,146 @@ impl<'a> LoweringContext<'a> {
                     *right,
                 );
             }
+            JitInstr::SCmpEq { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Seq,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::SCmpNe { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Sne,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::SCmpLt { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Slt,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::SCmpLe { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Sle,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::SCmpGt { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Sgt,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::SCmpGe { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Sge,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::Eq { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Eq,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::Ne { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Ne,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::StrictEq { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::StrictEq,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::StrictNe { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::StrictNe,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
 
             // ===== Logical =====
             JitInstr::Not { dest, operand } => {
@@ -701,6 +841,24 @@ impl<'a> LoweringContext<'a> {
                 );
                 self.def_reg(builder, *dest, val);
             }
+            JitInstr::GetArgCount { dest } => {
+                let arg_count = builder.ins().ireduce(types::I32, self.params._arg_count);
+                self.def_reg(builder, *dest, arg_count);
+            }
+            JitInstr::LoadArgLocal { dest, index } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::LoadArgLocal,
+                    0,
+                    0,
+                    Some(*index),
+                    &[],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
             JitInstr::StoreLocal { index, value } => {
                 let raw = self.use_reg(builder, *value);
                 let v = match self.func.reg_type(*value) {
@@ -717,6 +875,48 @@ impl<'a> LoweringContext<'a> {
             }
 
             // ===== String Operations =====
+            JitInstr::Typeof { dest, operand } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Typeof,
+                    0,
+                    0,
+                    Some(*operand),
+                    &[],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::SConcat { dest, left, right } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::Sconcat,
+                    0,
+                    0,
+                    Some(*left),
+                    &[*right],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
+            JitInstr::ToString { dest, value } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::ToString,
+                    0,
+                    0,
+                    Some(*value),
+                    &[],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
+            }
             JitInstr::SLen {
                 dest,
                 string,
@@ -822,6 +1022,24 @@ impl<'a> LoweringContext<'a> {
                 builder.switch_to_block(done);
                 let merged = builder.block_params(done)[0];
                 self.def_reg(builder, *dest, merged);
+            }
+            JitInstr::BindMethod {
+                dest,
+                object,
+                method_slot,
+            } => {
+                self.lower_interpreter_helper_opcode(
+                    builder,
+                    Opcode::BindMethod,
+                    0,
+                    *method_slot as u32,
+                    Some(*object),
+                    &[],
+                    Some(*dest),
+                    &[],
+                    0,
+                )?;
+                return Ok(false);
             }
             JitInstr::LoadFieldShape {
                 dest,
@@ -2373,6 +2591,115 @@ impl<'a> LoweringContext<'a> {
         let sig_ref = builder.func.import_signature(sig);
         self.sig_object_set_shape_field = Some(sig_ref);
         sig_ref
+    }
+
+    fn lower_interpreter_helper_opcode(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        opcode: Opcode,
+        operand_u64: u64,
+        operand_u32: u32,
+        receiver: Option<Reg>,
+        args: &[Reg],
+        dest: Option<Reg>,
+        fallback_stack: &[Reg],
+        bytecode_offset: u32,
+    ) -> Result<(), LowerError> {
+        let ctx = self.params.ctx_ptr;
+        let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+        let call_block = builder.create_block();
+        let fallback_block = builder.create_block();
+        let exception_block = builder.create_block();
+        let success_block = builder.create_block();
+        let done = builder.create_block();
+        builder.append_block_param(done, types::I64);
+        builder
+            .ins()
+            .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+        builder.seal_block(call_block);
+
+        builder.switch_to_block(call_block);
+        let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+        let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+        let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 72);
+        let sig = self.interpreter_call_sig(builder);
+        let arg_count = args.len().min(u16::MAX as usize);
+        let (args_ptr, arg_count_val) = if opcode == Opcode::LoadArgLocal {
+            let arg_count_val = builder.ins().ireduce(types::I16, self.params._arg_count);
+            (self.params._args_ptr, arg_count_val)
+        } else {
+            let args_ptr = if arg_count == 0 {
+                builder.ins().iconst(types::I64, 0)
+            } else {
+                let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (arg_count * 8) as u32,
+                    3,
+                ));
+                let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                for (i, reg) in args.iter().take(arg_count).enumerate() {
+                    let boxed = self.boxed_reg_value(builder, *reg);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                }
+                args_ptr
+            };
+            let arg_count_val = builder.ins().iconst(types::I16, arg_count as i64);
+            (args_ptr, arg_count_val)
+        };
+        let opcode_val = builder.ins().iconst(types::I8, opcode as u8 as i64);
+        let operand_u64_val = builder.ins().iconst(types::I64, operand_u64 as i64);
+        let operand_u32_val = builder.ins().iconst(types::I32, operand_u32 as i64);
+        let receiver_val = receiver
+            .map(|reg| self.boxed_reg_value(builder, reg))
+            .unwrap_or_else(|| abi::emit_null(builder));
+        let call = builder.ins().call_indirect(
+            sig,
+            fn_ptr,
+            &[
+                opcode_val,
+                operand_u64_val,
+                operand_u32_val,
+                receiver_val,
+                args_ptr,
+                arg_count_val,
+                module_ptr,
+                shared_state,
+            ],
+        );
+        let status = builder.inst_results(call)[0];
+        let payload = builder.inst_results(call)[1];
+        let completed = builder
+            .ins()
+            .iconst(types::I64, BackendCallStatus::Completed as i64);
+        let is_completed = builder
+            .ins()
+            .icmp(condcodes::IntCC::Equal, status, completed);
+        builder
+            .ins()
+            .brif(is_completed, success_block, &[], exception_block, &[]);
+        builder.seal_block(exception_block);
+        builder.seal_block(success_block);
+        builder.seal_block(fallback_block);
+
+        builder.switch_to_block(fallback_block);
+        self.emit_failed_exit(builder, fallback_stack, bytecode_offset);
+
+        builder.switch_to_block(exception_block);
+        self.emit_failed_exit(builder, fallback_stack, bytecode_offset);
+
+        builder.switch_to_block(success_block);
+        builder.ins().jump(done, &[ir::BlockArg::Value(payload)]);
+
+        builder.seal_block(done);
+        builder.switch_to_block(done);
+        if let Some(dest) = dest {
+            let merged = builder.block_params(done)[0];
+            let coerced = self.coerce_boxed_value_for_reg(builder, dest, merged);
+            self.def_reg(builder, dest, coerced);
+        }
+        Ok(())
     }
 
     /// Lower an integer comparison

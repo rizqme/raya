@@ -1354,6 +1354,35 @@ unsafe extern "C" fn helper_interpreter_call(
                 }
             }
         }
+        Opcode::GetArgCount => {}
+        Opcode::LoadArgLocal
+        | Opcode::BindMethod
+        | Opcode::Typeof
+        | Opcode::ToString => {
+            if stack.push(Value::from_raw(receiver_raw)).is_err() {
+                return BackendCallResult::threw();
+            }
+        }
+        Opcode::Sconcat
+        | Opcode::Seq
+        | Opcode::Sne
+        | Opcode::Slt
+        | Opcode::Sle
+        | Opcode::Sgt
+        | Opcode::Sge
+        | Opcode::Eq
+        | Opcode::Ne
+        | Opcode::StrictEq
+        | Opcode::StrictNe => {
+            if stack.push(Value::from_raw(receiver_raw)).is_err() {
+                return BackendCallResult::threw();
+            }
+            for arg in &args {
+                if stack.push(*arg).is_err() {
+                    return BackendCallResult::threw();
+                }
+            }
+        }
         _ => {
             jit_raise_vm_error(
                 bridge,
@@ -1388,11 +1417,60 @@ unsafe extern "C" fn helper_interpreter_call(
             code.extend_from_slice(&(operand_u32 as u16).to_le_bytes());
             code.extend_from_slice(&arg_count.to_le_bytes());
         }
+        Opcode::BindMethod => {
+            code.extend_from_slice(&(operand_u32 as u16).to_le_bytes());
+        }
         _ => {}
     }
 
     let mut ip = 1usize;
-    match interpreter.exec_call_ops(&mut stack, &mut ip, &code, module, task, opcode) {
+    let result = match opcode {
+        Opcode::Call
+        | Opcode::CallMethodExact
+        | Opcode::OptionalCallMethodExact
+        | Opcode::CallMethodShape
+        | Opcode::OptionalCallMethodShape
+        | Opcode::CallConstructor
+        | Opcode::CallStatic
+        | Opcode::ConstructType
+        | Opcode::CallSuper => interpreter.exec_call_ops(&mut stack, &mut ip, &code, module, task, opcode),
+        Opcode::GetArgCount | Opcode::LoadArgLocal => interpreter.exec_variable_ops(
+            &mut stack,
+            &mut ip,
+            &code,
+            module,
+            task,
+            0,
+            opcode,
+            args.len(),
+            &args,
+        ),
+        Opcode::BindMethod => interpreter.exec_object_ops(&mut stack, &mut ip, &code, module, task, opcode),
+        Opcode::Typeof => interpreter.exec_type_ops(&mut stack, &mut ip, &code, module, task, opcode),
+        Opcode::Sconcat
+        | Opcode::Seq
+        | Opcode::Sne
+        | Opcode::Slt
+        | Opcode::Sle
+        | Opcode::Sgt
+        | Opcode::Sge
+        | Opcode::ToString => interpreter.exec_string_ops(&mut stack, opcode),
+        Opcode::Eq | Opcode::Ne | Opcode::StrictEq | Opcode::StrictNe => {
+            interpreter.exec_comparison_ops(&mut stack, module, task, opcode)
+        }
+        _ => {
+            jit_raise_vm_error(
+                bridge,
+                VmError::RuntimeError(format!(
+                    "JIT call helper has no interpreter dispatch for opcode {:?}",
+                    opcode
+                )),
+            );
+            return BackendCallResult::threw();
+        }
+    };
+
+    match result {
         crate::vm::interpreter::OpcodeResult::Continue => {
             let value = stack.pop().unwrap_or_else(|_| Value::null());
             if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {

@@ -545,17 +545,19 @@ fn lift_instruction(
                 .push(JitInstr::StoreLocal { index: 1, value });
         }
         Opcode::GetArgCount => {
-            return Err(LiftError::UnsupportedOpcode {
-                opcode: instr.opcode,
-                offset: instr.offset,
-            });
+            let dest = func.alloc_reg(JitType::I32);
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::GetArgCount { dest });
+            stack.push(dest);
         }
         Opcode::LoadArgLocal => {
-            let _index = stack.pop(instr.offset)?;
-            return Err(LiftError::UnsupportedOpcode {
-                opcode: instr.opcode,
-                offset: instr.offset,
-            });
+            let index = stack.pop(instr.offset)?;
+            let dest = func.alloc_reg(JitType::Value);
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::LoadArgLocal { dest, index });
+            stack.push(dest);
         }
 
         // ===== Integer Arithmetic =====
@@ -1770,10 +1772,21 @@ fn lift_instruction(
 
         // ===== Bound Methods =====
         Opcode::BindMethod => {
-            return Err(LiftError::UnsupportedOpcode {
-                opcode: instr.opcode,
-                offset: instr.offset,
+            let method_slot = match instr.operands {
+                Operands::U16(slot) => slot,
+                _ => return Err(LiftError::UnsupportedOpcode {
+                    opcode: instr.opcode,
+                    offset: instr.offset,
+                }),
+            };
+            let object = stack.pop(instr.offset)?;
+            let dest = func.alloc_reg(JitType::Value);
+            func.block_mut(block).instrs.push(JitInstr::BindMethod {
+                dest,
+                object,
+                method_slot,
             });
+            stack.push(dest);
         }
     }
 

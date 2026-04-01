@@ -206,7 +206,7 @@ impl<'a> Interpreter<'a> {
         )
     }
 
-    pub(in crate::vm::interpreter) fn exec_comparison_ops(
+    pub(crate) fn exec_comparison_ops(
         &mut self,
         stack: &mut Stack,
         module: &Module,

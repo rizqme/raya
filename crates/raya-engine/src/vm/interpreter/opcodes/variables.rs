@@ -12,7 +12,7 @@ use std::any::TypeId;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
-    pub(in crate::vm::interpreter) fn exec_variable_ops(
+    pub(crate) fn exec_variable_ops(
         &mut self,
         stack: &mut Stack,
         ip: &mut usize,

@@ -361,7 +361,9 @@ pub enum HelperCall {
     GenericMod,
     GenericNeg,
     GenericNot,
+    GenericStrictEqual,
     GenericNotEqual,
+    GenericStrictNotEqual,
     GenericLessEqual,
     GenericGreater,
     GenericGreaterEqual,
@@ -379,6 +381,7 @@ pub enum HelperCall {
     LoadFieldShape,
     StoreFieldExact,
     StoreFieldShape,
+    BindMethod,
 
     // Closures
     MakeClosure,
@@ -1148,7 +1151,9 @@ fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
         | HelperCall::GenericMod
         | HelperCall::GenericNeg
         | HelperCall::GenericNot
+        | HelperCall::GenericStrictEqual
         | HelperCall::GenericNotEqual
+        | HelperCall::GenericStrictNotEqual
         | HelperCall::GenericLessEqual
         | HelperCall::GenericGreater
         | HelperCall::GenericGreaterEqual
@@ -1169,8 +1174,9 @@ fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
         | HelperCall::SleepTask
         | HelperCall::SpawnClosure
         | HelperCall::SetupTry
-        | HelperCall::EndTry
-        | HelperCall::StringCompare => true,
+        | HelperCall::EndTry => true,
+        HelperCall::StringCompare => arg_index < 2,
+        HelperCall::BindMethod => arg_index == 0,
         HelperCall::ObjectGetField => arg_index == 0,
         HelperCall::ObjectSetField => arg_index == 0 || arg_index == 2,
         HelperCall::LoadGlobalValue => false,

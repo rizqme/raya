@@ -15,6 +15,7 @@ use crate::compiler::ir::function::IrFunction;
 use crate::compiler::ir::instr::{BinaryOp, IrInstr, KernelOp, UnaryOp};
 use crate::compiler::ir::module::{IrClass, IrModule};
 use crate::compiler::ir::value::{IrConstant, IrValue};
+use crate::compiler::Opcode;
 use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
 
@@ -745,16 +746,18 @@ impl<'a> IrFunctionAdapter<'a> {
                 });
             }
             IrInstr::LoadArgCount { dest } => {
-                return Err(AotError::UnsupportedInstruction(format!(
-                    "LoadArgCount is unsupported in compiled backends (dest r{})",
-                    dest.id.0
-                )));
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::GetArgCount,
+                    args: vec![],
+                });
             }
             IrInstr::LoadArgLocal { dest, index } => {
-                return Err(AotError::UnsupportedInstruction(format!(
-                    "LoadArgLocal is unsupported in compiled backends (dest r{}, index r{})",
-                    dest.id.0, index.id.0
-                )));
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::LoadArgLocal,
+                    args: vec![Self::reg(index)],
+                });
             }
             IrInstr::PopToLocal { index } => {
                 // PopToLocal is for catch parameters — load resume value
@@ -1008,12 +1011,20 @@ impl<'a> IrFunctionAdapter<'a> {
                 });
             }
             IrInstr::StringCompare {
-                dest, left, right, ..
+                dest,
+                left,
+                right,
+                mode,
+                negate,
             } => {
+                let opcode = match (*mode, *negate) {
+                    (_, true) => Opcode::Sne,
+                    (_, false) => Opcode::Seq,
+                } as u32;
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::StringCompare,
-                    args: vec![Self::reg(left), Self::reg(right)],
+                    args: vec![Self::reg(left), Self::reg(right), opcode],
                 });
             }
             IrInstr::ToString { dest, operand } => {
@@ -1400,12 +1411,22 @@ impl<'a> IrFunctionAdapter<'a> {
             }
 
             // === Late-bound member (should be resolved before AOT) ===
-            IrInstr::LateBoundMember { dest, object, .. } => {
-                return Err(AotError::UnsupportedInstruction(format!(
-                    "LateBoundMember reached AOT for object r{} and dest r{}; compiled backends must not substitute ObjectGetField",
-                    object.id.as_u32(),
-                    dest.id.as_u32()
-                )));
+            IrInstr::LateBoundMember {
+                dest,
+                object,
+                property,
+            } => {
+                let key_reg = *next_temp;
+                *next_temp = next_temp.saturating_add(1);
+                out.push(SmInstr::ConstString {
+                    dest: key_reg,
+                    value: property.clone(),
+                });
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::DynGetProp,
+                    args: vec![Self::reg(object), key_reg],
+                });
             }
 
             // === Debug ===
@@ -1418,12 +1439,11 @@ impl<'a> IrFunctionAdapter<'a> {
                 object,
                 method,
             } => {
-                return Err(AotError::UnsupportedInstruction(format!(
-                    "BindMethod reached AOT for object r{} method slot {}; compiled backends must not substitute a field load for bound method allocation (dest r{})",
-                    object.id.as_u32(),
-                    method,
-                    dest.id.as_u32()
-                )));
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::BindMethod,
+                    args: vec![Self::reg(object), *method as u32],
+                });
             }
         }
         Ok(())
@@ -1497,8 +1517,10 @@ impl<'a> IrFunctionAdapter<'a> {
                     "BinaryOp::Pow is not yet implemented for compiled backends".to_string(),
                 ));
             }
-            BinaryOp::Equal | BinaryOp::StrictEqual => HelperCall::GenericEquals,
-            BinaryOp::NotEqual | BinaryOp::StrictNotEqual => HelperCall::GenericNotEqual,
+            BinaryOp::Equal => HelperCall::GenericEquals,
+            BinaryOp::StrictEqual => HelperCall::GenericStrictEqual,
+            BinaryOp::NotEqual => HelperCall::GenericNotEqual,
+            BinaryOp::StrictNotEqual => HelperCall::GenericStrictNotEqual,
             BinaryOp::Less => HelperCall::GenericLessThan,
             BinaryOp::LessEqual => HelperCall::GenericLessEqual,
             BinaryOp::Greater => HelperCall::GenericGreater,

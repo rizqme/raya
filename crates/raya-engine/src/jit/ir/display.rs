@@ -201,6 +201,10 @@ impl fmt::Display for JitInstr {
 
             // Memory
             JitInstr::LoadLocal { dest, index } => write!(f, "{} = load.local {}", dest, index),
+            JitInstr::GetArgCount { dest } => write!(f, "{} = get.arg_count", dest),
+            JitInstr::LoadArgLocal { dest, index } => {
+                write!(f, "{} = load.arg.local {}", dest, index)
+            }
             JitInstr::StoreLocal { index, value } => write!(f, "store.local {}, {}", index, value),
             JitInstr::LoadGlobal { dest, index } => write!(f, "{} = load.global {}", dest, index),
             JitInstr::StoreGlobal { index, value } => {
@@ -222,6 +226,11 @@ impl fmt::Display for JitInstr {
                 object,
                 offset,
             } => write!(f, "{} = load.field {}.{}", dest, object, offset),
+            JitInstr::BindMethod {
+                dest,
+                object,
+                method_slot,
+            } => write!(f, "{} = bind.method {}.{}", dest, object, method_slot),
             JitInstr::LoadFieldShape {
                 dest,
                 object,

@@ -35,6 +35,7 @@ use crate::vm::scheduler::{IoSubmission, ResumePolicy, SuspendReason, Task};
 use crate::vm::suspend::{BackendCallResult, SuspendRecord, SuspendTag};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
+use crate::vm::VmError;
 use parking_lot::RwLock;
 use raya_sdk::NativeCallResult;
 use rustc_hash::FxHashMap;
@@ -428,30 +429,226 @@ unsafe extern "C" fn helper_array_push(_ctx: *mut AotTaskContext, array: u64, va
     unsafe { &mut *ptr.as_ptr() }.push(Value::from_raw(value));
 }
 
-unsafe extern "C" fn helper_generic_equals(a: u64, b: u64) -> u8 {
-    // Conservative equality fast path: exact raw-value match.
-    if a == b {
-        1
-    } else {
-        0
+unsafe extern "C" fn helper_generic_equals(ctx: *mut AotTaskContext, a: u64, b: u64) -> u8 {
+    if ctx.is_null() {
+        return u8::from(a == b);
+    }
+    match aot_exec_value_opcode_binary(ctx, Opcode::Eq, a, b)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
     }
 }
 
-unsafe extern "C" fn helper_generic_less_than(a: u64, b: u64) -> u8 {
-    // Conservative comparison fast path for plain f64 payloads.
-    let base = abi::NAN_BOX_BASE;
-    if a < base && b < base {
-        // Both are f64 — compare as f64
-        let fa = f64::from_bits(a);
-        let fb = f64::from_bits(b);
-        if fa < fb {
-            1
-        } else {
-            0
+unsafe extern "C" fn helper_generic_less_than(
+    ctx: *mut AotTaskContext,
+    a: u64,
+    b: u64,
+) -> u8 {
+    if ctx.is_null() {
+        let base = abi::NAN_BOX_BASE;
+        if a < base && b < base {
+            return u8::from(f64::from_bits(a) < f64::from_bits(b));
         }
-    } else {
-        0
+        return 0;
     }
+    match aot_exec_value_opcode_binary(ctx, Opcode::Flt, a, b)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn helper_generic_add(ctx: *mut AotTaskContext, a: u64, b: u64) -> u64 {
+    aot_exec_value_opcode_binary(ctx, Opcode::Fadd, a, b)
+        .unwrap_or_else(Value::null)
+        .raw()
+}
+
+unsafe extern "C" fn helper_generic_sub(ctx: *mut AotTaskContext, a: u64, b: u64) -> u64 {
+    aot_exec_value_opcode_binary(ctx, Opcode::Fsub, a, b)
+        .unwrap_or_else(Value::null)
+        .raw()
+}
+
+unsafe extern "C" fn helper_generic_mul(ctx: *mut AotTaskContext, a: u64, b: u64) -> u64 {
+    aot_exec_value_opcode_binary(ctx, Opcode::Fmul, a, b)
+        .unwrap_or_else(Value::null)
+        .raw()
+}
+
+unsafe extern "C" fn helper_generic_div(ctx: *mut AotTaskContext, a: u64, b: u64) -> u64 {
+    aot_exec_value_opcode_binary(ctx, Opcode::Fdiv, a, b)
+        .unwrap_or_else(Value::null)
+        .raw()
+}
+
+unsafe extern "C" fn helper_generic_mod(ctx: *mut AotTaskContext, a: u64, b: u64) -> u64 {
+    aot_exec_value_opcode_binary(ctx, Opcode::Fmod, a, b)
+        .unwrap_or_else(Value::null)
+        .raw()
+}
+
+unsafe extern "C" fn helper_generic_neg(ctx: *mut AotTaskContext, value: u64) -> u64 {
+    aot_exec_value_opcode_unary(ctx, Opcode::Fneg, value)
+        .unwrap_or_else(Value::null)
+        .raw()
+}
+
+unsafe extern "C" fn helper_generic_not(ctx: *mut AotTaskContext, value: u64) -> u8 {
+    match aot_exec_value_opcode_unary(ctx, Opcode::Not, value)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn helper_generic_not_equal(
+    ctx: *mut AotTaskContext,
+    a: u64,
+    b: u64,
+) -> u8 {
+    match aot_exec_value_opcode_binary(ctx, Opcode::Ne, a, b)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn helper_generic_strict_equals(
+    ctx: *mut AotTaskContext,
+    a: u64,
+    b: u64,
+) -> u8 {
+    match aot_exec_value_opcode_binary(ctx, Opcode::StrictEq, a, b)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn helper_generic_strict_not_equal(
+    ctx: *mut AotTaskContext,
+    a: u64,
+    b: u64,
+) -> u8 {
+    match aot_exec_value_opcode_binary(ctx, Opcode::StrictNe, a, b)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn helper_generic_less_equal(
+    ctx: *mut AotTaskContext,
+    a: u64,
+    b: u64,
+) -> u8 {
+    match aot_exec_value_opcode_binary(ctx, Opcode::Fle, a, b)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn helper_generic_greater(
+    ctx: *mut AotTaskContext,
+    a: u64,
+    b: u64,
+) -> u8 {
+    match aot_exec_value_opcode_binary(ctx, Opcode::Fgt, a, b)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn helper_generic_greater_equal(
+    ctx: *mut AotTaskContext,
+    a: u64,
+    b: u64,
+) -> u8 {
+    match aot_exec_value_opcode_binary(ctx, Opcode::Fge, a, b)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn helper_to_string(ctx: *mut AotTaskContext, value: u64) -> u64 {
+    aot_exec_value_opcode_unary(ctx, Opcode::ToString, value)
+        .unwrap_or_else(Value::null)
+        .raw()
+}
+
+unsafe extern "C" fn helper_typeof_value(ctx: *mut AotTaskContext, value: u64) -> u64 {
+    aot_exec_value_opcode_unary(ctx, Opcode::Typeof, value)
+        .unwrap_or_else(Value::null)
+        .raw()
+}
+
+unsafe extern "C" fn helper_string_compare(
+    ctx: *mut AotTaskContext,
+    left: u64,
+    right: u64,
+    opcode_raw: u8,
+) -> u8 {
+    let Some(opcode) = Opcode::from_u8(opcode_raw) else {
+        aot_raise_type_error(
+            ctx,
+            format!("invalid string compare opcode {}", opcode_raw),
+        );
+        return 0;
+    };
+    match aot_exec_value_opcode_binary(ctx, opcode, left, right)
+        .and_then(|value| value.as_bool().map(u8::from))
+    {
+        Some(result) => result,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn helper_bind_method(
+    ctx: *mut AotTaskContext,
+    object: u64,
+    method_slot: u16,
+) -> u64 {
+    aot_exec_bind_method(ctx, object, method_slot)
+        .unwrap_or_else(Value::null)
+        .raw()
+}
+
+unsafe extern "C" fn helper_get_arg_count(frame: *const AotFrame) -> u64 {
+    if frame.is_null() {
+        return Value::i32(0).raw();
+    }
+    Value::i32((*frame).param_count as i32).raw()
+}
+
+unsafe extern "C" fn helper_load_arg_local(frame: *const AotFrame, index_raw: u64) -> u64 {
+    if frame.is_null() {
+        return Value::undefined().raw();
+    }
+    let Some(index) = Value::from_raw(index_raw).as_i32() else {
+        return Value::undefined().raw();
+    };
+    if index < 0 {
+        return Value::undefined().raw();
+    }
+    let index = index as usize;
+    if index >= (*frame).param_count as usize {
+        return Value::undefined().raw();
+    }
+    *(*frame).locals.add(index)
 }
 
 // =============================================================================
@@ -482,6 +679,12 @@ fn aot_task<'a>(ctx: *mut AotTaskContext) -> Option<&'a Task> {
     (!ptr.is_null()).then(|| unsafe { &*ptr })
 }
 
+fn aot_task_arc(ctx: *mut AotTaskContext) -> Option<Arc<Task>> {
+    let shared = aot_shared(ctx)?;
+    let task = aot_task(ctx)?;
+    shared.tasks.read().get(&task.id()).cloned()
+}
+
 fn aot_raise_type_error(ctx: *mut AotTaskContext, message: String) {
     let (Some(shared), Some(task)) = (aot_shared(ctx), aot_task(ctx)) else {
         return;
@@ -493,6 +696,196 @@ fn aot_raise_type_error(ctx: *mut AotTaskContext, message: String) {
     let ptr = gc.allocate(RayaString::new(message));
     let exc = unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()) };
     task.set_exception(exc);
+}
+
+fn aot_raise_vm_error(ctx: *mut AotTaskContext, error: VmError) {
+    aot_raise_type_error(ctx, error.to_string());
+}
+
+unsafe fn aot_exec_value_opcode_unary(
+    ctx: *mut AotTaskContext,
+    opcode: Opcode,
+    operand_raw: u64,
+) -> Option<Value> {
+    let (Some(shared), Some(module), Some(task)) =
+        (aot_shared(ctx), aot_module(ctx), aot_task_arc(ctx))
+    else {
+        return None;
+    };
+    let mut interpreter = aot_build_interpreter(shared);
+    let mut stack = Stack::new();
+    if let Err(error) = stack.push(Value::from_raw(operand_raw)) {
+        aot_raise_vm_error(ctx, error);
+        return None;
+    }
+    let result = match opcode {
+        Opcode::Fneg => interpreter.exec_arithmetic_ops(&mut stack, module, &task, opcode),
+        Opcode::Typeof => {
+            let code = [opcode as u8];
+            let mut ip = 1usize;
+            interpreter.exec_type_ops(&mut stack, &mut ip, &code, module, &task, opcode)
+        }
+        Opcode::ToString => interpreter.exec_string_ops(&mut stack, opcode),
+        Opcode::Not => interpreter.exec_comparison_ops(&mut stack, module, &task, opcode),
+        _ => {
+            aot_raise_type_error(
+                ctx,
+                format!("unsupported unary AOT helper opcode {:?}", opcode),
+            );
+            return None;
+        }
+    };
+    match result {
+        crate::vm::interpreter::OpcodeResult::Continue => stack.pop().ok(),
+        crate::vm::interpreter::OpcodeResult::Return(value) => Some(value),
+        crate::vm::interpreter::OpcodeResult::Error(error) => {
+            aot_raise_vm_error(ctx, error);
+            None
+        }
+        crate::vm::interpreter::OpcodeResult::Suspend(reason) => {
+            aot_raise_type_error(
+                ctx,
+                format!(
+                    "unexpected suspension {:?} in exact unary AOT helper {:?}",
+                    reason, opcode
+                ),
+            );
+            None
+        }
+        crate::vm::interpreter::OpcodeResult::PushFrame { .. } => {
+            aot_raise_type_error(
+                ctx,
+                format!(
+                    "unexpected nested frame in exact unary AOT helper {:?}",
+                    opcode
+                ),
+            );
+            None
+        }
+    }
+}
+
+unsafe fn aot_exec_value_opcode_binary(
+    ctx: *mut AotTaskContext,
+    opcode: Opcode,
+    left_raw: u64,
+    right_raw: u64,
+) -> Option<Value> {
+    let (Some(shared), Some(module), Some(task)) =
+        (aot_shared(ctx), aot_module(ctx), aot_task_arc(ctx))
+    else {
+        return None;
+    };
+    let mut interpreter = aot_build_interpreter(shared);
+    let mut stack = Stack::new();
+    if let Err(error) = stack.push(Value::from_raw(left_raw)) {
+        aot_raise_vm_error(ctx, error);
+        return None;
+    }
+    if let Err(error) = stack.push(Value::from_raw(right_raw)) {
+        aot_raise_vm_error(ctx, error);
+        return None;
+    }
+    let result = match opcode {
+        Opcode::Fadd
+        | Opcode::Fsub
+        | Opcode::Fmul
+        | Opcode::Fdiv
+        | Opcode::Fmod => interpreter.exec_arithmetic_ops(&mut stack, module, &task, opcode),
+        Opcode::Eq
+        | Opcode::Ne
+        | Opcode::StrictEq
+        | Opcode::StrictNe
+        | Opcode::Flt
+        | Opcode::Fle
+        | Opcode::Fgt
+        | Opcode::Fge => interpreter.exec_comparison_ops(&mut stack, module, &task, opcode),
+        Opcode::Sconcat
+        | Opcode::Seq
+        | Opcode::Sne
+        | Opcode::Slt
+        | Opcode::Sle
+        | Opcode::Sgt
+        | Opcode::Sge => interpreter.exec_string_ops(&mut stack, opcode),
+        _ => {
+            aot_raise_type_error(
+                ctx,
+                format!("unsupported binary AOT helper opcode {:?}", opcode),
+            );
+            return None;
+        }
+    };
+    match result {
+        crate::vm::interpreter::OpcodeResult::Continue => stack.pop().ok(),
+        crate::vm::interpreter::OpcodeResult::Return(value) => Some(value),
+        crate::vm::interpreter::OpcodeResult::Error(error) => {
+            aot_raise_vm_error(ctx, error);
+            None
+        }
+        crate::vm::interpreter::OpcodeResult::Suspend(reason) => {
+            aot_raise_type_error(
+                ctx,
+                format!(
+                    "unexpected suspension {:?} in exact binary AOT helper {:?}",
+                    reason, opcode
+                ),
+            );
+            None
+        }
+        crate::vm::interpreter::OpcodeResult::PushFrame { .. } => {
+            aot_raise_type_error(
+                ctx,
+                format!(
+                    "unexpected nested frame in exact binary AOT helper {:?}",
+                    opcode
+                ),
+            );
+            None
+        }
+    }
+}
+
+unsafe fn aot_exec_bind_method(
+    ctx: *mut AotTaskContext,
+    object_raw: u64,
+    method_slot: u16,
+) -> Option<Value> {
+    let (Some(shared), Some(module), Some(task)) =
+        (aot_shared(ctx), aot_module(ctx), aot_task_arc(ctx))
+    else {
+        return None;
+    };
+    let mut interpreter = aot_build_interpreter(shared);
+    let mut stack = Stack::new();
+    if let Err(error) = stack.push(Value::from_raw(object_raw)) {
+        aot_raise_vm_error(ctx, error);
+        return None;
+    }
+    let code = [Opcode::BindMethod as u8, (method_slot & 0xFF) as u8, (method_slot >> 8) as u8];
+    let mut ip = 1usize;
+    let result = interpreter.exec_object_ops(&mut stack, &mut ip, &code, module, &task, Opcode::BindMethod);
+    match result {
+        crate::vm::interpreter::OpcodeResult::Continue => stack.pop().ok(),
+        crate::vm::interpreter::OpcodeResult::Return(value) => Some(value),
+        crate::vm::interpreter::OpcodeResult::Error(error) => {
+            aot_raise_vm_error(ctx, error);
+            None
+        }
+        crate::vm::interpreter::OpcodeResult::Suspend(reason) => {
+            aot_raise_type_error(
+                ctx,
+                format!("unexpected suspension {:?} in bind method helper", reason),
+            );
+            None
+        }
+        crate::vm::interpreter::OpcodeResult::PushFrame { .. } => {
+            aot_raise_type_error(
+                ctx,
+                "unexpected nested frame in bind method helper".to_string(),
+            );
+            None
+        }
+    }
 }
 
 fn aot_value_kind_mask(value: Value) -> u16 {
@@ -1733,6 +2126,25 @@ pub fn create_default_helper_table() -> AotHelperTable {
         array_push: helper_array_push,
         generic_equals: helper_generic_equals,
         generic_less_than: helper_generic_less_than,
+        generic_add: helper_generic_add,
+        generic_sub: helper_generic_sub,
+        generic_mul: helper_generic_mul,
+        generic_div: helper_generic_div,
+        generic_mod: helper_generic_mod,
+        generic_neg: helper_generic_neg,
+        generic_not: helper_generic_not,
+        generic_not_equal: helper_generic_not_equal,
+        generic_strict_equals: helper_generic_strict_equals,
+        generic_strict_not_equal: helper_generic_strict_not_equal,
+        generic_less_equal: helper_generic_less_equal,
+        generic_greater: helper_generic_greater,
+        generic_greater_equal: helper_generic_greater_equal,
+        to_string: helper_to_string,
+        typeof_value: helper_typeof_value,
+        string_compare: helper_string_compare,
+        bind_method: helper_bind_method,
+        get_arg_count: helper_get_arg_count,
+        load_arg_local: helper_load_arg_local,
         object_get_field: helper_object_get_field,
         object_set_field: helper_object_set_field,
         object_is_nominal: helper_object_is_nominal,
@@ -1842,9 +2254,12 @@ mod tests {
     #[test]
     fn test_generic_equals() {
         unsafe {
-            assert_eq!(helper_generic_equals(42, 42), 1);
-            assert_eq!(helper_generic_equals(42, 43), 0);
-            assert_eq!(helper_generic_equals(abi::NULL_VALUE, abi::NULL_VALUE), 1);
+            assert_eq!(helper_generic_equals(ptr::null_mut(), 42, 42), 1);
+            assert_eq!(helper_generic_equals(ptr::null_mut(), 42, 43), 0);
+            assert_eq!(
+                helper_generic_equals(ptr::null_mut(), abi::NULL_VALUE, abi::NULL_VALUE),
+                1
+            );
         }
     }
 

@@ -793,7 +793,7 @@ impl<'a> Interpreter<'a> {
         )))
     }
 
-    pub(in crate::vm::interpreter) fn exec_object_ops(
+    pub(crate) fn exec_object_ops(
         &mut self,
         stack: &mut Stack,
         ip: &mut usize,

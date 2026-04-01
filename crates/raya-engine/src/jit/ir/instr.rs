@@ -337,6 +337,13 @@ pub enum JitInstr {
         dest: Reg,
         index: u16,
     },
+    GetArgCount {
+        dest: Reg,
+    },
+    LoadArgLocal {
+        dest: Reg,
+        index: Reg,
+    },
     StoreLocal {
         index: u16,
         value: Reg,
@@ -372,6 +379,11 @@ pub enum JitInstr {
         dest: Reg,
         object: Reg,
         offset: u16,
+    },
+    BindMethod {
+        dest: Reg,
+        object: Reg,
+        method_slot: u16,
     },
     LoadFieldShape {
         dest: Reg,
@@ -818,10 +830,13 @@ impl JitInstr {
 
             // Memory
             JitInstr::LoadLocal { dest, .. }
+            | JitInstr::GetArgCount { dest }
+            | JitInstr::LoadArgLocal { dest, .. }
             | JitInstr::LoadGlobal { dest, .. }
             | JitInstr::LoadStatic { dest, .. }
             | JitInstr::NewObject { dest, .. }
             | JitInstr::LoadFieldExact { dest, .. }
+            | JitInstr::BindMethod { dest, .. }
             | JitInstr::LoadFieldShape { dest, .. }
             | JitInstr::ImplementsShape { dest, .. }
             | JitInstr::CastShape { dest, .. }
@@ -981,9 +996,12 @@ impl JitInstr {
             | JitInstr::UnboxBool { .. }
             | JitInstr::UnboxPtr { .. }
             | JitInstr::LoadLocal { .. }
+            | JitInstr::GetArgCount { .. }
+            | JitInstr::LoadArgLocal { .. }
             | JitInstr::LoadGlobal { .. }
             | JitInstr::LoadStatic { .. }
             | JitInstr::LoadFieldExact { .. }
+            | JitInstr::BindMethod { .. }
             | JitInstr::LoadFieldShape { .. }
             | JitInstr::ImplementsShape { .. }
             | JitInstr::LoadElem { .. }

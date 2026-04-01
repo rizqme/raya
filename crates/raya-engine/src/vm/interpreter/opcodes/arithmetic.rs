@@ -31,7 +31,7 @@ impl<'a> Interpreter<'a> {
         self.js_to_number_with_context(v, task, module)
     }
 
-    pub(in crate::vm::interpreter) fn exec_arithmetic_ops(
+    pub(crate) fn exec_arithmetic_ops(
         &mut self,
         stack: &mut Stack,
         module: &Module,

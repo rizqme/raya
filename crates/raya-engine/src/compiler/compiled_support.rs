@@ -33,6 +33,47 @@ impl CompiledNumericIntrinsicOp {
     }
 }
 
+/// Exact shared unary value operations used by compiled backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValueUnaryOp {
+    ToString,
+    Typeof,
+}
+
+/// Exact shared boxed-value binary operations used by compiled backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValueBinaryOp {
+    Equal,
+    NotEqual,
+    StrictEqual,
+    StrictNotEqual,
+}
+
+/// Exact shared string operations used by compiled backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StringOp {
+    Concat,
+    CompareEq,
+    CompareNe,
+    CompareLt,
+    CompareLe,
+    CompareGt,
+    CompareGe,
+}
+
+/// Exact shared member operations used by compiled backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemberOp {
+    BindMethod,
+}
+
+/// Exact shared argument-frame operations used by compiled backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ArgFrameOp {
+    GetArgCount,
+    LoadArgLocal,
+}
+
 /// Typed helper families available to compiled backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompiledAbiOp {
@@ -51,6 +92,11 @@ pub enum CompiledAbiOp {
     Sleep,
     YieldTask,
     NumericIntrinsic(CompiledNumericIntrinsicOp),
+    ValueUnary(ValueUnaryOp),
+    ValueBinary(ValueBinaryOp),
+    StringOp(StringOp),
+    MemberOp(MemberOp),
+    ArgFrameOp(ArgFrameOp),
 }
 
 /// Shared decision for compiled-backend support.
@@ -183,9 +229,62 @@ pub fn bytecode_instruction_support(
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::ConstructType)
         }
         Opcode::CallSuper => CompiledSupportDecision::AbiHelper(CompiledAbiOp::CallSuper),
-        Opcode::GetArgCount | Opcode::LoadArgLocal => CompiledSupportDecision::Unsupported {
-            reason: "dynamic argument introspection is unsupported in compiled backends",
-        },
+        Opcode::GetArgCount => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(ArgFrameOp::GetArgCount))
+        }
+        Opcode::LoadArgLocal => CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(
+            ArgFrameOp::LoadArgLocal,
+        )),
+        Opcode::BindMethod => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::MemberOp(MemberOp::BindMethod))
+        }
+        Opcode::Eq => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
+                ValueBinaryOp::Equal,
+            ))
+        }
+        Opcode::Ne => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
+                ValueBinaryOp::NotEqual,
+            ))
+        }
+        Opcode::StrictEq => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
+                ValueBinaryOp::StrictEqual,
+            ))
+        }
+        Opcode::StrictNe => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
+                ValueBinaryOp::StrictNotEqual,
+            ))
+        }
+        Opcode::Typeof => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueUnary(ValueUnaryOp::Typeof))
+        }
+        Opcode::Sconcat => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::StringOp(StringOp::Concat))
+        }
+        Opcode::Seq => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::StringOp(StringOp::CompareEq))
+        }
+        Opcode::Sne => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::StringOp(StringOp::CompareNe))
+        }
+        Opcode::Slt => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::StringOp(StringOp::CompareLt))
+        }
+        Opcode::Sle => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::StringOp(StringOp::CompareLe))
+        }
+        Opcode::Sgt => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::StringOp(StringOp::CompareGt))
+        }
+        Opcode::Sge => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::StringOp(StringOp::CompareGe))
+        }
+        Opcode::ToString => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueUnary(ValueUnaryOp::ToString))
+        }
         _ => CompiledSupportDecision::NativeLowering,
     }
 }
@@ -314,23 +413,45 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dynamic_argument_introspection_for_compiled_backends() {
-        assert!(matches!(
+    fn classifies_argument_and_string_helper_ops_as_exact_helpers() {
+        assert_eq!(
             bytecode_instruction_support(
                 CompiledBackendKind::Aot,
                 Opcode::LoadArgLocal,
                 &Operands::None
             ),
-            CompiledSupportDecision::Unsupported { .. }
-        ));
-        assert!(matches!(
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(
+                ArgFrameOp::LoadArgLocal
+            ))
+        );
+        assert_eq!(
             bytecode_instruction_support(
                 CompiledBackendKind::Jit,
                 Opcode::GetArgCount,
                 &Operands::None
             ),
-            CompiledSupportDecision::Unsupported { .. }
-        ));
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(
+                ArgFrameOp::GetArgCount
+            ))
+        );
+        assert_eq!(
+            bytecode_instruction_support(CompiledBackendKind::Jit, Opcode::Typeof, &Operands::None),
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueUnary(ValueUnaryOp::Typeof))
+        );
+        assert_eq!(
+            bytecode_instruction_support(CompiledBackendKind::Aot, Opcode::ToString, &Operands::None),
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueUnary(
+                ValueUnaryOp::ToString
+            ))
+        );
+        assert_eq!(
+            bytecode_instruction_support(CompiledBackendKind::Aot, Opcode::Sconcat, &Operands::None),
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::StringOp(StringOp::Concat))
+        );
+        assert_eq!(
+            bytecode_instruction_support(CompiledBackendKind::Jit, Opcode::BindMethod, &Operands::None),
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::MemberOp(MemberOp::BindMethod))
+        );
     }
 
     #[test]

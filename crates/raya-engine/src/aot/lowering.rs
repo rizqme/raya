@@ -1080,20 +1080,7 @@ impl LoweringCtx {
 
         // Compound operations must either be lowered exactly or rejected.
         match helper {
-            HelperCall::GenericAdd
-            | HelperCall::GenericSub
-            | HelperCall::GenericMul
-            | HelperCall::GenericDiv
-            | HelperCall::GenericMod
-            | HelperCall::GenericNeg
-            | HelperCall::GenericNot
-            | HelperCall::GenericNotEqual
-            | HelperCall::GenericLessEqual
-            | HelperCall::GenericGreater
-            | HelperCall::GenericGreaterEqual
-            | HelperCall::GenericConcat
-            | HelperCall::ToString
-            | HelperCall::NewObject
+            HelperCall::NewObject
             | HelperCall::ObjectLiteral
             | HelperCall::ArrayLiteral
             | HelperCall::ArrayPop
@@ -1109,10 +1096,6 @@ impl LoweringCtx {
             | HelperCall::LoadRefCell
             | HelperCall::StoreRefCell
             | HelperCall::ConstructType
-            | HelperCall::Typeof
-            | HelperCall::StringCompare
-            | HelperCall::GetArgCount
-            | HelperCall::LoadArgLocal
             | HelperCall::AwaitTask
             | HelperCall::AwaitAll
             | HelperCall::YieldTask
@@ -1121,7 +1104,7 @@ impl LoweringCtx {
             | HelperCall::SetupTry
             | HelperCall::EndTry => {
                 return Err(LoweringError::Unsupported(format!(
-                    "compound helper requires exact compiled support: {helper:?}"
+                    "unsupported helper without an exact compiled lowering: {helper:?}"
                 )));
             }
 
@@ -1189,6 +1172,14 @@ impl LoweringCtx {
                 v
             }
 
+            HelperCall::GenericConcat => {
+                let mut v = vec![ctx];
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
+                v
+            }
+
             // (val: u64) -> u64
             HelperCall::StringLen | HelperCall::ArrayLen => {
                 args.iter().map(|a| self.use_reg(builder, *a)).collect()
@@ -1209,9 +1200,50 @@ impl LoweringCtx {
                 v
             }
 
-            // (a: u64, b: u64) -> u8
-            HelperCall::GenericEquals | HelperCall::GenericLessThan => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
+            // (ctx, a: u64, b: u64) -> u8/u64 depending on helper family
+            HelperCall::GenericEquals
+            | HelperCall::GenericLessThan
+            | HelperCall::GenericAdd
+            | HelperCall::GenericSub
+            | HelperCall::GenericMul
+            | HelperCall::GenericDiv
+            | HelperCall::GenericMod
+            | HelperCall::GenericNotEqual
+            | HelperCall::GenericStrictEqual
+            | HelperCall::GenericStrictNotEqual
+            | HelperCall::GenericLessEqual
+            | HelperCall::GenericGreater
+            | HelperCall::GenericGreaterEqual => {
+                let mut values = vec![ctx];
+                for a in args {
+                    values.push(self.use_reg(builder, *a));
+                }
+                values
+            }
+
+            HelperCall::GenericNeg | HelperCall::GenericNot | HelperCall::ToString | HelperCall::Typeof => {
+                vec![ctx, self.use_reg(builder, args[0])]
+            }
+
+            HelperCall::StringCompare => {
+                let opcode = builder.ins().iconst(types::I8, args[2] as i64);
+                vec![
+                    ctx,
+                    self.use_reg(builder, args[0]),
+                    self.use_reg(builder, args[1]),
+                    opcode,
+                ]
+            }
+
+            HelperCall::BindMethod => {
+                let method_slot = builder.ins().iconst(types::I16, args[1] as i64);
+                vec![ctx, self.use_reg(builder, args[0]), method_slot]
+            }
+
+            HelperCall::GetArgCount => vec![self.frame_ptr(builder)],
+
+            HelperCall::LoadArgLocal => {
+                vec![self.frame_ptr(builder), self.use_reg(builder, args[0])]
             }
 
             // (obj: u64, field_index: u32) -> u64
@@ -1546,11 +1578,69 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
         }
-        // (a: u64, b: u64) -> u8
-        HelperCall::GenericEquals | HelperCall::GenericLessThan => {
+        // (ctx: i64, a: u64, b: u64) -> u8
+        HelperCall::GenericEquals
+        | HelperCall::GenericLessThan
+        | HelperCall::GenericNotEqual
+        | HelperCall::GenericStrictEqual
+        | HelperCall::GenericStrictNotEqual
+        | HelperCall::GenericLessEqual
+        | HelperCall::GenericGreater
+        | HelperCall::GenericGreaterEqual => {
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I8));
+        }
+        // (ctx: i64, a: u64, b: u64) -> u64
+        HelperCall::GenericAdd
+        | HelperCall::GenericSub
+        | HelperCall::GenericMul
+        | HelperCall::GenericDiv
+        | HelperCall::GenericMod
+        | HelperCall::GenericConcat => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (ctx: i64, value: u64) -> u64 / u8
+        HelperCall::GenericNeg | HelperCall::ToString | HelperCall::Typeof => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        HelperCall::GenericNot => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        // (ctx: i64, left: u64, right: u64, opcode: u8) -> u8
+        HelperCall::StringCompare => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I8));
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        // (ctx: i64, object: u64, method_slot: u16) -> u64
+        HelperCall::BindMethod => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I16));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (frame: i64) -> u64
+        HelperCall::GetArgCount => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (frame: i64, index: u64) -> u64
+        HelperCall::LoadArgLocal => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
         }
         // (obj: u64, field_index: u32) -> u64
         HelperCall::ObjectGetField => {
@@ -1712,7 +1802,15 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
 fn helper_return_type(helper: &HelperCall) -> ir::types::Type {
     match helper {
         HelperCall::GenericEquals
+        | HelperCall::GenericNot
+        | HelperCall::GenericNotEqual
+        | HelperCall::GenericStrictEqual
+        | HelperCall::GenericStrictNotEqual
         | HelperCall::GenericLessThan
+        | HelperCall::GenericLessEqual
+        | HelperCall::GenericGreater
+        | HelperCall::GenericGreaterEqual
+        | HelperCall::StringCompare
         | HelperCall::InstanceOf
         | HelperCall::ImplementsShape
         | HelperCall::CheckPreemption => types::I8,
@@ -1744,6 +1842,7 @@ fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
         HelperCall::AllocArray => offset_of!(AotHelperTable, alloc_array),
         HelperCall::AllocString => offset_of!(AotHelperTable, alloc_string),
         HelperCall::StringConcat => offset_of!(AotHelperTable, string_concat),
+        HelperCall::GenericConcat => offset_of!(AotHelperTable, string_concat),
         HelperCall::StringLen => offset_of!(AotHelperTable, string_len),
         HelperCall::ArrayLen => offset_of!(AotHelperTable, array_len),
         HelperCall::ArrayGet => offset_of!(AotHelperTable, array_get),
@@ -1751,14 +1850,33 @@ fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
         HelperCall::ArrayPush => offset_of!(AotHelperTable, array_push),
         HelperCall::GenericEquals => offset_of!(AotHelperTable, generic_equals),
         HelperCall::GenericLessThan => offset_of!(AotHelperTable, generic_less_than),
+        HelperCall::GenericAdd => offset_of!(AotHelperTable, generic_add),
+        HelperCall::GenericSub => offset_of!(AotHelperTable, generic_sub),
+        HelperCall::GenericMul => offset_of!(AotHelperTable, generic_mul),
+        HelperCall::GenericDiv => offset_of!(AotHelperTable, generic_div),
+        HelperCall::GenericMod => offset_of!(AotHelperTable, generic_mod),
+        HelperCall::GenericNeg => offset_of!(AotHelperTable, generic_neg),
+        HelperCall::GenericNot => offset_of!(AotHelperTable, generic_not),
+        HelperCall::GenericNotEqual => offset_of!(AotHelperTable, generic_not_equal),
+        HelperCall::GenericStrictEqual => offset_of!(AotHelperTable, generic_strict_equals),
+        HelperCall::GenericStrictNotEqual => {
+            offset_of!(AotHelperTable, generic_strict_not_equal)
+        }
+        HelperCall::GenericLessEqual => offset_of!(AotHelperTable, generic_less_equal),
+        HelperCall::GenericGreater => offset_of!(AotHelperTable, generic_greater),
+        HelperCall::GenericGreaterEqual => offset_of!(AotHelperTable, generic_greater_equal),
         HelperCall::ObjectGetField => offset_of!(AotHelperTable, object_get_field),
         HelperCall::ObjectSetField => offset_of!(AotHelperTable, object_set_field),
+        HelperCall::BindMethod => offset_of!(AotHelperTable, bind_method),
         HelperCall::InstanceOf => offset_of!(AotHelperTable, object_is_nominal),
         HelperCall::ImplementsShape => offset_of!(AotHelperTable, object_implements_shape),
         HelperCall::LoadFieldShape => offset_of!(AotHelperTable, object_get_shape_field),
         HelperCall::StoreFieldShape => offset_of!(AotHelperTable, object_set_shape_field),
         HelperCall::Cast => offset_of!(AotHelperTable, cast_value),
         HelperCall::CastShape => offset_of!(AotHelperTable, cast_shape),
+        HelperCall::ToString => offset_of!(AotHelperTable, to_string),
+        HelperCall::Typeof => offset_of!(AotHelperTable, typeof_value),
+        HelperCall::StringCompare => offset_of!(AotHelperTable, string_compare),
         HelperCall::DynGetProp => offset_of!(AotHelperTable, dyn_get_prop),
         HelperCall::DynSetProp => offset_of!(AotHelperTable, dyn_set_prop),
         HelperCall::LoadGlobalValue => offset_of!(AotHelperTable, load_global_value),
@@ -1773,6 +1891,8 @@ fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
         HelperCall::LoadStringConstant => offset_of!(AotHelperTable, load_string_constant),
         HelperCall::LoadI32Constant => offset_of!(AotHelperTable, load_i32_constant),
         HelperCall::LoadF64Constant => offset_of!(AotHelperTable, load_f64_constant),
+        HelperCall::GetArgCount => offset_of!(AotHelperTable, get_arg_count),
+        HelperCall::LoadArgLocal => offset_of!(AotHelperTable, load_arg_local),
         _ => return None,
     };
     i32::try_from(offset).ok()
@@ -1901,7 +2021,7 @@ mod tests {
             Some(offset_of!(AotHelperTable, load_f64_constant) as i32)
         );
         // Compound operations return None
-        assert_eq!(helper_table_field_offset(&HelperCall::GenericAdd), None);
+        assert!(helper_table_field_offset(&HelperCall::GenericAdd).is_some());
     }
 
     #[test]

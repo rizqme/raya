@@ -139,10 +139,31 @@ pub struct AotHelperTable {
     pub array_push: unsafe extern "C" fn(*mut AotTaskContext, u64, u64),
 
     /// Generic equality comparison: (a, b) -> bool (as i8)
-    pub generic_equals: unsafe extern "C" fn(u64, u64) -> u8,
+    pub generic_equals: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u8,
 
     /// Generic less-than comparison: (a, b) -> bool (as i8)
-    pub generic_less_than: unsafe extern "C" fn(u64, u64) -> u8,
+    pub generic_less_than: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u8,
+
+    /// Generic arithmetic and comparison helpers that require exact runtime semantics.
+    pub generic_add: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u64,
+    pub generic_sub: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u64,
+    pub generic_mul: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u64,
+    pub generic_div: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u64,
+    pub generic_mod: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u64,
+    pub generic_neg: unsafe extern "C" fn(*mut AotTaskContext, u64) -> u64,
+    pub generic_not: unsafe extern "C" fn(*mut AotTaskContext, u64) -> u8,
+    pub generic_not_equal: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u8,
+    pub generic_strict_equals: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u8,
+    pub generic_strict_not_equal: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u8,
+    pub generic_less_equal: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u8,
+    pub generic_greater: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u8,
+    pub generic_greater_equal: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u8,
+    pub to_string: unsafe extern "C" fn(*mut AotTaskContext, u64) -> u64,
+    pub typeof_value: unsafe extern "C" fn(*mut AotTaskContext, u64) -> u64,
+    pub string_compare: unsafe extern "C" fn(*mut AotTaskContext, u64, u64, u8) -> u8,
+    pub bind_method: unsafe extern "C" fn(*mut AotTaskContext, u64, u16) -> u64,
+    pub get_arg_count: unsafe extern "C" fn(*const AotFrame) -> u64,
+    pub load_arg_local: unsafe extern "C" fn(*const AotFrame, u64) -> u64,
 
     // ---- Object field access ----
     /// Get object field by index: (obj_val, field_index) -> NaN-boxed value

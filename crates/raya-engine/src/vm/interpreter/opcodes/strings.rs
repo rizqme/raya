@@ -9,7 +9,7 @@ use crate::vm::value::Value;
 use crate::vm::VmError;
 
 impl<'a> Interpreter<'a> {
-    pub(in crate::vm::interpreter) fn exec_string_ops(
+    pub(crate) fn exec_string_ops(
         &mut self,
         stack: &mut Stack,
         opcode: Opcode,

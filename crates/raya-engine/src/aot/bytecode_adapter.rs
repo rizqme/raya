@@ -1005,6 +1005,85 @@ impl LiftedFunction {
                 helper: HelperCall::Typeof,
                 args: vec![operand.0],
             }),
+            JitInstr::GetArgCount { dest } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::GetArgCount,
+                args: vec![],
+            }),
+            JitInstr::LoadArgLocal { dest, index } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::LoadArgLocal,
+                args: vec![index.0],
+            }),
+            JitInstr::BindMethod {
+                dest,
+                object,
+                method_slot,
+            } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::BindMethod,
+                args: vec![object.0, *method_slot as u32],
+            }),
+            JitInstr::SConcat { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::GenericConcat,
+                args: vec![left.0, right.0],
+            }),
+            JitInstr::ToString { dest, value } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::ToString,
+                args: vec![value.0],
+            }),
+            JitInstr::SCmpEq { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::StringCompare,
+                args: vec![left.0, right.0, Opcode::Seq as u32],
+            }),
+            JitInstr::SCmpNe { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::StringCompare,
+                args: vec![left.0, right.0, Opcode::Sne as u32],
+            }),
+            JitInstr::SCmpLt { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::StringCompare,
+                args: vec![left.0, right.0, Opcode::Slt as u32],
+            }),
+            JitInstr::SCmpLe { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::StringCompare,
+                args: vec![left.0, right.0, Opcode::Sle as u32],
+            }),
+            JitInstr::SCmpGt { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::StringCompare,
+                args: vec![left.0, right.0, Opcode::Sgt as u32],
+            }),
+            JitInstr::SCmpGe { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::StringCompare,
+                args: vec![left.0, right.0, Opcode::Sge as u32],
+            }),
+            JitInstr::Eq { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::GenericEquals,
+                args: vec![left.0, right.0],
+            }),
+            JitInstr::Ne { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::GenericNotEqual,
+                args: vec![left.0, right.0],
+            }),
+            JitInstr::StrictEq { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::GenericStrictEqual,
+                args: vec![left.0, right.0],
+            }),
+            JitInstr::StrictNe { dest, left, right } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::GenericStrictNotEqual,
+                args: vec![left.0, right.0],
+            }),
             JitInstr::ObjectLiteral {
                 dest,
                 type_index,
