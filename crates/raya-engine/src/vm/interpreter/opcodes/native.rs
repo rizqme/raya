@@ -17516,7 +17516,8 @@ impl<'a> Interpreter<'a> {
                             self.exec_array_ops(stack, &mut nested_ip, &[], Opcode::ArrayLen)
                         }
                     },
-                    crate::compiler::ir::KernelOp::Metaobject(kind) => {
+                    crate::compiler::ir::KernelOp::Builtin(kind) => match kind {
+                        crate::compiler::builtins::BuiltinOp::Metaobject(kind) => {
                         let native_id = match kind {
                             crate::semantics::MetaobjectOpKind::DefineProperty => {
                                 crate::compiler::native_id::OBJECT_DEFINE_PROPERTY
@@ -17559,8 +17560,8 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
-                    }
-                    crate::compiler::ir::KernelOp::Iterator(kind) => {
+                        }
+                        crate::compiler::builtins::BuiltinOp::Iterator(kind) => {
                         let native_id = match kind {
                             crate::semantics::IteratorOpKind::GetIterator => {
                                 crate::compiler::native_id::OBJECT_ITERATOR_GET
@@ -17600,8 +17601,8 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
-                    }
-                    crate::compiler::ir::KernelOp::Js(kind) => match kind {
+                        }
+                        crate::compiler::builtins::BuiltinOp::Js(kind) => match kind {
                         crate::semantics::JsOpKind::GetNamed
                         | crate::semantics::JsOpKind::GetKeyed => {
                             dispatch_type_kernel(self, stack, module, task, Opcode::DynGetKeyed)
@@ -17841,8 +17842,8 @@ impl<'a> Interpreter<'a> {
                             };
                             self.exec_js_eval_set_completion(stack, task, &args)
                         }
-                    },
-                    crate::compiler::ir::KernelOp::HostHandle(kind) => match kind {
+                        },
+                        crate::compiler::builtins::BuiltinOp::HostHandle(kind) => match kind {
                         crate::semantics::HostHandleOpKind::ChannelConstructor => {
                             self.safepoint.poll();
                             let capacity_val = match stack.pop() {
@@ -17856,6 +17857,80 @@ impl<'a> Interpreter<'a> {
                                 return OpcodeResult::Error(e);
                             }
                             OpcodeResult::Continue
+                        }
+                        crate::semantics::HostHandleOpKind::ChannelSend => dispatch_native_kernel(
+                            self,
+                            stack,
+                            module,
+                            task,
+                            crate::compiler::native_id::CHANNEL_SEND,
+                            arg_count,
+                        ),
+                        crate::semantics::HostHandleOpKind::ChannelReceive => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::CHANNEL_RECEIVE,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::HostHandleOpKind::ChannelTrySend => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::CHANNEL_TRY_SEND,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::HostHandleOpKind::ChannelTryReceive => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::CHANNEL_TRY_RECEIVE,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::HostHandleOpKind::ChannelClose => dispatch_native_kernel(
+                            self,
+                            stack,
+                            module,
+                            task,
+                            crate::compiler::native_id::CHANNEL_CLOSE,
+                            arg_count,
+                        ),
+                        crate::semantics::HostHandleOpKind::ChannelIsClosed => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::CHANNEL_IS_CLOSED,
+                                arg_count,
+                            )
+                        }
+                        crate::semantics::HostHandleOpKind::ChannelLength => dispatch_native_kernel(
+                            self,
+                            stack,
+                            module,
+                            task,
+                            crate::compiler::native_id::CHANNEL_LENGTH,
+                            arg_count,
+                        ),
+                        crate::semantics::HostHandleOpKind::ChannelCapacity => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::CHANNEL_CAPACITY,
+                                arg_count,
+                            )
                         }
                         crate::semantics::HostHandleOpKind::MutexConstructor => {
                             let (mutex_id, _) = self.mutex_registry.create_mutex();
@@ -17948,6 +18023,24 @@ impl<'a> Interpreter<'a> {
                                 )))
                             }
                         }
+                        crate::semantics::HostHandleOpKind::MutexTryLock => dispatch_native_kernel(
+                            self,
+                            stack,
+                            module,
+                            task,
+                            crate::compiler::native_id::MUTEX_TRY_LOCK,
+                            arg_count,
+                        ),
+                        crate::semantics::HostHandleOpKind::MutexIsLocked => {
+                            dispatch_native_kernel(
+                                self,
+                                stack,
+                                module,
+                                task,
+                                crate::compiler::native_id::MUTEX_IS_LOCKED,
+                                arg_count,
+                            )
+                        }
                         crate::semantics::HostHandleOpKind::TaskCancel => {
                             let task_id_val = match stack.pop() {
                                 Ok(v) => v,
@@ -17988,6 +18081,7 @@ impl<'a> Interpreter<'a> {
                                 arg_count,
                             )
                         }
+                        },
                     },
                 }
             }

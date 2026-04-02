@@ -13,6 +13,7 @@
 //! The IR uses Three-Address Code (TAC) with Basic Blocks.
 
 pub mod bytecode;
+pub mod builtins;
 pub mod codegen;
 #[allow(dead_code)]
 pub mod codegen_ast;

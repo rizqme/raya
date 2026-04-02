@@ -224,17 +224,9 @@ fn format_instr(instr: &IrInstr) -> String {
                 crate::compiler::ir::KernelOp::PropertyOpcode(kind) => {
                     format!("property:{kind:?}")
                 }
-                crate::compiler::ir::KernelOp::Metaobject(kind) => {
-                    format!("metaobject:{kind:?}")
-                }
-                crate::compiler::ir::KernelOp::Iterator(kind) => {
-                    format!("iterator:{kind:?}")
-                }
-                crate::compiler::ir::KernelOp::HostHandle(kind) => {
-                    format!("host:{kind:?}")
-                }
-                crate::compiler::ir::KernelOp::Js(kind) => {
-                    format!("js:{kind:?}")
+                crate::compiler::ir::KernelOp::Builtin(kind) => {
+                    let descriptor = crate::compiler::builtins::builtin_descriptor(*kind);
+                    format!("builtin:{}", descriptor.name)
                 }
             };
             if let Some(d) = dest {

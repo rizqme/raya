@@ -3284,9 +3284,34 @@ mod tests {
             dispatch.member_name.as_deref() == Some("tryLock")
                 && matches!(
                     dispatch.registry_dispatch,
-                    Some(raya_engine::compiler::type_registry::DispatchAction::ClassMethod(
-                        _,
-                        _
+                    Some(raya_engine::compiler::type_registry::DispatchAction::Builtin(
+                        raya_engine::compiler::builtins::BuiltinOp::HostHandle(
+                            raya_engine::semantics::HostHandleOpKind::MutexTryLock
+                        )
+                    ))
+                )
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_channel_try_send_as_typed_builtin_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            let ch = new Channel<number>(1);
+            ch.trySend(1);
+            "#,
+            SemanticProfile::raya(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("trySend")
+                && matches!(
+                    dispatch.registry_dispatch,
+                    Some(raya_engine::compiler::type_registry::DispatchAction::Builtin(
+                        raya_engine::compiler::builtins::BuiltinOp::HostHandle(
+                            raya_engine::semantics::HostHandleOpKind::ChannelTrySend
+                        )
                     ))
                 )
         }));

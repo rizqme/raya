@@ -6,6 +6,7 @@
 //! contract manifests. `TypeRegistry` is only the derived lookup/index layer
 //! used by lowering, monomorphization, and runtime helpers.
 
+use crate::compiler::builtins::{builtin_op_from_native_id, native_id_for_builtin_op, BuiltinOp};
 use crate::compiler::module::{BuiltinDispatchBinding, BuiltinSurfaceManifest};
 use crate::parser::types::ty::{Type, TypeId};
 use crate::parser::TypeContext;
@@ -25,6 +26,8 @@ pub const UNRESOLVED_TYPE_ID: u32 = u32::MAX;
 pub enum DispatchAction {
     /// Emit a specialized opcode directly (e.g., StringLen, ArrayLen)
     Opcode(OpcodeKind),
+    /// Emit a typed builtin runtime op.
+    Builtin(BuiltinOp),
     /// Emit a kernel-backed VM native used by derived builtin dispatch.
     VmNative(u16),
     /// Builtin primitive instance field declared in source.
@@ -277,7 +280,11 @@ impl TypeRegistry {
                 return Some(action.clone());
             }
             if let Some(native_id) = crate::vm::builtin::lookup_builtin_method("Array", name) {
-                return Some(DispatchAction::VmNative(native_id));
+                return Some(
+                    builtin_op_from_native_id(native_id)
+                        .map(DispatchAction::Builtin)
+                        .unwrap_or(DispatchAction::VmNative(native_id)),
+                );
             }
         }
         None
@@ -324,6 +331,7 @@ impl TypeRegistry {
     ) -> Option<u16> {
         let type_id = canonical_dispatch_type_id(type_name)?;
         match self.lookup_method(type_id, method_name) {
+            Some(DispatchAction::Builtin(op)) => native_id_for_builtin_op(op),
             Some(DispatchAction::VmNative(id)) => Some(id),
             _ => None,
         }

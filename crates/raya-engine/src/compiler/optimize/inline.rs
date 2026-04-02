@@ -875,8 +875,8 @@ mod tests {
             },
             IrInstr::KernelCall {
                 dest: Some(make_reg(2)),
-                op: crate::compiler::ir::KernelOp::HostHandle(
-                    crate::semantics::HostHandleOpKind::MutexLock,
+                op: crate::compiler::ir::KernelOp::Builtin(
+                    crate::semantics::HostHandleOpKind::MutexLock.into(),
                 ),
                 args: vec![make_reg(0)],
             },

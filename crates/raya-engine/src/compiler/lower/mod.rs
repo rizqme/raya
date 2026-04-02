@@ -6633,7 +6633,7 @@ impl<'a> Lowerer<'a> {
     ) {
         self.emit(IrInstr::KernelCall {
             dest,
-            op: KernelOp::Js(op),
+            op: KernelOp::Builtin(op.into()),
             args,
         });
     }

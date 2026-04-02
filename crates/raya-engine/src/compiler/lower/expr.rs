@@ -619,7 +619,7 @@ impl<'a> Lowerer<'a> {
         if let Some(metaobject_op) = dispatch.metaobject_op {
             self.emit_builtin_kernel_call(
                 Some(dispatch_dest.clone()),
-                KernelOp::Metaobject(metaobject_op),
+                KernelOp::Builtin(metaobject_op.into()),
                 args.to_vec(),
             );
         } else if let Some(native_id) = dispatch.native_id {
@@ -733,10 +733,34 @@ impl<'a> Lowerer<'a> {
                     .clone()
                     .unwrap_or_else(|| self.lower_expr(&member.object));
                 match builtin_dispatch.host_handle_op {
+                    Some(
+                        crate::semantics::HostHandleOpKind::ChannelSend
+                        | crate::semantics::HostHandleOpKind::ChannelReceive
+                        | crate::semantics::HostHandleOpKind::ChannelTrySend
+                        | crate::semantics::HostHandleOpKind::ChannelTryReceive
+                        | crate::semantics::HostHandleOpKind::ChannelClose
+                        | crate::semantics::HostHandleOpKind::ChannelIsClosed
+                        | crate::semantics::HostHandleOpKind::ChannelLength
+                        | crate::semantics::HostHandleOpKind::ChannelCapacity
+                        | crate::semantics::HostHandleOpKind::MutexTryLock
+                        | crate::semantics::HostHandleOpKind::MutexIsLocked,
+                    ) => {
+                        let mut builtin_args = Vec::with_capacity(args.len() + 1);
+                        builtin_args.push(object);
+                        builtin_args.extend(args.iter().cloned());
+                        self.emit_builtin_kernel_call(
+                            Some(dest.clone()),
+                            KernelOp::Builtin(builtin_dispatch.host_handle_op.unwrap().into()),
+                            builtin_args,
+                        );
+                        Some(dest)
+                    }
                     Some(crate::semantics::HostHandleOpKind::MutexLock) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexLock),
+                            KernelOp::Builtin(
+                                crate::semantics::HostHandleOpKind::MutexLock.into(),
+                            ),
                             vec![object],
                         );
                         Some(dest)
@@ -744,7 +768,9 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::MutexUnlock) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexUnlock),
+                            KernelOp::Builtin(
+                                crate::semantics::HostHandleOpKind::MutexUnlock.into(),
+                            ),
                             vec![object],
                         );
                         Some(dest)
@@ -752,7 +778,9 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::TaskCancel) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::HostHandle(crate::semantics::HostHandleOpKind::TaskCancel),
+                            KernelOp::Builtin(
+                                crate::semantics::HostHandleOpKind::TaskCancel.into(),
+                            ),
                             vec![object],
                         );
                         Some(dest)
@@ -760,7 +788,9 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::TaskIsDone) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::HostHandle(crate::semantics::HostHandleOpKind::TaskIsDone),
+                            KernelOp::Builtin(
+                                crate::semantics::HostHandleOpKind::TaskIsDone.into(),
+                            ),
                             vec![object],
                         );
                         Some(dest)
@@ -768,8 +798,8 @@ impl<'a> Lowerer<'a> {
                     Some(crate::semantics::HostHandleOpKind::TaskIsCancelled) => {
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::HostHandle(
-                                crate::semantics::HostHandleOpKind::TaskIsCancelled,
+                            KernelOp::Builtin(
+                                crate::semantics::HostHandleOpKind::TaskIsCancelled.into(),
                             ),
                             vec![object],
                         );
@@ -1057,6 +1087,15 @@ impl<'a> Lowerer<'a> {
                     KernelOp::PropertyOpcode(kind),
                     vec![object],
                 );
+                Some(dest)
+            }
+            crate::compiler::type_registry::DispatchAction::Builtin(op) => {
+                let dest = self.alloc_register(
+                    dispatch
+                        .result_type_id
+                        .unwrap_or(TypeId::new(UNRESOLVED_TYPE_ID)),
+                );
+                self.emit_builtin_kernel_call(Some(dest.clone()), KernelOp::Builtin(op), vec![object]);
                 Some(dest)
             }
             crate::compiler::type_registry::DispatchAction::VmNative(native_id) => {
@@ -1589,6 +1628,17 @@ impl<'a> Lowerer<'a> {
                     Some(dest.clone()),
                     KernelOp::VmNative(id),
                     native_args,
+                );
+                Some(dest)
+            }
+            crate::compiler::type_registry::DispatchAction::Builtin(op) => {
+                let mut builtin_args = Vec::with_capacity(args.len() + 1);
+                builtin_args.push(object);
+                builtin_args.extend(args.iter().cloned());
+                self.emit_builtin_kernel_call(
+                    Some(dest.clone()),
+                    KernelOp::Builtin(op),
+                    builtin_args,
                 );
                 Some(dest)
             }
@@ -2281,7 +2331,9 @@ impl<'a> Lowerer<'a> {
                 };
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    KernelOp::HostHandle(crate::semantics::HostHandleOpKind::ChannelConstructor),
+                    KernelOp::Builtin(
+                        crate::semantics::HostHandleOpKind::ChannelConstructor.into(),
+                    ),
                     vec![capacity],
                 );
                 Some(dest)
@@ -2289,7 +2341,9 @@ impl<'a> Lowerer<'a> {
             Some(crate::semantics::HostHandleOpKind::MutexConstructor) => {
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexConstructor),
+                    KernelOp::Builtin(
+                        crate::semantics::HostHandleOpKind::MutexConstructor.into(),
+                    ),
                     vec![],
                 );
                 Some(dest)
@@ -3254,7 +3308,7 @@ impl<'a> Lowerer<'a> {
         let iterator = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
             Some(iterator.clone()),
-            KernelOp::Iterator(crate::semantics::IteratorOpKind::GetIterator),
+            KernelOp::Builtin(crate::semantics::IteratorOpKind::GetIterator.into()),
             vec![iterable],
         );
         iterator
@@ -3264,7 +3318,7 @@ impl<'a> Lowerer<'a> {
         let iterator = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
             Some(iterator.clone()),
-            KernelOp::Iterator(crate::semantics::IteratorOpKind::GetAsyncIterator),
+            KernelOp::Builtin(crate::semantics::IteratorOpKind::GetAsyncIterator.into()),
             vec![iterable],
         );
         iterator
@@ -3274,7 +3328,7 @@ impl<'a> Lowerer<'a> {
         let step = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
             Some(step.clone()),
-            KernelOp::Iterator(crate::semantics::IteratorOpKind::Step),
+            KernelOp::Builtin(crate::semantics::IteratorOpKind::Step.into()),
             vec![iterator],
         );
         step
@@ -3284,7 +3338,7 @@ impl<'a> Lowerer<'a> {
         let done = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
         self.emit_builtin_kernel_call(
             Some(done.clone()),
-            KernelOp::Iterator(crate::semantics::IteratorOpKind::Done),
+            KernelOp::Builtin(crate::semantics::IteratorOpKind::Done.into()),
             vec![step_result],
         );
         done
@@ -3294,7 +3348,7 @@ impl<'a> Lowerer<'a> {
         let value = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
             Some(value.clone()),
-            KernelOp::Iterator(crate::semantics::IteratorOpKind::Value),
+            KernelOp::Builtin(crate::semantics::IteratorOpKind::Value.into()),
             vec![step_result],
         );
         value
@@ -3320,7 +3374,7 @@ impl<'a> Lowerer<'a> {
         };
         self.emit_builtin_kernel_call(
             Some(result.clone()),
-            KernelOp::Iterator(op),
+            KernelOp::Builtin(op.into()),
             vec![iterator, value],
         );
         result
@@ -3329,7 +3383,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn emit_iterator_close_helper(&mut self, iterator: Register) {
         self.emit_builtin_kernel_call(
             None,
-            KernelOp::Iterator(crate::semantics::IteratorOpKind::Close),
+            KernelOp::Builtin(crate::semantics::IteratorOpKind::Close.into()),
             vec![iterator],
         );
     }
@@ -3337,7 +3391,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn emit_iterator_close_on_throw_helper(&mut self, iterator: Register) {
         self.emit_builtin_kernel_call(
             None,
-            KernelOp::Iterator(crate::semantics::IteratorOpKind::CloseOnThrow),
+            KernelOp::Builtin(crate::semantics::IteratorOpKind::CloseOnThrow.into()),
             vec![iterator],
         );
     }
@@ -3350,7 +3404,7 @@ impl<'a> Lowerer<'a> {
         let dest = self.alloc_register(UNRESOLVED);
         self.emit_builtin_kernel_call(
             Some(dest.clone()),
-            KernelOp::Iterator(crate::semantics::IteratorOpKind::CloseCompletion),
+            KernelOp::Builtin(crate::semantics::IteratorOpKind::CloseCompletion.into()),
             vec![iterator, completion],
         );
         dest
@@ -3363,7 +3417,7 @@ impl<'a> Lowerer<'a> {
     ) {
         self.emit_builtin_kernel_call(
             None,
-            KernelOp::Iterator(crate::semantics::IteratorOpKind::AppendToArray),
+            KernelOp::Builtin(crate::semantics::IteratorOpKind::AppendToArray.into()),
             vec![target_array, iterable],
         );
     }
@@ -6393,8 +6447,8 @@ impl<'a> Lowerer<'a> {
                 };
                 self.emit(IrInstr::KernelCall {
                     dest: Some(dest.clone()),
-                    op: KernelOp::HostHandle(
-                        crate::semantics::HostHandleOpKind::ChannelConstructor,
+                    op: KernelOp::Builtin(
+                        crate::semantics::HostHandleOpKind::ChannelConstructor.into(),
                     ),
                     args: vec![capacity],
                 });
@@ -6405,7 +6459,9 @@ impl<'a> Lowerer<'a> {
             if name == "__OPCODE_MUTEX_NEW" {
                 self.emit(IrInstr::KernelCall {
                     dest: Some(dest.clone()),
-                    op: KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexConstructor),
+                    op: KernelOp::Builtin(
+                        crate::semantics::HostHandleOpKind::MutexConstructor.into(),
+                    ),
                     args: vec![],
                 });
                 return dest;
@@ -6417,7 +6473,7 @@ impl<'a> Lowerer<'a> {
                     let mutex = self.lower_expr(arg);
                     self.emit_builtin_kernel_call(
                         Some(dest.clone()),
-                        KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexLock),
+                        KernelOp::Builtin(crate::semantics::HostHandleOpKind::MutexLock.into()),
                         vec![mutex],
                     );
                 }
@@ -6430,7 +6486,9 @@ impl<'a> Lowerer<'a> {
                     let mutex = self.lower_expr(arg);
                     self.emit_builtin_kernel_call(
                         Some(dest.clone()),
-                        KernelOp::HostHandle(crate::semantics::HostHandleOpKind::MutexUnlock),
+                        KernelOp::Builtin(
+                            crate::semantics::HostHandleOpKind::MutexUnlock.into(),
+                        ),
                         vec![mutex],
                     );
                 }
@@ -6443,7 +6501,9 @@ impl<'a> Lowerer<'a> {
                     let task = self.lower_expr(arg);
                     self.emit(IrInstr::KernelCall {
                         dest: None,
-                        op: KernelOp::HostHandle(crate::semantics::HostHandleOpKind::TaskCancel),
+                        op: KernelOp::Builtin(
+                            crate::semantics::HostHandleOpKind::TaskCancel.into(),
+                        ),
                         args: vec![task],
                     });
                 }

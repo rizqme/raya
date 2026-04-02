@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::compiler::builtins::builtin_op_from_native_id;
 use crate::compiler::module::BuiltinSurfaceMode;
 use crate::compiler::type_registry::{DispatchAction, OpcodeKind};
 use crate::parser::ast::{
@@ -295,7 +296,11 @@ impl BuiltinDispatchBinding {
         match self {
             Self::SourceDefined => None,
             Self::Opcode(kind) => Some(DispatchAction::Opcode(*kind)),
-            Self::VmNative { native_id, .. } => Some(DispatchAction::VmNative(*native_id)),
+            Self::VmNative { native_id, .. } => Some(
+                builtin_op_from_native_id(*native_id)
+                    .map(DispatchAction::Builtin)
+                    .unwrap_or(DispatchAction::VmNative(*native_id)),
+            ),
             Self::DeclaredField {
                 field_type_name,
                 field_index,
@@ -954,16 +959,10 @@ fn method_binding_from_decl(
     interner: &Interner,
     constants: &FxHashMap<String, u16>,
 ) -> BuiltinDispatchBinding {
-    if method
+    let annotated_class_method = method
         .annotations
         .iter()
-        .any(|annotation| annotation.tag == "class_method")
-    {
-        return BuiltinDispatchBinding::ClassMethod {
-            type_name: owner_type_name.to_string(),
-            method_name: method_name.to_string(),
-        };
-    }
+        .any(|annotation| annotation.tag == "class_method");
 
     let Some(body) = &method.body else {
         return BuiltinDispatchBinding::SourceDefined;
@@ -973,7 +972,7 @@ fn method_binding_from_decl(
     } else {
         NativeWrapperMode::ExplicitArgsOnly
     };
-    function_binding(
+    let binding = function_binding(
         body,
         method.return_type.as_ref(),
         source,
@@ -981,7 +980,17 @@ fn method_binding_from_decl(
         constants,
         &FxHashMap::default(),
         wrapper_mode,
-    )
+    );
+    if !matches!(binding, BuiltinDispatchBinding::SourceDefined) {
+        return binding;
+    }
+    if annotated_class_method {
+        return BuiltinDispatchBinding::ClassMethod {
+            type_name: owner_type_name.to_string(),
+            method_name: method_name.to_string(),
+        };
+    }
+    BuiltinDispatchBinding::SourceDefined
 }
 
 fn direct_wrapper_binding_from_block(
@@ -1126,6 +1135,10 @@ fn native_wrapper_arg_is_passthrough(expr: &Expression, wrapper_mode: NativeWrap
         | Expression::BooleanLiteral(_)
         | Expression::NullLiteral(_) => true,
         Expression::This(_) => wrapper_mode == NativeWrapperMode::AllowReceiverThis,
+        Expression::Member(member) => {
+            wrapper_mode == NativeWrapperMode::AllowReceiverThis
+                && matches!(&*member.object, Expression::This(_))
+        }
         Expression::Parenthesized(paren) => {
             native_wrapper_arg_is_passthrough(&paren.expression, wrapper_mode)
         }

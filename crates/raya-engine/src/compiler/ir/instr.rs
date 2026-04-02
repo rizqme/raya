@@ -72,10 +72,7 @@ pub enum KernelOp {
     /// Raw VM/runtime native used only for low-level non-dispatch intrinsics.
     VmNative(u16),
     PropertyOpcode(crate::compiler::type_registry::OpcodeKind),
-    Metaobject(crate::semantics::MetaobjectOpKind),
-    Iterator(crate::semantics::IteratorOpKind),
-    HostHandle(crate::semantics::HostHandleOpKind),
-    Js(crate::semantics::JsOpKind),
+    Builtin(crate::compiler::builtins::BuiltinOp),
     RegisteredNative(u16),
 }
 
@@ -84,10 +81,7 @@ pub type RegisteredKernelNativeId = u16;
 
 const KERNEL_REGISTERED_NATIVE_BASE: KernelOpId = 0x8000;
 const KERNEL_PROPERTY_BASE: KernelOpId = 0xF100;
-const KERNEL_METAOBJECT_BASE: KernelOpId = 0xF200;
-const KERNEL_ITERATOR_BASE: KernelOpId = 0xF300;
-const KERNEL_HOST_HANDLE_BASE: KernelOpId = 0xF400;
-const KERNEL_JS_BASE: KernelOpId = 0xF500;
+const KERNEL_BUILTIN_BASE: KernelOpId = 0xF200;
 
 pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
     match op {
@@ -103,177 +97,16 @@ pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
             crate::compiler::type_registry::OpcodeKind::StringLen => KERNEL_PROPERTY_BASE,
             crate::compiler::type_registry::OpcodeKind::ArrayLen => KERNEL_PROPERTY_BASE + 1,
         },
-        KernelOp::Metaobject(kind) => {
-            KERNEL_METAOBJECT_BASE
-                + match kind {
-                    crate::semantics::MetaobjectOpKind::DefineProperty => 0,
-                    crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor => 1,
-                    crate::semantics::MetaobjectOpKind::DefineProperties => 2,
-                    crate::semantics::MetaobjectOpKind::DeleteProperty => 3,
-                    crate::semantics::MetaobjectOpKind::GetPrototypeOf => 4,
-                    crate::semantics::MetaobjectOpKind::SetPrototypeOf => 5,
-                    crate::semantics::MetaobjectOpKind::PreventExtensions => 6,
-                    crate::semantics::MetaobjectOpKind::IsExtensible => 7,
-                    crate::semantics::MetaobjectOpKind::ReflectGet => 8,
-                    crate::semantics::MetaobjectOpKind::ReflectSet => 9,
-                    crate::semantics::MetaobjectOpKind::ReflectHas => 10,
-                    crate::semantics::MetaobjectOpKind::ReflectOwnKeys => 11,
-                    crate::semantics::MetaobjectOpKind::ReflectConstruct => 12,
-                }
-        }
-        KernelOp::Iterator(kind) => {
-            KERNEL_ITERATOR_BASE
-                + match kind {
-                    crate::semantics::IteratorOpKind::GetIterator => 0,
-                    crate::semantics::IteratorOpKind::GetAsyncIterator => 1,
-                    crate::semantics::IteratorOpKind::Step => 2,
-                    crate::semantics::IteratorOpKind::Done => 3,
-                    crate::semantics::IteratorOpKind::Value => 4,
-                    crate::semantics::IteratorOpKind::ResumeNext => 5,
-                    crate::semantics::IteratorOpKind::ResumeReturn => 6,
-                    crate::semantics::IteratorOpKind::ResumeThrow => 7,
-                    crate::semantics::IteratorOpKind::Close => 8,
-                    crate::semantics::IteratorOpKind::CloseOnThrow => 9,
-                    crate::semantics::IteratorOpKind::CloseCompletion => 10,
-                    crate::semantics::IteratorOpKind::AppendToArray => 11,
-                }
-        }
-        KernelOp::HostHandle(kind) => {
-            KERNEL_HOST_HANDLE_BASE
-                + match kind {
-                    crate::semantics::HostHandleOpKind::ChannelConstructor => 0,
-                    crate::semantics::HostHandleOpKind::MutexConstructor => 1,
-                    crate::semantics::HostHandleOpKind::MutexLock => 2,
-                    crate::semantics::HostHandleOpKind::MutexUnlock => 3,
-                    crate::semantics::HostHandleOpKind::TaskCancel => 4,
-                    crate::semantics::HostHandleOpKind::TaskIsDone => 5,
-                    crate::semantics::HostHandleOpKind::TaskIsCancelled => 6,
-                }
-        }
-        KernelOp::Js(kind) => {
-            KERNEL_JS_BASE
-                + match kind {
-                    crate::semantics::JsOpKind::GetNamed => 0,
-                    crate::semantics::JsOpKind::GetKeyed => 1,
-                    crate::semantics::JsOpKind::SetNamed { strict: false } => 2,
-                    crate::semantics::JsOpKind::SetNamed { strict: true } => 3,
-                    crate::semantics::JsOpKind::SetKeyed { strict: false } => 4,
-                    crate::semantics::JsOpKind::SetKeyed { strict: true } => 5,
-                    crate::semantics::JsOpKind::BindMethod => 6,
-                    crate::semantics::JsOpKind::ResolveIdentifier {
-                        non_throwing: false,
-                    } => 7,
-                    crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: true } => 8,
-                    crate::semantics::JsOpKind::AssignIdentifier { strict: false } => 9,
-                    crate::semantics::JsOpKind::AssignIdentifier { strict: true } => 10,
-                    crate::semantics::JsOpKind::CallValue => 11,
-                    crate::semantics::JsOpKind::CallMemberNamed => 12,
-                    crate::semantics::JsOpKind::CallMemberKeyed => 13,
-                    crate::semantics::JsOpKind::ConstructValue => 14,
-                    crate::semantics::JsOpKind::PushWithEnv => 15,
-                    crate::semantics::JsOpKind::PopWithEnv => 16,
-                    crate::semantics::JsOpKind::PushDeclarativeEnv => 17,
-                    crate::semantics::JsOpKind::PopDeclarativeEnv => 18,
-                    crate::semantics::JsOpKind::ReplaceDeclarativeEnv => 19,
-                    crate::semantics::JsOpKind::DirectEval => 20,
-                    crate::semantics::JsOpKind::EvalGetCompletion => 21,
-                    crate::semantics::JsOpKind::EvalSetCompletion => 22,
-                    crate::semantics::JsOpKind::HasIdentifier => 23,
-                    crate::semantics::JsOpKind::DeleteIdentifier => 24,
-                    crate::semantics::JsOpKind::DeclareVar => 25,
-                    crate::semantics::JsOpKind::DeclareFunction => 26,
-                    crate::semantics::JsOpKind::DeclareLexical => 27,
-                    crate::semantics::JsOpKind::EnterActivationEnv => 28,
-                    crate::semantics::JsOpKind::LeaveActivationEnv => 29,
-                }
+        KernelOp::Builtin(kind) => {
+            KERNEL_BUILTIN_BASE + crate::compiler::builtins::encode_builtin_op_id(kind)
         }
     }
 }
 
 pub fn decode_kernel_op_id(id: KernelOpId) -> Option<KernelOp> {
-    if id >= KERNEL_JS_BASE {
-        return Some(KernelOp::Js(match id - KERNEL_JS_BASE {
-            0 => crate::semantics::JsOpKind::GetNamed,
-            1 => crate::semantics::JsOpKind::GetKeyed,
-            2 => crate::semantics::JsOpKind::SetNamed { strict: false },
-            3 => crate::semantics::JsOpKind::SetNamed { strict: true },
-            4 => crate::semantics::JsOpKind::SetKeyed { strict: false },
-            5 => crate::semantics::JsOpKind::SetKeyed { strict: true },
-            6 => crate::semantics::JsOpKind::BindMethod,
-            7 => crate::semantics::JsOpKind::ResolveIdentifier {
-                non_throwing: false,
-            },
-            8 => crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: true },
-            9 => crate::semantics::JsOpKind::AssignIdentifier { strict: false },
-            10 => crate::semantics::JsOpKind::AssignIdentifier { strict: true },
-            11 => crate::semantics::JsOpKind::CallValue,
-            12 => crate::semantics::JsOpKind::CallMemberNamed,
-            13 => crate::semantics::JsOpKind::CallMemberKeyed,
-            14 => crate::semantics::JsOpKind::ConstructValue,
-            15 => crate::semantics::JsOpKind::PushWithEnv,
-            16 => crate::semantics::JsOpKind::PopWithEnv,
-            17 => crate::semantics::JsOpKind::PushDeclarativeEnv,
-            18 => crate::semantics::JsOpKind::PopDeclarativeEnv,
-            19 => crate::semantics::JsOpKind::ReplaceDeclarativeEnv,
-            20 => crate::semantics::JsOpKind::DirectEval,
-            21 => crate::semantics::JsOpKind::EvalGetCompletion,
-            22 => crate::semantics::JsOpKind::EvalSetCompletion,
-            23 => crate::semantics::JsOpKind::HasIdentifier,
-            24 => crate::semantics::JsOpKind::DeleteIdentifier,
-            25 => crate::semantics::JsOpKind::DeclareVar,
-            26 => crate::semantics::JsOpKind::DeclareFunction,
-            27 => crate::semantics::JsOpKind::DeclareLexical,
-            28 => crate::semantics::JsOpKind::EnterActivationEnv,
-            29 => crate::semantics::JsOpKind::LeaveActivationEnv,
-            _ => return None,
-        }));
-    }
-    if id >= KERNEL_HOST_HANDLE_BASE {
-        return Some(KernelOp::HostHandle(match id - KERNEL_HOST_HANDLE_BASE {
-            0 => crate::semantics::HostHandleOpKind::ChannelConstructor,
-            1 => crate::semantics::HostHandleOpKind::MutexConstructor,
-            2 => crate::semantics::HostHandleOpKind::MutexLock,
-            3 => crate::semantics::HostHandleOpKind::MutexUnlock,
-            4 => crate::semantics::HostHandleOpKind::TaskCancel,
-            5 => crate::semantics::HostHandleOpKind::TaskIsDone,
-            6 => crate::semantics::HostHandleOpKind::TaskIsCancelled,
-            _ => return None,
-        }));
-    }
-    if id >= KERNEL_ITERATOR_BASE {
-        return Some(KernelOp::Iterator(match id - KERNEL_ITERATOR_BASE {
-            0 => crate::semantics::IteratorOpKind::GetIterator,
-            1 => crate::semantics::IteratorOpKind::GetAsyncIterator,
-            2 => crate::semantics::IteratorOpKind::Step,
-            3 => crate::semantics::IteratorOpKind::Done,
-            4 => crate::semantics::IteratorOpKind::Value,
-            5 => crate::semantics::IteratorOpKind::ResumeNext,
-            6 => crate::semantics::IteratorOpKind::ResumeReturn,
-            7 => crate::semantics::IteratorOpKind::ResumeThrow,
-            8 => crate::semantics::IteratorOpKind::Close,
-            9 => crate::semantics::IteratorOpKind::CloseOnThrow,
-            10 => crate::semantics::IteratorOpKind::CloseCompletion,
-            11 => crate::semantics::IteratorOpKind::AppendToArray,
-            _ => return None,
-        }));
-    }
-    if id >= KERNEL_METAOBJECT_BASE {
-        return Some(KernelOp::Metaobject(match id - KERNEL_METAOBJECT_BASE {
-            0 => crate::semantics::MetaobjectOpKind::DefineProperty,
-            1 => crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor,
-            2 => crate::semantics::MetaobjectOpKind::DefineProperties,
-            3 => crate::semantics::MetaobjectOpKind::DeleteProperty,
-            4 => crate::semantics::MetaobjectOpKind::GetPrototypeOf,
-            5 => crate::semantics::MetaobjectOpKind::SetPrototypeOf,
-            6 => crate::semantics::MetaobjectOpKind::PreventExtensions,
-            7 => crate::semantics::MetaobjectOpKind::IsExtensible,
-            8 => crate::semantics::MetaobjectOpKind::ReflectGet,
-            9 => crate::semantics::MetaobjectOpKind::ReflectSet,
-            10 => crate::semantics::MetaobjectOpKind::ReflectHas,
-            11 => crate::semantics::MetaobjectOpKind::ReflectOwnKeys,
-            12 => crate::semantics::MetaobjectOpKind::ReflectConstruct,
-            _ => return None,
-        }));
+    if id >= KERNEL_BUILTIN_BASE {
+        return crate::compiler::builtins::decode_builtin_op_id(id - KERNEL_BUILTIN_BASE)
+            .map(KernelOp::Builtin);
     }
     if id >= KERNEL_PROPERTY_BASE {
         return Some(KernelOp::PropertyOpcode(match id - KERNEL_PROPERTY_BASE {
