@@ -17,6 +17,7 @@ pub mod ffi;
 pub mod gc;
 pub mod interpreter;
 pub mod iteration;
+pub mod js_env;
 pub mod json;
 pub mod module;
 pub mod native_handler;
@@ -66,6 +67,10 @@ pub use interpreter::{
     Test262AsyncStatusSnapshot, Vm, VmContext, VmContextId, VmOptions, VmStats,
 };
 pub use iteration::{IteratorProtocolKind, ResumeCompletion, ResumeCompletionKind};
+pub use js_env::{
+    JsBindingKind, JsBindingSpec, JsBindingStorage, JsEnvFrame, JsEnvFrameKind, JsEnvManifest,
+    JsEnvStack, JsEvalCompletion, JsExecutionContext, JsReferenceRecord,
+};
 pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
 pub use native_registry::{NativeFn, NativeFunctionRegistry, ResolvedNatives};
 pub use object::{Array, CallableData, CallableKind, Class, Object, RayaString, VTable};

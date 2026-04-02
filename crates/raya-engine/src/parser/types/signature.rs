@@ -957,6 +957,15 @@ impl<'a> SignatureHydrator<'a> {
             }
         }
 
+        let type_params = self.collect_type_params_for_class(
+            &properties,
+            &methods,
+            &static_properties,
+            &static_methods,
+            extends,
+            &implements,
+        );
+
         if self.matches_buffer_surface(&properties, &methods) {
             return Some(self.type_ctx.buffer_type());
         }
@@ -964,7 +973,7 @@ impl<'a> SignatureHydrator<'a> {
         let class_name = format!("__imported_class_{:016x}", signature_hash(inner));
         Some(self.type_ctx.intern(Type::Class(super::ty::ClassType {
             name: class_name,
-            type_params: Vec::new(),
+            type_params,
             properties,
             methods,
             static_properties,
@@ -1065,12 +1074,20 @@ impl<'a> SignatureHydrator<'a> {
             }
         }
 
+        let type_params = self.collect_type_params_for_interface(
+            &properties,
+            &methods,
+            &call_signatures,
+            &construct_signatures,
+            &extends,
+        );
+
         let interface_name = format!("__imported_interface_{:016x}", signature_hash(inner));
         Some(
             self.type_ctx
                 .intern(Type::Interface(super::ty::InterfaceType {
                     name: interface_name,
-                    type_params: Vec::new(),
+                    type_params,
                     properties,
                     methods,
                     call_signatures,
@@ -1172,6 +1189,189 @@ impl<'a> SignatureHydrator<'a> {
         }));
         self.type_vars.insert(canonical_name, ty);
         Some(ty)
+    }
+
+    fn collect_type_params_for_class(
+        &self,
+        properties: &[super::ty::PropertySignature],
+        methods: &[super::ty::MethodSignature],
+        static_properties: &[super::ty::PropertySignature],
+        static_methods: &[super::ty::MethodSignature],
+        extends: Option<TypeId>,
+        implements: &[TypeId],
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let mut visited = HashSet::new();
+        for prop in properties {
+            self.collect_type_var_names(prop.ty, &mut out, &mut seen, &mut visited);
+        }
+        for method in methods {
+            self.collect_type_var_names(method.ty, &mut out, &mut seen, &mut visited);
+        }
+        for prop in static_properties {
+            self.collect_type_var_names(prop.ty, &mut out, &mut seen, &mut visited);
+        }
+        for method in static_methods {
+            self.collect_type_var_names(method.ty, &mut out, &mut seen, &mut visited);
+        }
+        if let Some(parent) = extends {
+            self.collect_type_var_names(parent, &mut out, &mut seen, &mut visited);
+        }
+        for &implemented in implements {
+            self.collect_type_var_names(implemented, &mut out, &mut seen, &mut visited);
+        }
+        out
+    }
+
+    fn collect_type_params_for_interface(
+        &self,
+        properties: &[super::ty::PropertySignature],
+        methods: &[super::ty::MethodSignature],
+        call_signatures: &[TypeId],
+        construct_signatures: &[TypeId],
+        extends: &[TypeId],
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let mut visited = HashSet::new();
+        for prop in properties {
+            self.collect_type_var_names(prop.ty, &mut out, &mut seen, &mut visited);
+        }
+        for method in methods {
+            self.collect_type_var_names(method.ty, &mut out, &mut seen, &mut visited);
+        }
+        for &sig in call_signatures {
+            self.collect_type_var_names(sig, &mut out, &mut seen, &mut visited);
+        }
+        for &sig in construct_signatures {
+            self.collect_type_var_names(sig, &mut out, &mut seen, &mut visited);
+        }
+        for &parent in extends {
+            self.collect_type_var_names(parent, &mut out, &mut seen, &mut visited);
+        }
+        out
+    }
+
+    fn collect_type_var_names(
+        &self,
+        ty: TypeId,
+        out: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+        visited: &mut HashSet<TypeId>,
+    ) {
+        if !visited.insert(ty) {
+            return;
+        }
+        let Some(ty_data) = self.type_ctx.get(ty) else {
+            return;
+        };
+        match ty_data {
+            Type::TypeVar(tv) => {
+                if seen.insert(tv.name.clone()) {
+                    out.push(tv.name.clone());
+                }
+                if let Some(constraint) = tv.constraint {
+                    self.collect_type_var_names(constraint, out, seen, visited);
+                }
+                if let Some(default) = tv.default {
+                    self.collect_type_var_names(default, out, seen, visited);
+                }
+            }
+            Type::Array(arr) => self.collect_type_var_names(arr.element, out, seen, visited),
+            Type::Task(task) => self.collect_type_var_names(task.result, out, seen, visited),
+            Type::Tuple(tuple) => {
+                for &elem in &tuple.elements {
+                    self.collect_type_var_names(elem, out, seen, visited);
+                }
+            }
+            Type::Object(obj) => {
+                for prop in &obj.properties {
+                    self.collect_type_var_names(prop.ty, out, seen, visited);
+                }
+                if let Some((_, value_ty)) = obj.index_signature {
+                    self.collect_type_var_names(value_ty, out, seen, visited);
+                }
+                for &sig in &obj.call_signatures {
+                    self.collect_type_var_names(sig, out, seen, visited);
+                }
+                for &sig in &obj.construct_signatures {
+                    self.collect_type_var_names(sig, out, seen, visited);
+                }
+            }
+            Type::Interface(iface) => {
+                for prop in &iface.properties {
+                    self.collect_type_var_names(prop.ty, out, seen, visited);
+                }
+                for method in &iface.methods {
+                    self.collect_type_var_names(method.ty, out, seen, visited);
+                }
+                for &sig in &iface.call_signatures {
+                    self.collect_type_var_names(sig, out, seen, visited);
+                }
+                for &sig in &iface.construct_signatures {
+                    self.collect_type_var_names(sig, out, seen, visited);
+                }
+                for &parent in &iface.extends {
+                    self.collect_type_var_names(parent, out, seen, visited);
+                }
+            }
+            Type::Class(class_ty) => {
+                for prop in &class_ty.properties {
+                    self.collect_type_var_names(prop.ty, out, seen, visited);
+                }
+                for method in &class_ty.methods {
+                    self.collect_type_var_names(method.ty, out, seen, visited);
+                }
+                for prop in &class_ty.static_properties {
+                    self.collect_type_var_names(prop.ty, out, seen, visited);
+                }
+                for method in &class_ty.static_methods {
+                    self.collect_type_var_names(method.ty, out, seen, visited);
+                }
+                if let Some(parent) = class_ty.extends {
+                    self.collect_type_var_names(parent, out, seen, visited);
+                }
+                for &implemented in &class_ty.implements {
+                    self.collect_type_var_names(implemented, out, seen, visited);
+                }
+            }
+            Type::Function(func) => {
+                for &param in &func.params {
+                    self.collect_type_var_names(param, out, seen, visited);
+                }
+                if let Some(rest) = func.rest_param {
+                    self.collect_type_var_names(rest, out, seen, visited);
+                }
+                self.collect_type_var_names(func.return_type, out, seen, visited);
+            }
+            Type::Union(union) => {
+                for &member in &union.members {
+                    self.collect_type_var_names(member, out, seen, visited);
+                }
+            }
+            Type::Generic(generic) => {
+                self.collect_type_var_names(generic.base, out, seen, visited);
+                for &arg in &generic.type_args {
+                    self.collect_type_var_names(arg, out, seen, visited);
+                }
+            }
+            Type::Reference(reference) => {
+                if let Some(args) = &reference.type_args {
+                    for &arg in args {
+                        self.collect_type_var_names(arg, out, seen, visited);
+                    }
+                }
+            }
+            Type::Keyof(keyof_ty) => {
+                self.collect_type_var_names(keyof_ty.target, out, seen, visited);
+            }
+            Type::IndexedAccess(indexed) => {
+                self.collect_type_var_names(indexed.object, out, seen, visited);
+                self.collect_type_var_names(indexed.index, out, seen, visited);
+            }
+            _ => {}
+        }
     }
 }
 

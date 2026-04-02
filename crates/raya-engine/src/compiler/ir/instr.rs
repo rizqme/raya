@@ -160,7 +160,9 @@ pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
                     crate::semantics::JsOpKind::SetKeyed { strict: false } => 4,
                     crate::semantics::JsOpKind::SetKeyed { strict: true } => 5,
                     crate::semantics::JsOpKind::BindMethod => 6,
-                    crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: false } => 7,
+                    crate::semantics::JsOpKind::ResolveIdentifier {
+                        non_throwing: false,
+                    } => 7,
                     crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: true } => 8,
                     crate::semantics::JsOpKind::AssignIdentifier { strict: false } => 9,
                     crate::semantics::JsOpKind::AssignIdentifier { strict: true } => 10,
@@ -176,6 +178,13 @@ pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
                     crate::semantics::JsOpKind::DirectEval => 20,
                     crate::semantics::JsOpKind::EvalGetCompletion => 21,
                     crate::semantics::JsOpKind::EvalSetCompletion => 22,
+                    crate::semantics::JsOpKind::HasIdentifier => 23,
+                    crate::semantics::JsOpKind::DeleteIdentifier => 24,
+                    crate::semantics::JsOpKind::DeclareVar => 25,
+                    crate::semantics::JsOpKind::DeclareFunction => 26,
+                    crate::semantics::JsOpKind::DeclareLexical => 27,
+                    crate::semantics::JsOpKind::EnterActivationEnv => 28,
+                    crate::semantics::JsOpKind::LeaveActivationEnv => 29,
                 }
         }
     }
@@ -191,7 +200,9 @@ pub fn decode_kernel_op_id(id: KernelOpId) -> Option<KernelOp> {
             4 => crate::semantics::JsOpKind::SetKeyed { strict: false },
             5 => crate::semantics::JsOpKind::SetKeyed { strict: true },
             6 => crate::semantics::JsOpKind::BindMethod,
-            7 => crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: false },
+            7 => crate::semantics::JsOpKind::ResolveIdentifier {
+                non_throwing: false,
+            },
             8 => crate::semantics::JsOpKind::ResolveIdentifier { non_throwing: true },
             9 => crate::semantics::JsOpKind::AssignIdentifier { strict: false },
             10 => crate::semantics::JsOpKind::AssignIdentifier { strict: true },
@@ -207,6 +218,13 @@ pub fn decode_kernel_op_id(id: KernelOpId) -> Option<KernelOp> {
             20 => crate::semantics::JsOpKind::DirectEval,
             21 => crate::semantics::JsOpKind::EvalGetCompletion,
             22 => crate::semantics::JsOpKind::EvalSetCompletion,
+            23 => crate::semantics::JsOpKind::HasIdentifier,
+            24 => crate::semantics::JsOpKind::DeleteIdentifier,
+            25 => crate::semantics::JsOpKind::DeclareVar,
+            26 => crate::semantics::JsOpKind::DeclareFunction,
+            27 => crate::semantics::JsOpKind::DeclareLexical,
+            28 => crate::semantics::JsOpKind::EnterActivationEnv,
+            29 => crate::semantics::JsOpKind::LeaveActivationEnv,
             _ => return None,
         }));
     }

@@ -499,7 +499,18 @@ impl IrCodeGenerator {
             None
         };
 
-        Ok((ctx.build(), debug_info))
+        let built = ctx.build();
+        if let Ok(filter) = std::env::var("RAYA_DEBUG_FUNC_DISASM") {
+            if built.name.contains(&filter) {
+                eprintln!(
+                    "[func-disasm] {} params={} locals={}",
+                    built.name, built.param_count, built.local_count
+                );
+                eprintln!("{}", crate::compiler::disassemble_function(&built));
+            }
+        }
+
+        Ok((built, debug_info))
     }
 
     /// Generate bytecode for a basic block

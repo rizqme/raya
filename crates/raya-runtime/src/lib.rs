@@ -1106,6 +1106,9 @@ impl Runtime {
         };
 
         for name in Self::runtime_only_ambient_builtin_names(mode) {
+            if merged.symbols.contains_key(&name) {
+                continue;
+            }
             merged.add_symbol(raya_engine::compiler::module::ExportedSymbol {
                 name: name.clone(),
                 local_name: name.clone(),

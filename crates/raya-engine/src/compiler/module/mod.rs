@@ -25,6 +25,11 @@ pub const STD_MODULE_PREFIX: &str = "std:";
 /// (e.g., `"node:fs"`).
 pub const NODE_MODULE_PREFIX: &str = "node:";
 
+pub(crate) use builtin_surface::{
+    builtin_class_method_sources, builtin_surface_manifest_for_mode,
+    builtin_surface_mode_for_profile, BuiltinDispatchBinding, BuiltinGlobalKind,
+    BuiltinSurfaceManifest,
+};
 pub use cache::ModuleCache;
 pub use compiler::{CompiledModule, ModuleCompileError, ModuleCompiler};
 pub use declaration::{
@@ -32,10 +37,6 @@ pub use declaration::{
     load_declaration_module_from_source, specialization_template_from_symbol, BuiltinSurfaceMode,
     DeclarationError, DeclarationModule, DeclarationSourceKind, LateLinkRequirement,
     LateLinkSymbolRequirement,
-};
-pub(crate) use builtin_surface::{
-    builtin_class_method_sources, builtin_surface_manifest_for_mode, builtin_surface_mode_for_profile,
-    BuiltinDispatchBinding, BuiltinGlobalKind, BuiltinSurfaceManifest,
 };
 pub use exports::{
     extract_module_exports, has_top_level_declaration_before_offset, inject_ambient_exports,

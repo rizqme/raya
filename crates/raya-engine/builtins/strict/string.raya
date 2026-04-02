@@ -152,16 +152,27 @@ class string {
         let matches: (string | number)[][] = __NATIVE_CALL<(string | number)[][]>(REPLACE_MATCHES, pattern, this);
         let result: string = "";
         let lastIndex: int = 0;
+        let thisLength: int = 0;
+
+        while (__NATIVE_CALL<string>(CHAR_AT, this, thisLength) != "") {
+            thisLength = thisLength + 1;
+        }
 
         for (let i = 0; i < matches.length; i++) {
             let m: (string | number)[] = matches[i];
             let matchText: string = m[0] as string;
             let matchIndex: int = m[m.length - 1] as int;
-            result = result + this.substring(lastIndex, matchIndex) + replacer(m);
-            lastIndex = matchIndex + matchText.length;
+            let matchLength: int = 0;
+
+            while (__NATIVE_CALL<string>(CHAR_AT, matchText, matchLength) != "") {
+                matchLength = matchLength + 1;
+            }
+
+            result = result + __NATIVE_CALL<string>(SUBSTRING, this, lastIndex, matchIndex) + replacer(m);
+            lastIndex = matchIndex + matchLength;
         }
 
-        result = result + this.substring(lastIndex, this.length);
+        result = result + __NATIVE_CALL<string>(SUBSTRING, this, lastIndex, thisLength);
         return result;
     }
 

@@ -3879,6 +3879,18 @@ impl<'a> TypeChecker<'a> {
             }
         };
 
+        if !self.is_js_mode() {
+            for arg in &call.arguments {
+                self.check_expr(arg.expression());
+            }
+            self.push_error_soft(CheckError::PropertyNotFound {
+                property: helper.clone(),
+                ty: self.format_type(target_ty),
+                span: member.span,
+            });
+            return Some(self.type_ctx.unknown_type());
+        }
+
         let arg_types: Vec<(TypeId, crate::parser::Span)> = call
             .arguments
             .iter()
@@ -5420,9 +5432,21 @@ impl<'a> TypeChecker<'a> {
                     for arg in &new_expr.arguments {
                         self.check_expr(arg.expression());
                     }
+                    if !resolved_type_args.is_empty() {
+                        if let Some(class) = self
+                            .type_ctx
+                            .lookup_named_type(&name)
+                            .and_then(|ty| self.resolve_class_type(ty))
+                        {
+                            if class.type_params.len() == resolved_type_args.len() {
+                                return self.instantiate_class_type(&class, &resolved_type_args);
+                            }
+                        }
+                    }
                     if let Some(ty) = constructor_ty {
                         if let Some(return_ty) = self.first_construct_signature_return_type(ty) {
-                            return return_ty;
+                            return self
+                                .instantiate_construct_return_type(return_ty, &resolved_type_args);
                         }
                         return ty;
                     }
@@ -5521,7 +5545,16 @@ impl<'a> TypeChecker<'a> {
                     self.check_assignable(*arg_ty, param_ty, *arg_span);
                 }
             }
-            return func.return_type;
+            let explicit_type_args = new_expr
+                .type_args
+                .as_ref()
+                .map(|args| {
+                    args.iter()
+                        .map(|arg| self.resolve_type_annotation(arg))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            return self.instantiate_construct_return_type(func.return_type, &explicit_type_args);
         }
 
         if self.is_js_mode() {
@@ -5575,6 +5608,114 @@ impl<'a> TypeChecker<'a> {
                 .lookup_named_type(&type_ref.name)
                 .and_then(|named| self.first_construct_signature_return_type(named)),
             _ => None,
+        }
+    }
+
+    fn instantiate_construct_return_type(
+        &mut self,
+        return_ty: TypeId,
+        explicit_type_args: &[TypeId],
+    ) -> TypeId {
+        use crate::parser::types::Type;
+        use crate::parser::types::GenericContext;
+
+        if explicit_type_args.is_empty() {
+            return return_ty;
+        }
+
+        match self.type_ctx.get(return_ty).cloned() {
+            Some(Type::Class(class_ty))
+                if !class_ty.type_params.is_empty()
+                    && class_ty.type_params.len() == explicit_type_args.len() =>
+            {
+                return self.instantiate_class_type(&class_ty, explicit_type_args);
+            }
+            Some(Type::Generic(generic)) if generic.type_args.len() == explicit_type_args.len() => {
+                match self.type_ctx.get(generic.base).cloned() {
+                    Some(Type::Class(class_ty))
+                        if class_ty.type_params.len() == explicit_type_args.len() =>
+                    {
+                        return self.instantiate_class_type(&class_ty, explicit_type_args);
+                    }
+                    _ => {
+                        return self.type_ctx.intern(Type::Generic(
+                            crate::parser::types::ty::GenericType {
+                                base: generic.base,
+                                type_args: explicit_type_args.to_vec(),
+                            },
+                        ));
+                    }
+                }
+            }
+            Some(Type::Reference(reference))
+                if reference
+                    .type_args
+                    .as_ref()
+                    .is_some_and(|args| args.len() == explicit_type_args.len()) =>
+            {
+                if let Some(named_ty) = self.type_ctx.lookup_named_type(&reference.name) {
+                    if let Some(Type::Class(class_ty)) = self.type_ctx.get(named_ty).cloned() {
+                        if class_ty.type_params.len() == explicit_type_args.len() {
+                            return self.instantiate_class_type(&class_ty, explicit_type_args);
+                        }
+                    }
+                }
+                return self.type_ctx.intern(Type::Reference(
+                    crate::parser::types::ty::TypeReference {
+                        name: reference.name,
+                        type_args: Some(explicit_type_args.to_vec()),
+                    },
+                ));
+            }
+            _ => {}
+        }
+
+        let mut type_param_names = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        self.collect_type_var_names(return_ty, &mut type_param_names, &mut seen);
+        if type_param_names.is_empty() {
+            return return_ty;
+        }
+
+        let mut gen_ctx = GenericContext::new(self.type_ctx);
+        for (name, &arg_ty) in type_param_names.iter().zip(explicit_type_args.iter()) {
+            gen_ctx.add_substitution(name.clone(), arg_ty);
+        }
+
+        let substituted = gen_ctx.apply_substitution(return_ty).unwrap_or(return_ty);
+        match self.type_ctx.get(substituted).cloned() {
+            Some(Type::Class(class_ty))
+                if !class_ty.type_params.is_empty()
+                    && class_ty.type_params.len() == explicit_type_args.len() =>
+            {
+                self.instantiate_class_type(&class_ty, explicit_type_args)
+            }
+            Some(Type::Generic(generic)) if !generic.type_args.is_empty() => {
+                let concrete_args = generic.type_args.clone();
+                match self.type_ctx.get(generic.base).cloned() {
+                    Some(Type::Class(class_ty))
+                        if class_ty.type_params.len() == concrete_args.len() =>
+                    {
+                        self.instantiate_class_type(&class_ty, &concrete_args)
+                    }
+                    _ => substituted,
+                }
+            }
+            Some(Type::Reference(reference)) => {
+                let Some(concrete_args) = reference.type_args.clone() else {
+                    return substituted;
+                };
+                let Some(named_ty) = self.type_ctx.lookup_named_type(&reference.name) else {
+                    return substituted;
+                };
+                match self.type_ctx.get(named_ty).cloned() {
+                    Some(Type::Class(class_ty)) if class_ty.type_params.len() == concrete_args.len() => {
+                        self.instantiate_class_type(&class_ty, &concrete_args)
+                    }
+                    _ => substituted,
+                }
+            }
+            _ => substituted,
         }
     }
 
@@ -6416,7 +6557,9 @@ impl<'a> TypeChecker<'a> {
                     if self.in_assignment_lhs {
                         // Dot writes on typed class instances require explicit any-cast.
                         // Only allow if the object is already anyish or explicitly cast to any.
-                        if object_is_anyish || explicit_any_cast {
+                        let imported_js_wrapper_class =
+                            self.is_js_mode() && class_to_use.name.starts_with("__imported_class_");
+                        if object_is_anyish || explicit_any_cast || imported_js_wrapper_class {
                             self.maybe_escalate_identifier_to_jsobject(&member.object, None);
                             return if self.is_js_mode() {
                                 self.type_ctx.any_type()
@@ -6425,8 +6568,12 @@ impl<'a> TypeChecker<'a> {
                             };
                         }
                         if self.is_js_mode() {
-                            self.maybe_escalate_identifier_to_jsobject(&member.object, None);
-                            return self.type_ctx.any_type();
+                            self.push_error_soft(CheckError::JsTypedDotMonkeypatchForbidden {
+                                property: property_name.clone(),
+                                ty: format!("class {}", class_to_use.name),
+                                span: member.span,
+                            });
+                            return self.type_ctx.unknown_type();
                         }
                         // Fall through to hard error for typed class dot-writes
                     } else {

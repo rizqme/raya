@@ -381,9 +381,7 @@ fn is_structural_slot_safe_type(
     }
 }
 
-/// Legacy hook kept for pipeline compatibility after removing `LateBoundMember`.
-///
-/// Dynamic JS member access now lowers directly to explicit runtime/kernel ops,
+/// Dynamic JS member access lowers directly to explicit runtime/kernel ops,
 /// so there is nothing left to rewrite here after monomorphization.
 pub fn resolve_late_bound_members(
     ir_module: &mut IrModule,
@@ -518,5 +516,4 @@ mod tests {
         });
         assert_eq!(ctx.pending.len(), 1);
     }
-
 }

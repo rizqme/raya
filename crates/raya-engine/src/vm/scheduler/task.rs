@@ -11,16 +11,17 @@
 //! | CallState       | closure_stack, call_stack, execution_frames                     | VM workers only      |
 //! | InitState       | initial_args, held_mutexes                                     | VM workers only      |
 
+#[cfg(feature = "aot")]
+use crate::aot::{AotEntryFn, AotFrame};
 use crate::vm::gc::Nursery;
 use crate::vm::interpreter::execution::{ExecutionFrame, ReturnAction};
+use crate::vm::js_env::{JsEvalCompletion, JsExecutionContext};
 use crate::vm::snapshot::SerializedValue;
 use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
 use crate::vm::stack::Stack;
 use crate::vm::suspend::{ResumePolicy, ResumeRecord, SuspendReason, TaskId};
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
-#[cfg(feature = "aot")]
-use crate::aot::{AotEntryFn, AotFrame};
 use parking_lot::Condvar as ParkingCondvar;
 use parking_lot::Mutex as ParkingMutex;
 use parking_lot::RwLock as ParkingRwLock;
@@ -114,28 +115,10 @@ struct CallState {
     execution_frames: Vec<ExecutionFrame>,
 }
 
-#[derive(Debug, Clone)]
-struct ActivationEvalEnv {
-    func_id: usize,
-    locals_base: usize,
-    env: Value,
-}
-
 #[derive(Default)]
 struct EvalState {
-    active_env_stack: Vec<ActiveDirectEvalEnv>,
-    activation_envs: Vec<ActivationEvalEnv>,
-    active_home_object_stack: Vec<Value>,
-    active_new_target_stack: Vec<Value>,
-}
-
-#[derive(Debug, Copy, Clone)]
-struct ActiveDirectEvalEnv {
-    env: Value,
-    is_strict: bool,
-    uses_script_global_bindings: bool,
-    persist_caller_declarations: bool,
-    completion: Value,
+    active_execution_contexts: Vec<JsExecutionContext>,
+    current_activation_env: Option<Value>,
 }
 
 /// Initialization and mutex state (VM worker only, rare access)
@@ -424,42 +407,54 @@ impl Task {
         uses_script_global_bindings: bool,
         persist_caller_declarations: bool,
     ) {
+        self.push_js_execution_context(JsExecutionContext::direct_eval(
+            env,
+            is_strict,
+            uses_script_global_bindings,
+            persist_caller_declarations,
+        ));
+    }
+
+    pub fn push_js_execution_context(&self, context: JsExecutionContext) {
         self.init
             .lock()
             .eval_state
-            .active_env_stack
-            .push(ActiveDirectEvalEnv {
-                env,
-                is_strict,
-                uses_script_global_bindings,
-                persist_caller_declarations,
-                completion: Value::undefined(),
-            });
+            .active_execution_contexts
+            .push(context);
+    }
+
+    pub fn pop_js_execution_context(&self) -> Option<JsExecutionContext> {
+        self.init.lock().eval_state.active_execution_contexts.pop()
+    }
+
+    pub fn current_js_execution_context(&self) -> Option<JsExecutionContext> {
+        self.init
+            .lock()
+            .eval_state
+            .active_execution_contexts
+            .last()
+            .copied()
     }
 
     pub fn pop_active_direct_eval_env(&self) -> Option<Value> {
-        self.init
-            .lock()
-            .eval_state
-            .active_env_stack
-            .pop()
-            .map(|ctx| ctx.env)
+        self.pop_js_execution_context()
+            .and_then(|ctx| ctx.lexical_env)
     }
 
     pub fn current_active_direct_eval_env(&self) -> Option<Value> {
         self.init
             .lock()
             .eval_state
-            .active_env_stack
+            .active_execution_contexts
             .last()
-            .map(|ctx| ctx.env)
+            .and_then(|ctx| ctx.lexical_env)
     }
 
     pub fn current_active_direct_eval_uses_script_global_bindings(&self) -> bool {
         self.init
             .lock()
             .eval_state
-            .active_env_stack
+            .active_execution_contexts
             .last()
             .is_some_and(|ctx| ctx.uses_script_global_bindings)
     }
@@ -468,16 +463,16 @@ impl Task {
         self.init
             .lock()
             .eval_state
-            .active_env_stack
+            .active_execution_contexts
             .last()
-            .is_some_and(|ctx| ctx.is_strict)
+            .is_some_and(|ctx| ctx.strict)
     }
 
     pub fn current_active_direct_eval_persist_caller_declarations(&self) -> bool {
         self.init
             .lock()
             .eval_state
-            .active_env_stack
+            .active_execution_contexts
             .last()
             .is_some_and(|ctx| ctx.persist_caller_declarations)
     }
@@ -486,99 +481,90 @@ impl Task {
         self.init
             .lock()
             .eval_state
-            .active_env_stack
+            .active_execution_contexts
             .last()
-            .map(|ctx| ctx.completion)
+            .map(|ctx| {
+                ctx.eval_completion
+                    .into_option()
+                    .unwrap_or(Value::undefined())
+            })
     }
 
     pub fn push_active_js_home_object(&self, home_object: Value) {
-        self.init
-            .lock()
-            .eval_state
-            .active_home_object_stack
-            .push(home_object);
+        let mut init = self.init.lock();
+        if let Some(context) = init.eval_state.active_execution_contexts.last_mut() {
+            *context = context.clone().with_super_home_object(home_object);
+            return;
+        }
+        init.eval_state
+            .active_execution_contexts
+            .push(JsExecutionContext::default().with_super_home_object(home_object));
     }
 
     pub fn pop_active_js_home_object(&self) -> Option<Value> {
-        self.init.lock().eval_state.active_home_object_stack.pop()
+        self.init
+            .lock()
+            .eval_state
+            .active_execution_contexts
+            .last_mut()
+            .and_then(|ctx| ctx.super_home_object.take())
     }
 
     pub fn current_active_js_home_object(&self) -> Option<Value> {
-        self.init
-            .lock()
-            .eval_state
-            .active_home_object_stack
-            .last()
-            .copied()
+        self.current_js_execution_context()
+            .and_then(|ctx| ctx.super_home_object)
     }
 
     pub fn push_active_js_new_target(&self, new_target: Value) {
-        self.init
-            .lock()
-            .eval_state
-            .active_new_target_stack
-            .push(new_target);
+        let mut init = self.init.lock();
+        if let Some(context) = init.eval_state.active_execution_contexts.last_mut() {
+            *context = context.clone().with_new_target(new_target);
+            return;
+        }
+        init.eval_state
+            .active_execution_contexts
+            .push(JsExecutionContext::default().with_new_target(new_target));
     }
 
     pub fn pop_active_js_new_target(&self) -> Option<Value> {
-        self.init.lock().eval_state.active_new_target_stack.pop()
-    }
-
-    pub fn current_active_js_new_target(&self) -> Option<Value> {
         self.init
             .lock()
             .eval_state
-            .active_new_target_stack
-            .last()
-            .copied()
+            .active_execution_contexts
+            .last_mut()
+            .and_then(|ctx| ctx.new_target.take())
+    }
+
+    pub fn current_active_js_new_target(&self) -> Option<Value> {
+        self.current_js_execution_context()
+            .and_then(|ctx| ctx.new_target)
     }
 
     pub fn set_current_active_direct_eval_completion(&self, value: Value) -> bool {
         let mut init = self.init.lock();
-        let Some(ctx) = init.eval_state.active_env_stack.last_mut() else {
+        let Some(ctx) = init.eval_state.active_execution_contexts.last_mut() else {
             return false;
         };
-        ctx.completion = value;
+        ctx.eval_completion = JsEvalCompletion::Value(value);
         true
     }
 
     pub fn set_activation_direct_eval_env(&self, func_id: usize, locals_base: usize, env: Value) {
-        let mut init = self.init.lock();
-        if let Some(existing) = init
-            .eval_state
-            .activation_envs
-            .iter_mut()
-            .find(|binding| binding.func_id == func_id && binding.locals_base == locals_base)
-        {
-            existing.env = env;
-            return;
-        }
-        init.eval_state.activation_envs.push(ActivationEvalEnv {
-            func_id,
-            locals_base,
-            env,
-        });
+        let _ = (func_id, locals_base);
+        self.init.lock().eval_state.current_activation_env = Some(env);
     }
 
     pub fn current_activation_direct_eval_env(&self) -> Option<Value> {
-        let func_id = self.current_func_id();
-        let locals_base = self.current_locals_base();
-        self.init
-            .lock()
-            .eval_state
-            .activation_envs
-            .iter()
-            .rev()
-            .find(|binding| binding.func_id == func_id && binding.locals_base == locals_base)
-            .map(|binding| binding.env)
+        self.init.lock().eval_state.current_activation_env
     }
 
     pub fn clear_activation_direct_eval_env(&self, func_id: usize, locals_base: usize) {
-        self.init
-            .lock()
-            .eval_state
-            .activation_envs
-            .retain(|binding| !(binding.func_id == func_id && binding.locals_base == locals_base));
+        let _ = (func_id, locals_base);
+        self.init.lock().eval_state.current_activation_env = None;
+    }
+
+    pub fn restore_activation_direct_eval_env(&self, env: Option<Value>) {
+        self.init.lock().eval_state.current_activation_env = env;
     }
 
     // =========================================================================
@@ -1466,6 +1452,7 @@ impl Task {
                 return_action: super::super::interpreter::execution::ReturnAction::PushReturnValue,
                 arg_count: 0, // Not available in serialized format (only needed for rest params)
                 arg_values: Vec::new(),
+                activation_env: None,
             })
             .collect();
 
@@ -1977,6 +1964,7 @@ mod tests {
                 return_action: ReturnAction::PushReturnValue,
                 arg_count: 0,
                 arg_values: Vec::new(),
+                activation_env: None,
             },
             ExecutionFrame {
                 module: module.clone(),
@@ -1987,6 +1975,7 @@ mod tests {
                 return_action: ReturnAction::Discard,
                 arg_count: 0,
                 arg_values: Vec::new(),
+                activation_env: None,
             },
         ];
         task.save_execution_frames(frames);
@@ -2093,6 +2082,7 @@ mod tests {
             return_action: ReturnAction::PushReturnValue,
             arg_count: 0,
             arg_values: Vec::new(),
+            activation_env: None,
         }]);
 
         // Serialize

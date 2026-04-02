@@ -422,7 +422,6 @@ class Proxy<T extends Object> {
         this._target = target;
         this._handler = handler;
         this._proxy = __NATIVE_CALL<Object>(NC_REFLECT_CREATE_PROXY, target, handler);
-        return this._proxy;
     }
 
     isProxy(): boolean {

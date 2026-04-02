@@ -309,10 +309,10 @@ fn test_jsx_spread_attributes() {
         const x = <div {...props} />;
     "#,
     );
-    // Spread should produce a native_call to JSON.merge
+    // Spread should lower through the JSON.merge helper path.
     assert!(
-        ir.contains("native_call"),
-        "IR should contain native_call for spread:\n{}",
+        ir.contains("builtin_kernel") || ir.contains("native_call"),
+        "IR should contain helper dispatch for spread:\n{}",
         ir
     );
     assert!(

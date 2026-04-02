@@ -127,6 +127,9 @@ impl<'a> LoweringContext<'a> {
         module: &'a crate::compiler::bytecode::Module,
         mut builder: FunctionBuilder<'_>,
     ) -> Result<(), LowerError> {
+        let prologue_block = builder.create_block();
+        builder.append_block_params_for_function_params(prologue_block);
+
         // Create Cranelift blocks for each JIT block
         let mut block_map = FxHashMap::default();
         for jit_block in &func.blocks {
@@ -140,25 +143,28 @@ impl<'a> LoweringContext<'a> {
         // Build Phi resolution copies
         let phi_copies = build_phi_copies(func);
 
-        // Entry block gets the function parameters
+        // Function parameters live on a dedicated prologue block so loop back-edges
+        // never target Cranelift's special entry block directly.
         let entry_block = block_map[&func.entry];
-        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(prologue_block);
+
+        let params = FunctionParams {
+            _args_ptr: builder.block_params(prologue_block)[0],
+            _arg_count: builder.block_params(prologue_block)[1],
+            locals_ptr: builder.block_params(prologue_block)[2],
+            _local_count: builder.block_params(prologue_block)[3],
+            ctx_ptr: builder.block_params(prologue_block)[4],
+            exit_info_ptr: builder.block_params(prologue_block)[5],
+        };
+
+        builder.ins().jump(entry_block, &[]);
+        builder.seal_block(prologue_block);
         builder.switch_to_block(entry_block);
 
-        // Only seal the entry block if it's not a loop header
+        // Only seal the real entry block if it's not a loop header.
         if !loop_headers.contains(&func.entry) {
             builder.seal_block(entry_block);
         }
-
-        // Extract parameters
-        let params = FunctionParams {
-            _args_ptr: builder.block_params(entry_block)[0],
-            _arg_count: builder.block_params(entry_block)[1],
-            locals_ptr: builder.block_params(entry_block)[2],
-            _local_count: builder.block_params(entry_block)[3],
-            ctx_ptr: builder.block_params(entry_block)[4],
-            exit_info_ptr: builder.block_params(entry_block)[5],
-        };
 
         let mut ctx = LoweringContext {
             reg_vars: FxHashMap::default(),

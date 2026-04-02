@@ -2704,10 +2704,17 @@ mod tests {
 
     #[test]
     fn test_invalid_assignment_target_is_early_error() {
-        let (module, interner) = parse_module("1 = value;");
-        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
-            .expect_err("expected early error");
-        assert!(errors[0].message.contains("Invalid assignment target"));
+        let parser = Parser::new("1 = value;").expect("should lex");
+        match parser.parse() {
+            Ok((module, interner)) => {
+                let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+                    .expect_err("expected early error");
+                assert!(errors[0].message.contains("Invalid assignment target"));
+            }
+            Err(errors) => {
+                assert!(errors[0].message.contains("Invalid assignment target"));
+            }
+        }
     }
 
     #[test]

@@ -132,6 +132,8 @@ pub struct ExecutionFrame {
     pub arg_count: usize,
     /// Snapshot of raw call arguments before local/register slots can overwrite them.
     pub arg_values: Vec<Value>,
+    /// Persistent direct-eval activation env for the caller activation, if any.
+    pub activation_env: Option<Value>,
 }
 
 impl OpcodeResult {

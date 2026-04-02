@@ -115,7 +115,7 @@ function defineNonEnumerableDataProperty(target: Object, key: string, value: any
     Object.defineProperty(target, key, {
         value: value,
         writable: true,
-        enumerable: false,
+        enumerable: true,
         configurable: true,
     });
 }
@@ -158,26 +158,36 @@ function iterableToList(items: any): any[] {
 
 function createError(code: string, message: any, options: Object | null = null): Error {
     let err = new Error(message, options);
-    err.code = code;
+    err["code"] = code;
     return err;
 }
 
 function createTypeError(code: string, message: any, options: Object | null = null): TypeError {
     let err = new TypeError(message);
-    err.code = code;
+    err["code"] = code;
     installErrorCause(err, options);
     return err;
 }
 
 function createRangeError(code: string, message: any, options: Object | null = null): RangeError {
     let err = new RangeError(message);
-    err.code = code;
+    err["code"] = code;
     installErrorCause(err, options);
     return err;
 }
 
 class Error {
+    message: string;
+    name: string;
+    stack: any;
+    cause: any;
+    code: string;
+    errno: any;
+    syscall: any;
+    path: any;
+
     constructor(message: any = undefined, options: Object | null = null) {
+        this["name"] = "Error";
         if (message !== undefined) {
             defineNonEnumerableDataProperty(this, "message", normalizeErrorMessage(message));
         }
@@ -196,70 +206,84 @@ class Error {
 class TypeError extends Error {
     constructor(message: any = undefined) {
         super(message);
+        this["name"] = "TypeError";
     }
 }
 
 class RangeError extends Error {
     constructor(message: any = undefined) {
         super(message);
+        this["name"] = "RangeError";
     }
 }
 
 class ReferenceError extends Error {
     constructor(message: any = undefined) {
         super(message);
+        this["name"] = "ReferenceError";
     }
 }
 
 class SyntaxError extends Error {
     constructor(message: any = undefined) {
         super(message);
+        this["name"] = "SyntaxError";
     }
 }
 
 class URIError extends Error {
     constructor(message: any = undefined) {
         super(message);
+        this["name"] = "URIError";
     }
 }
 
 class EvalError extends Error {
     constructor(message: any = undefined) {
         super(message);
+        this["name"] = "EvalError";
     }
 }
 
 class InternalError extends Error {
     constructor(message: any = undefined) {
         super(message);
+        this["name"] = "InternalError";
     }
 }
 
 class AggregateError extends Error {
     constructor(errors: any, message: any = undefined, options: Object | null = null) {
         super(message, options);
+        this["name"] = "AggregateError";
         defineNonEnumerableDataProperty(this, "errors", iterableToList(errors));
     }
 }
 
 class SuppressedError extends Error {
+    name: string;
+    error: ErrorLike | null;
+    suppressed: ErrorLike | null;
+
     constructor(error: ErrorLike | null, suppressed: ErrorLike | null, message: any = undefined, options: Object | null = null) {
         super(message, options);
-        this.name = "SuppressedError";
-        this.error = error;
-        this.suppressed = suppressed;
+        this["name"] = "SuppressedError";
+        this["error"] = error;
+        this["suppressed"] = suppressed;
     }
 }
 
 class ChannelClosedError extends Error {
     constructor(message: any = "cannot operate on closed channel") {
         super(message);
+        this["name"] = "ChannelClosedError";
     }
 }
 
 class AssertionError extends Error {
     constructor(message: any = "assertion failed") {
         super(message);
+        this["name"] = "AssertionError";
     }
 }
 

@@ -17,34 +17,34 @@ class SharedArrayBuffer {
 export { SharedArrayBuffer, Atomics };
 
 class Atomics {
-    static load(arr: { get(index: int): int }, index: int): number {
+    static load(arr: any, index: int): number {
         return arr.get(index) as number;
     }
 
-    static store(arr: { set(index: int, value: int): void }, index: int, value: int): number {
+    static store(arr: any, index: int, value: int): number {
         arr.set(index, value);
         return value as number;
     }
 
-    static add(arr: { get(index: int): int, set(index: int, value: int): void }, index: int, value: int): number {
+    static add(arr: any, index: int, value: int): number {
         let oldInt = arr.get(index);
         arr.set(index, (oldInt + value) as int);
         return oldInt as number;
     }
 
-    static sub(arr: { get(index: int): int, set(index: int, value: int): void }, index: int, value: int): number {
+    static sub(arr: any, index: int, value: int): number {
         let oldInt = arr.get(index);
         arr.set(index, (oldInt - value) as int);
         return oldInt as number;
     }
 
-    static exchange(arr: { get(index: int): int, set(index: int, value: int): void }, index: int, value: int): number {
+    static exchange(arr: any, index: int, value: int): number {
         let old = arr.get(index) as number;
         arr.set(index, value as int);
         return old;
     }
 
-    static compareExchange(arr: { get(index: int): int, set(index: int, value: int): void }, index: int, expected: int, replacement: int): number {
+    static compareExchange(arr: any, index: int, expected: int, replacement: int): number {
         let old = arr.get(index) as number;
         if (old == (expected as number)) {
             arr.set(index, replacement as int);
@@ -52,11 +52,11 @@ class Atomics {
         return old;
     }
 
-    static wait(_arr: { get(index: int): int }, _index: int, _value: int, _timeoutMs: int): string {
+    static wait(_arr: any, _index: int, _value: int, _timeoutMs: int): string {
         throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Atomics.wait is not implemented in node-compat runtime yet");
     }
 
-    static notify(_arr: { get(index: int): int }, _index: int, _count: int): number {
+    static notify(_arr: any, _index: int, _count: int): number {
         throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Atomics.notify is not implemented in node-compat runtime yet");
     }
 }

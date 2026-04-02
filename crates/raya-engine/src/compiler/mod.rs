@@ -93,10 +93,36 @@ pub struct Compiler<'a> {
     source_text: Option<String>,
     /// Ambient builtin globals available without explicit source declarations/imports.
     ambient_builtin_globals: FxHashSet<String>,
-    /// Optional function name lowered as a direct-eval wrapper environment.
-    direct_eval_entry_function: Option<String>,
-    /// Identifier names that should resolve through the direct-eval environment.
-    direct_eval_binding_names: FxHashSet<String>,
+    /// Direct-eval lowering metadata shared across compiler and lowerer.
+    js_eval_compile_context: JsEvalCompileContext,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JsEvalCompileContext {
+    pub entry_function: Option<String>,
+    pub binding_names: FxHashSet<String>,
+}
+
+impl JsEvalCompileContext {
+    pub fn with_entry_function(mut self, function_name: impl Into<String>) -> Self {
+        self.entry_function = Some(function_name.into());
+        self
+    }
+
+    pub fn with_binding_names<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.binding_names = names.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn matches_entry_function(&self, function_name: &str) -> bool {
+        self.entry_function
+            .as_deref()
+            .is_some_and(|target| target == function_name)
+    }
 }
 
 impl<'a> Compiler<'a> {
@@ -124,8 +150,7 @@ impl<'a> Compiler<'a> {
             module_identity: None,
             source_text: None,
             ambient_builtin_globals: FxHashSet::default(),
-            direct_eval_entry_function: None,
-            direct_eval_binding_names: FxHashSet::default(),
+            js_eval_compile_context: JsEvalCompileContext::default(),
         }
     }
 
@@ -199,19 +224,9 @@ impl<'a> Compiler<'a> {
         self
     }
 
-    /// Mark a specific function declaration as the direct-eval wrapper entry.
-    pub fn with_direct_eval_entry_function(mut self, function_name: impl Into<String>) -> Self {
-        self.direct_eval_entry_function = Some(function_name.into());
-        self
-    }
-
-    /// Provide identifier names that should resolve through the direct-eval environment.
-    pub fn with_direct_eval_binding_names<I, S>(mut self, names: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.direct_eval_binding_names = names.into_iter().map(Into::into).collect();
+    /// Provide explicit direct-eval lowering metadata.
+    pub(crate) fn with_js_eval_compile_context(mut self, context: JsEvalCompileContext) -> Self {
+        self.js_eval_compile_context = context;
         self
     }
 
@@ -220,22 +235,20 @@ impl<'a> Compiler<'a> {
         module: &ast::Module,
         emit_sourcemap: bool,
     ) -> lower::Lowerer<'_> {
-        let semantic_plan =
-            build_semantic_lowering_plan_with_types(
-                module,
-                self.interner,
-                self.semantic_profile,
-                Some(&self.type_ctx),
-                Some(&self.expr_types),
-            );
+        let semantic_plan = build_semantic_lowering_plan_with_types(
+            module,
+            self.interner,
+            self.semantic_profile,
+            Some(&self.type_ctx),
+            Some(&self.expr_types),
+        );
         lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
             .with_type_annotation_types(self.type_annotation_types.clone())
             .with_sourcemap(emit_sourcemap)
             .with_semantic_plan(semantic_plan)
             .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
             .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
-            .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
-            .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
+            .with_js_eval_compile_context(self.js_eval_compile_context.clone())
     }
 
     /// Compile a module into bytecode
@@ -344,7 +357,7 @@ impl<'a> Compiler<'a> {
                         if matches!(instr, ir::IrInstr::DynSetProp { .. }) {
                             return Err(CompileError::InternalError {
                                 message: format!(
-                                    "strict mode forbids unresolved runtime fallback op 'DynSetProp' in function '{}'",
+                                    "strict mode forbids dynamic JS property writes in function '{}'",
                                     func.name
                                 ),
                             });
@@ -1351,8 +1364,11 @@ mod tests {
             .expect_err("strict no-fallback compile should fail");
         let msg = err.to_string();
         assert!(
-            msg.contains("unresolved member call"),
-            "expected unresolved member call diagnostic, got: {msg}"
+            msg.contains("unresolved member call")
+                || msg.contains("unresolved member property")
+                || msg.contains("strict mode forbids dynamic member resolution")
+                || msg.contains("strict mode forbids dynamic JS property access"),
+            "expected unresolved member resolution diagnostic, got: {msg}"
         );
     }
 }

@@ -1968,13 +1968,13 @@ pub mod ctx_offsets {
     pub const SHARED_STATE: i32 = HELPERS + super::helper_table_size() as i32;
 }
 
-/// Number of entries in the AotHelperTable.
-pub const HELPER_TABLE_ENTRY_COUNT: usize = 39;
+/// Number of pointer-sized entries in the AotHelperTable.
+pub const HELPER_TABLE_ENTRY_COUNT: usize =
+    std::mem::size_of::<AotHelperTable>() / std::mem::size_of::<usize>();
 
 /// Size of the AotHelperTable in bytes (for computing offsets after it).
 pub const fn helper_table_size() -> usize {
-    // 39 function pointers × 8 bytes each
-    HELPER_TABLE_ENTRY_COUNT * 8
+    std::mem::size_of::<AotHelperTable>()
 }
 
 // =============================================================================

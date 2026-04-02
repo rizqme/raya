@@ -34,6 +34,19 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                if std::env::var("RAYA_DEBUG_LOCAL_TRACE").is_ok() {
+                    let func_id = task.current_func_id();
+                    if let Some(func) = module.functions.get(func_id) {
+                        if func.name.contains("Date::setTime")
+                            || func.name.contains("Date::constructor")
+                        {
+                            eprintln!(
+                                "[local-trace] {} LoadLocal[{}] => {:?}",
+                                func.name, index, value
+                            );
+                        }
+                    }
+                }
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -60,6 +73,16 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                if std::env::var("RAYA_DEBUG_LOCAL_TRACE").is_ok() {
+                    let func_id = task.current_func_id();
+                    if let Some(func) = module.functions.get(func_id) {
+                        if func.name.contains("Date::setTime")
+                            || func.name.contains("Date::constructor")
+                        {
+                            eprintln!("[local-trace] {} LoadLocal[0] => {:?}", func.name, value);
+                        }
+                    }
+                }
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -71,6 +94,16 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                if std::env::var("RAYA_DEBUG_LOCAL_TRACE").is_ok() {
+                    let func_id = task.current_func_id();
+                    if let Some(func) = module.functions.get(func_id) {
+                        if func.name.contains("Date::setTime")
+                            || func.name.contains("Date::constructor")
+                        {
+                            eprintln!("[local-trace] {} LoadLocal[1] => {:?}", func.name, value);
+                        }
+                    }
+                }
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

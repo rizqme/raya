@@ -5,7 +5,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::compiler::module::BuiltinSurfaceMode;
 use crate::compiler::type_registry::{DispatchAction, OpcodeKind};
 use crate::parser::ast::{
-    self, ClassMember, ExportDecl, Expression, ObjectProperty, Pattern, PropertyKind, PropertyKey,
+    self, ClassMember, ExportDecl, Expression, ObjectProperty, Pattern, PropertyKey, PropertyKind,
     Statement, Type as AstType, TypeAnnotation,
 };
 use crate::parser::checker::SymbolKind;
@@ -36,14 +36,27 @@ pub(crate) fn builtin_surface_manifest_for_mode(
 
 pub(crate) fn builtin_class_method_sources() -> &'static [(&'static str, &'static str)] {
     &[
-        ("string", include_str!("../../../builtins/strict/string.raya")),
-        ("number", include_str!("../../../builtins/strict/number.raya")),
+        (
+            "string",
+            include_str!("../../../builtins/strict/string.raya"),
+        ),
+        (
+            "number",
+            include_str!("../../../builtins/strict/number.raya"),
+        ),
         ("Array", include_str!("../../../builtins/strict/array.raya")),
-        ("RegExp", include_str!("../../../builtins/strict/regexp.raya")),
+        (
+            "RegExp",
+            include_str!("../../../builtins/strict/regexp.raya"),
+        ),
         ("Set", include_str!("../../../builtins/strict/set.raya")),
         (
             "Promise",
             include_str!("../../../builtins/strict/promise.raya"),
+        ),
+        (
+            "Mutex",
+            include_str!("../../../builtins/strict/mutex.raya"),
         ),
     ]
 }
@@ -92,11 +105,20 @@ pub(crate) enum BuiltinDispatchBinding {
         native_id: u16,
         return_type_name: Option<String>,
     },
-    DeclaredField(Option<String>),
+    DeclaredField {
+        field_type_name: Option<String>,
+        field_index: Option<u16>,
+    },
     ClassMethod {
         type_name: String,
         method_name: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeWrapperMode {
+    ExplicitArgsOnly,
+    AllowReceiverThis,
 }
 
 #[derive(Debug, Clone)]
@@ -274,11 +296,15 @@ impl BuiltinDispatchBinding {
             Self::SourceDefined => None,
             Self::Opcode(kind) => Some(DispatchAction::Opcode(*kind)),
             Self::VmNative { native_id, .. } => Some(DispatchAction::VmNative(*native_id)),
-            Self::DeclaredField(field_type_name) => Some(DispatchAction::DeclaredField(
-                field_type_name
+            Self::DeclaredField {
+                field_type_name,
+                field_index,
+            } => Some(DispatchAction::DeclaredField {
+                field_type: field_type_name
                     .as_deref()
                     .and_then(|name| resolve_type_name(type_ctx, name)),
-            )),
+                field_index: *field_index,
+            }),
             Self::ClassMethod {
                 type_name,
                 method_name,
@@ -328,7 +354,13 @@ fn build_builtin_surface_manifest(mode: BuiltinSurfaceMode) -> BuiltinSurfaceMan
             &mut functions,
         );
         collect_export_names(&module.statements, &interner, &mut exported_names);
-        collect_class_surfaces(&module.statements, source, &interner, &constants, &mut classes);
+        collect_class_surfaces(
+            &module.statements,
+            source,
+            &interner,
+            &constants,
+            &mut classes,
+        );
         collect_static_surface_patches(
             &module.statements,
             source,
@@ -379,7 +411,9 @@ fn build_builtin_surface_manifest(mode: BuiltinSurfaceMode) -> BuiltinSurfaceMan
                     ),
                 }
             }
-            Some(LocalBuiltinBindingKind::Function) if !patch.methods.is_empty() || !patch.properties.is_empty() => {
+            Some(LocalBuiltinBindingKind::Function)
+                if !patch.methods.is_empty() || !patch.properties.is_empty() =>
+            {
                 BuiltinGlobalSurface {
                     kind: BuiltinGlobalKind::StaticValue,
                     backing_type_name: None,
@@ -393,12 +427,14 @@ fn build_builtin_surface_manifest(mode: BuiltinSurfaceMode) -> BuiltinSurfaceMan
                 static_methods: FxHashMap::default(),
                 static_properties: FxHashMap::default(),
             },
-            _ if !patch.methods.is_empty() || !patch.properties.is_empty() => BuiltinGlobalSurface {
-                kind: BuiltinGlobalKind::StaticValue,
-                backing_type_name: None,
-                static_methods: patch.methods,
-                static_properties: patch.properties,
-            },
+            _ if !patch.methods.is_empty() || !patch.properties.is_empty() => {
+                BuiltinGlobalSurface {
+                    kind: BuiltinGlobalKind::StaticValue,
+                    backing_type_name: None,
+                    static_methods: patch.methods,
+                    static_properties: patch.properties,
+                }
+            }
             _ => BuiltinGlobalSurface {
                 kind: BuiltinGlobalKind::Value,
                 backing_type_name: None,
@@ -483,7 +519,9 @@ fn collect_top_level_bindings(
             Statement::ClassDecl(class_decl) => {
                 locals.insert(
                     interner.resolve(class_decl.name.name).to_string(),
-                    LocalBuiltinBindingKind::Class(interner.resolve(class_decl.name.name).to_string()),
+                    LocalBuiltinBindingKind::Class(
+                        interner.resolve(class_decl.name.name).to_string(),
+                    ),
                 );
             }
             Statement::FunctionDecl(function) => {
@@ -495,6 +533,7 @@ fn collect_top_level_bindings(
                     interner,
                     constants,
                     functions,
+                    NativeWrapperMode::ExplicitArgsOnly,
                 );
                 locals.insert(name.clone(), LocalBuiltinBindingKind::Function);
                 functions.insert(
@@ -567,6 +606,8 @@ fn collect_class_surfaces(
                         .any(|annotation| annotation.tag == "wrapper_method_surface"),
                     ..BuiltinTypeSurface::default()
                 };
+                let mut next_instance_field_index: u16 = 0;
+                let mut next_static_field_index: u16 = 0;
 
                 for member in &class_decl.members {
                     match member {
@@ -574,15 +615,29 @@ fn collect_class_surfaces(
                             let Some(name) = property_key_name(&field.name, interner) else {
                                 continue;
                             };
+                            let field_index = if field.is_static {
+                                let index = next_static_field_index;
+                                next_static_field_index = next_static_field_index.saturating_add(1);
+                                index
+                            } else {
+                                let index = next_instance_field_index;
+                                next_instance_field_index =
+                                    next_instance_field_index.saturating_add(1);
+                                index
+                            };
                             let binding = field
                                 .annotations
                                 .iter()
                                 .find_map(|annotation| opcode_kind_from_annotation(annotation))
                                 .map(BuiltinDispatchBinding::Opcode)
                                 .unwrap_or_else(|| {
-                                    BuiltinDispatchBinding::DeclaredField(
-                                        type_name_from_annotation(field.type_annotation.as_ref(), interner),
-                                    )
+                                    BuiltinDispatchBinding::DeclaredField {
+                                        field_type_name: type_name_from_annotation(
+                                            field.type_annotation.as_ref(),
+                                            interner,
+                                        ),
+                                        field_index: Some(field_index),
+                                    }
                                 });
                             if field.is_static {
                                 surface.static_properties.insert(name, binding);
@@ -636,6 +691,7 @@ fn collect_class_surfaces(
                                 interner,
                                 constants,
                                 &FxHashMap::default(),
+                                NativeWrapperMode::ExplicitArgsOnly,
                             ) {
                                 BuiltinDispatchBinding::VmNative { native_id, .. } => {
                                     Some(native_id)
@@ -650,7 +706,13 @@ fn collect_class_surfaces(
                 classes.insert(class_name, surface);
             }
             Statement::ExportDecl(ExportDecl::Declaration(inner)) => {
-                collect_class_surfaces(std::slice::from_ref(inner.as_ref()), source, interner, constants, classes);
+                collect_class_surfaces(
+                    std::slice::from_ref(inner.as_ref()),
+                    source,
+                    interner,
+                    constants,
+                    classes,
+                );
             }
             _ => {}
         }
@@ -751,17 +813,25 @@ fn object_define_property_patch(
     let Expression::Object(object) = descriptor else {
         return None;
     };
-    let value_expr = object.properties.iter().find_map(|property| match property {
-        ObjectProperty::Property(property)
-            if property.kind == PropertyKind::Init
-                && property_key_name(&property.key, interner).as_deref() == Some("value") =>
-        {
-            Some(&property.value)
-        }
-        _ => None,
-    });
+    let value_expr = object
+        .properties
+        .iter()
+        .find_map(|property| match property {
+            ObjectProperty::Property(property)
+                if property.kind == PropertyKind::Init
+                    && property_key_name(&property.key, interner).as_deref() == Some("value") =>
+            {
+                Some(&property.value)
+            }
+            _ => None,
+        });
     let Some(value_expr) = value_expr else {
-        return Some((target_name, member_name, BuiltinDispatchBinding::SourceDefined, false));
+        return Some((
+            target_name,
+            member_name,
+            BuiltinDispatchBinding::SourceDefined,
+            false,
+        ));
     };
     let (binding, callable) =
         binding_from_expression(value_expr, source, interner, constants, functions);
@@ -833,6 +903,7 @@ fn binding_from_expression(
                 interner,
                 constants,
                 functions,
+                NativeWrapperMode::ExplicitArgsOnly,
             ),
             true,
         ),
@@ -845,6 +916,7 @@ fn binding_from_expression(
                     interner,
                     constants,
                     functions,
+                    NativeWrapperMode::ExplicitArgsOnly,
                 ),
                 true,
             ),
@@ -861,8 +933,17 @@ fn function_binding(
     interner: &Interner,
     constants: &FxHashMap<String, u16>,
     functions: &FxHashMap<String, ParsedFunctionBinding>,
+    wrapper_mode: NativeWrapperMode,
 ) -> BuiltinDispatchBinding {
-    direct_wrapper_binding_from_block(body, return_type, source, interner, constants, functions)
+    direct_wrapper_binding_from_block(
+        body,
+        return_type,
+        source,
+        interner,
+        constants,
+        functions,
+        wrapper_mode,
+    )
 }
 
 fn method_binding_from_decl(
@@ -887,6 +968,11 @@ fn method_binding_from_decl(
     let Some(body) = &method.body else {
         return BuiltinDispatchBinding::SourceDefined;
     };
+    let wrapper_mode = if !method.is_static {
+        NativeWrapperMode::AllowReceiverThis
+    } else {
+        NativeWrapperMode::ExplicitArgsOnly
+    };
     function_binding(
         body,
         method.return_type.as_ref(),
@@ -894,6 +980,7 @@ fn method_binding_from_decl(
         interner,
         constants,
         &FxHashMap::default(),
+        wrapper_mode,
     )
 }
 
@@ -904,6 +991,7 @@ fn direct_wrapper_binding_from_block(
     interner: &Interner,
     constants: &FxHashMap<String, u16>,
     functions: &FxHashMap<String, ParsedFunctionBinding>,
+    wrapper_mode: NativeWrapperMode,
 ) -> BuiltinDispatchBinding {
     let [stmt] = body.statements.as_slice() else {
         return BuiltinDispatchBinding::SourceDefined;
@@ -923,6 +1011,7 @@ fn direct_wrapper_binding_from_block(
         interner,
         constants,
         functions,
+        wrapper_mode,
     )
 }
 
@@ -933,6 +1022,7 @@ fn direct_wrapper_binding_from_expression(
     interner: &Interner,
     constants: &FxHashMap<String, u16>,
     functions: &FxHashMap<String, ParsedFunctionBinding>,
+    wrapper_mode: NativeWrapperMode,
 ) -> BuiltinDispatchBinding {
     match expr {
         Expression::Parenthesized(paren) => direct_wrapper_binding_from_expression(
@@ -942,6 +1032,7 @@ fn direct_wrapper_binding_from_expression(
             interner,
             constants,
             functions,
+            wrapper_mode,
         ),
         Expression::TypeCast(cast) => direct_wrapper_binding_from_expression(
             &cast.object,
@@ -950,6 +1041,7 @@ fn direct_wrapper_binding_from_expression(
             interner,
             constants,
             functions,
+            wrapper_mode,
         ),
         Expression::Call(call) => {
             let Expression::Identifier(callee) = &*call.callee else {
@@ -957,7 +1049,13 @@ fn direct_wrapper_binding_from_expression(
             };
             let callee_name = interner.resolve(callee.name);
             if callee_name == "__NATIVE_CALL" {
-                return span_native_binding(expr, return_type, source, interner, constants)
+                return native_wrapper_binding_from_call(
+                    call,
+                    return_type,
+                    interner,
+                    constants,
+                    wrapper_mode,
+                )
                     .unwrap_or(BuiltinDispatchBinding::SourceDefined);
             }
             functions
@@ -973,18 +1071,69 @@ fn direct_wrapper_binding_from_expression(
     }
 }
 
-fn span_native_binding(
-    expr: &Expression,
+fn native_wrapper_binding_from_call(
+    call: &ast::CallExpression,
     return_type: Option<&TypeAnnotation>,
-    source: &str,
     interner: &Interner,
     constants: &FxHashMap<String, u16>,
+    wrapper_mode: NativeWrapperMode,
 ) -> Option<BuiltinDispatchBinding> {
-    let body = span_slice(source, expr.span().start, expr.span().end);
-    extract_native_call_id(body, constants).map(|native_id| BuiltinDispatchBinding::VmNative {
-        native_id,
-        return_type_name: type_name_from_annotation(return_type, interner),
+    if !call
+        .arguments
+        .iter()
+        .skip(1)
+        .all(|arg: &ast::CallArgument| {
+            native_wrapper_arg_is_passthrough(arg.expression(), wrapper_mode)
+        })
+    {
+        return None;
+    }
+
+    let first_arg = call.argument_expression(0)?;
+    native_wrapper_native_id(first_arg, interner, constants).map(|native_id| {
+        BuiltinDispatchBinding::VmNative {
+            native_id,
+            return_type_name: type_name_from_annotation(return_type, interner),
+        }
     })
+}
+
+fn native_wrapper_native_id(
+    expr: &Expression,
+    interner: &Interner,
+    constants: &FxHashMap<String, u16>,
+) -> Option<u16> {
+    match expr {
+        Expression::IntLiteral(lit) => Some(lit.value as u16),
+        Expression::Identifier(ident) => constants
+            .get(interner.resolve(ident.name))
+            .copied()
+            .or_else(|| parse_number_literal(interner.resolve(ident.name)).map(|value| value as u16)),
+        Expression::Parenthesized(paren) => {
+            native_wrapper_native_id(&paren.expression, interner, constants)
+        }
+        Expression::TypeCast(cast) => native_wrapper_native_id(&cast.object, interner, constants),
+        _ => None,
+    }
+}
+
+fn native_wrapper_arg_is_passthrough(expr: &Expression, wrapper_mode: NativeWrapperMode) -> bool {
+    match expr {
+        Expression::Identifier(_)
+        | Expression::IntLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_) => true,
+        Expression::This(_) => wrapper_mode == NativeWrapperMode::AllowReceiverThis,
+        Expression::Parenthesized(paren) => {
+            native_wrapper_arg_is_passthrough(&paren.expression, wrapper_mode)
+        }
+        Expression::TypeCast(cast) => {
+            native_wrapper_arg_is_passthrough(&cast.object, wrapper_mode)
+        }
+        _ => false,
+    }
 }
 
 fn property_key_name(key: &PropertyKey, interner: &Interner) -> Option<String> {
@@ -1041,7 +1190,9 @@ fn type_name_from_annotation(
 fn resolve_type_name(type_ctx: &TypeContext, name: &str) -> Option<u32> {
     match name {
         "Array" => Some(TypeContext::ARRAY_TYPE_ID),
-        _ => type_ctx.lookup_named_type(name).map(|type_id| type_id.as_u32()),
+        _ => type_ctx
+            .lookup_named_type(name)
+            .map(|type_id| type_id.as_u32()),
     }
 }
 

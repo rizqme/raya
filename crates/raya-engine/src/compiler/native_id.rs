@@ -204,6 +204,8 @@ pub const OBJECT_ITERATOR_RESUME_RETURN: u16 = 0x0066;
 pub const OBJECT_ITERATOR_RESUME_THROW: u16 = 0x0067;
 /// Acquire an async iterator using `@@asyncIterator`.
 pub const OBJECT_ASYNC_ITERATOR_GET: u16 = 0x0068;
+/// Define a JS env binding directly on an env record and its visible object surface.
+pub const OBJECT_JS_DEFINE_ENV_BINDING: u16 = 0x006A;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -786,6 +788,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_JS_CAPTURE_IDENTIFIER_ENV => "Object.jsCaptureIdentifierEnv",
         OBJECT_JS_GET_IDENTIFIER_FROM_ENV => "Object.jsGetIdentifierFromEnv",
         OBJECT_JS_SET_IDENTIFIER_IN_ENV => "Object.jsSetIdentifierInEnv",
+        OBJECT_JS_DEFINE_ENV_BINDING => "Object.jsDefineEnvBinding",
         OBJECT_PARSE_BIGINT_LITERAL => "Object.parseBigIntLiteral",
         OBJECT_JS_UNARY_MINUS => "Object.jsUnaryMinus",
         OBJECT_COPY_DATA_PROPERTIES => "Object.copyDataProperties",

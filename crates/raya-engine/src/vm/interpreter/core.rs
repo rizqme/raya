@@ -11,6 +11,7 @@ use crate::vm::builtins::handlers::{
     call_runtime_method as runtime_handler, RuntimeHandlerContext,
 };
 use crate::vm::gc::GarbageCollector;
+use crate::vm::js_env::JsExecutionContext;
 use crate::vm::native_handler::NativeHandler;
 use crate::vm::object::{CallableKind, Class, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
@@ -469,23 +470,31 @@ impl<'a> Interpreter<'a> {
             return;
         };
         let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+        let mut pushed = false;
+        let mut context = task.current_js_execution_context().unwrap_or_default();
         if let Some(env) = closure_obj.callable_direct_eval_env() {
             let is_strict = module
                 .functions
                 .get(func_id)
                 .is_some_and(|function| function.is_strict_js);
-            task.push_active_direct_eval_env(
+            context = context.with_direct_eval_env(
                 env,
                 is_strict,
                 closure_obj.callable_direct_eval_uses_script_global_bindings(),
                 closure_obj.callable_direct_eval_persist_caller_declarations(),
             );
+            pushed = true;
         }
         if let Some(home_object) = closure_obj.callable_home_object() {
-            task.push_active_js_home_object(home_object);
+            context = context.with_super_home_object(home_object);
+            pushed = true;
         }
         if let Some(new_target) = closure_obj.callable_new_target() {
-            task.push_active_js_new_target(new_target);
+            context = context.with_new_target(new_target);
+            pushed = true;
+        }
+        if pushed {
+            task.push_js_execution_context(context);
         }
     }
 
@@ -497,14 +506,11 @@ impl<'a> Interpreter<'a> {
             return;
         };
         let closure_obj = unsafe { &*closure_ptr.as_ptr() };
-        if closure_obj.callable_direct_eval_env().is_some() {
-            let _ = task.pop_active_direct_eval_env();
-        }
-        if closure_obj.callable_home_object().is_some() {
-            let _ = task.pop_active_js_home_object();
-        }
-        if closure_obj.callable_new_target().is_some() {
-            let _ = task.pop_active_js_new_target();
+        if closure_obj.callable_direct_eval_env().is_some()
+            || closure_obj.callable_home_object().is_some()
+            || closure_obj.callable_new_target().is_some()
+        {
+            let _ = task.pop_js_execution_context();
         }
     }
 
@@ -1148,6 +1154,7 @@ impl<'a> Interpreter<'a> {
             caller_task.current_module(),
             Some(caller_task.id()),
         ));
+        let mut scratch_context = caller_task.current_js_execution_context().unwrap_or_default();
         if let Some(home_object) = caller_task
             .current_active_js_home_object()
             .or_else(|| {
@@ -1159,16 +1166,19 @@ impl<'a> Interpreter<'a> {
             })
             .or(callable_home_object)
         {
-            scratch_task.push_active_js_home_object(home_object);
+            scratch_context = scratch_context.with_super_home_object(home_object);
         }
-        if let Some(new_target) = caller_task
+        if let Some(lexical_new_target) = caller_task
             .current_active_js_new_target()
             .or(callable_lexical_new_target)
         {
-            scratch_task.push_active_js_new_target(new_target);
+            scratch_context = scratch_context.with_new_target(lexical_new_target);
         }
-        if let Some(new_target) = new_target {
-            scratch_task.push_active_js_new_target(new_target);
+        if let Some(explicit_new_target) = new_target {
+            scratch_context = scratch_context.with_new_target(explicit_new_target);
+        }
+        if scratch_context != JsExecutionContext::default() {
+            scratch_task.push_js_execution_context(scratch_context);
         }
 
         let opcode_result = if let Some(raw_ptr) = unsafe { callable.as_ptr::<u8>() } {
@@ -1288,6 +1298,7 @@ impl<'a> Interpreter<'a> {
                 };
                 if let Some(closure) = closure_val {
                     callee_task.push_closure(closure);
+                    let mut callee_context = scratch_task.current_js_execution_context().unwrap_or_default();
                     if let Some(closure_ptr) = unsafe { closure.as_ptr::<Object>() } {
                         let closure_obj = unsafe { &*closure_ptr.as_ptr() };
                         if let Some(env) = closure_obj.callable_direct_eval_env() {
@@ -1295,7 +1306,7 @@ impl<'a> Interpreter<'a> {
                                 .functions
                                 .get(func_id)
                                 .is_some_and(|function| function.is_strict_js);
-                            callee_task.push_active_direct_eval_env(
+                            callee_context = callee_context.with_direct_eval_env(
                                 env,
                                 is_strict,
                                 closure_obj.callable_direct_eval_uses_script_global_bindings(),
@@ -1303,12 +1314,11 @@ impl<'a> Interpreter<'a> {
                             );
                         }
                     }
-                }
-                if let Some(home_object) = scratch_task.current_active_js_home_object() {
-                    callee_task.push_active_js_home_object(home_object);
-                }
-                if let Some(new_target) = scratch_task.current_active_js_new_target() {
-                    callee_task.push_active_js_new_target(new_target);
+                    if callee_context != JsExecutionContext::default() {
+                        callee_task.push_js_execution_context(callee_context);
+                    }
+                } else if let Some(context) = scratch_task.current_js_execution_context() {
+                    callee_task.push_js_execution_context(context);
                 }
                 self.tasks
                     .write()
@@ -1978,6 +1988,7 @@ impl<'a> Interpreter<'a> {
                     task.set_current_func_id(current_func_id);
                     task.set_current_locals_base(locals_base);
                     task.set_current_arg_count(current_arg_count);
+                    task.restore_activation_direct_eval_env(frame.activation_env);
                 } else {
                     break;
                 }
@@ -2269,6 +2280,7 @@ impl<'a> Interpreter<'a> {
                     task.set_current_func_id(current_func_id);
                     task.set_current_locals_base(locals_base);
                     task.set_current_arg_count(current_arg_count);
+                    task.restore_activation_direct_eval_env(frame.activation_env);
 
                     // Push appropriate value onto caller's stack
                     if !matches!(frame.return_action, ReturnAction::Discard) {
@@ -2762,7 +2774,9 @@ impl<'a> Interpreter<'a> {
                         return_action,
                         arg_count: current_arg_count, // Save caller's arg count
                         arg_values: current_arg_values.clone(),
+                        activation_env: task.current_activation_direct_eval_env(),
                     });
+                    task.clear_activation_direct_eval_env(current_func_id, locals_base);
 
                     // Push call frame for stack traces
                     task.push_call_frame(func_id);
@@ -2999,6 +3013,7 @@ impl<'a> Interpreter<'a> {
                             task.set_current_func_id(current_func_id);
                             task.set_current_locals_base(locals_base);
                             task.set_current_arg_count(current_arg_count);
+                            task.restore_activation_direct_eval_env(frame.activation_env);
                             // Continue searching in parent frame
                         } else {
                             // No more frames — unhandled exception

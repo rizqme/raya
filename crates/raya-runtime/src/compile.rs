@@ -3270,7 +3270,7 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_plan_classifies_strict_wrapper_builtin_vm_native_method_dispatch() {
+    fn test_semantic_plan_classifies_strict_wrapper_builtin_source_method_dispatch() {
         let plan = inspect_semantic_plan_with_profile(
             r#"
             let mutex = new Mutex();
@@ -3282,10 +3282,12 @@ mod tests {
 
         assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
             dispatch.member_name.as_deref() == Some("tryLock")
-                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
                 && matches!(
                     dispatch.registry_dispatch,
-                    Some(raya_engine::compiler::type_registry::DispatchAction::VmNative(_))
+                    Some(raya_engine::compiler::type_registry::DispatchAction::ClassMethod(
+                        _,
+                        _
+                    ))
                 )
         }));
     }

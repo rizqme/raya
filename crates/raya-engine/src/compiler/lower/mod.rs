@@ -922,10 +922,8 @@ pub struct Lowerer<'a> {
     builtin_this_coercion_compat: bool,
     /// Whether JS runtime semantics may lower to explicit dynamic kernel ops.
     js_dynamic_semantics: JsDynamicSemantics,
-    /// Optional direct-eval wrapper function name for dynamic JS eval lowering.
-    direct_eval_entry_function: Option<String>,
-    /// Identifier names resolved through the active direct-eval environment.
-    direct_eval_binding_names: FxHashSet<String>,
+    /// Direct-eval lowering metadata for the current lowering run.
+    js_eval_compile_context: super::JsEvalCompileContext,
     /// Whether top-level statement completion should be preserved as the module result.
     track_top_level_completion: bool,
     /// Whether top-level JS var/function declarations should publish to globalThis.
@@ -1529,8 +1527,9 @@ impl<'a> Lowerer<'a> {
         interner: &'a Interner,
         expr_types: FxHashMap<usize, TypeId>,
     ) -> Self {
-        let builtin_surface =
-            builtin_surface_manifest_for_mode(crate::compiler::module::BuiltinSurfaceMode::RayaStrict);
+        let builtin_surface = builtin_surface_manifest_for_mode(
+            crate::compiler::module::BuiltinSurfaceMode::RayaStrict,
+        );
         Self {
             type_ctx,
             interner,
@@ -1655,8 +1654,7 @@ impl<'a> Lowerer<'a> {
             js_strict_context: false,
             builtin_this_coercion_compat: false,
             js_dynamic_semantics: JsDynamicSemantics::EcmaScript,
-            direct_eval_entry_function: None,
-            direct_eval_binding_names: FxHashSet::default(),
+            js_eval_compile_context: super::JsEvalCompileContext::default(),
             track_top_level_completion: false,
             emit_script_global_bindings: true,
             script_global_bindings_configurable: false,
@@ -1709,7 +1707,8 @@ impl<'a> Lowerer<'a> {
             builtin_surface_manifest_for_mode(builtin_surface_mode_for_profile(plan.profile()));
         self.semantic_plan = plan;
         self.builtin_surface = builtin_surface;
-        self.type_registry = super::type_registry::TypeRegistry::new(self.type_ctx, builtin_surface);
+        self.type_registry =
+            super::type_registry::TypeRegistry::new(self.type_ctx, builtin_surface);
         self.js_this_binding_compat = lowering.js_this_binding_compat;
         self.js_dynamic_semantics = lowering.js_dynamic_semantics;
         self.track_top_level_completion = lowering.track_top_level_completion;
@@ -1728,17 +1727,8 @@ impl<'a> Lowerer<'a> {
         self
     }
 
-    pub fn with_direct_eval_entry_function(mut self, function_name: Option<String>) -> Self {
-        self.direct_eval_entry_function = function_name;
-        self
-    }
-
-    pub fn with_direct_eval_binding_names<I, S>(mut self, names: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.direct_eval_binding_names = names.into_iter().map(Into::into).collect();
+    pub fn with_js_eval_compile_context(mut self, context: super::JsEvalCompileContext) -> Self {
+        self.js_eval_compile_context = context;
         self
     }
 
@@ -1809,11 +1799,7 @@ impl<'a> Lowerer<'a> {
         self.semantic_plan.uses_js_async_runtime_semantics() && Self::callable_is_generator(kind)
     }
 
-    fn callable_materializes_yields(
-        &self,
-        kind: CallableKind,
-        body: &ast::BlockStatement,
-    ) -> bool {
+    fn callable_materializes_yields(&self, kind: CallableKind, body: &ast::BlockStatement) -> bool {
         !self.semantic_plan.uses_js_async_runtime_semantics()
             && (Self::callable_is_generator(kind) || self.function_uses_yield(body))
     }
@@ -2674,8 +2660,9 @@ impl<'a> Lowerer<'a> {
                                 .ne(&UNRESOLVED_TYPE_ID)
                                 .then(|| self.get_expr_type(&new_expr.callee))
                                 .or_else(|| {
-                                    self.type_ctx
-                                        .lookup_named_type(self.interner.resolve(nominal_type_ident.name))
+                                    self.type_ctx.lookup_named_type(
+                                        self.interner.resolve(nominal_type_ident.name),
+                                    )
                                 });
                             let nominal_type_id = self.resolve_runtime_bound_new_nominal_type(
                                 nominal_type_ident.name,
@@ -2699,11 +2686,7 @@ impl<'a> Lowerer<'a> {
                             } else if let Some((ctor_symbol, ctor_type)) =
                                 self.new_expr_runtime_dispatch_binding_hint(new_expr)
                             {
-                                self.set_runtime_dispatch_hint(
-                                    name,
-                                    ctor_symbol,
-                                    ctor_type,
-                                );
+                                self.set_runtime_dispatch_hint(name, ctor_symbol, ctor_type);
                                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                     eprintln!(
                                         "[lower] runtime dispatch bind: '{}' marked (from runtime-bound new {}())",
@@ -2747,7 +2730,8 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
-            } else if decl.type_annotation.is_some() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok()
+            } else if decl.type_annotation.is_some()
+                && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok()
             {
                 eprintln!(
                     "[lower] nominal_binding_cache: '{}' added from type annotation",
@@ -2778,7 +2762,8 @@ impl<'a> Lowerer<'a> {
                 if let Some(call_expr) = call_expr {
                     if let ast::Expression::Identifier(func_ident) = &*call_expr.callee {
                         let func_name = self.interner.resolve(func_ident.name).to_string();
-                        let inferred_alias = if let Some(tag) = func_name.strip_prefix("__std_module_")
+                        let inferred_alias = if let Some(tag) =
+                            func_name.strip_prefix("__std_module_")
                         {
                             Some(format!("__std_exports_type_{}", tag))
                         } else if let Some(module_id) = func_name.strip_prefix("__raya_mod_init_") {
@@ -3244,7 +3229,11 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = Some(arguments_local);
 
         let arguments_reg = self.alloc_register(TypeId::new(JSON_OBJECT_TYPE_ID));
-        self.emit_vm_native_call(Some(arguments_reg.clone()), crate::compiler::native_id::OBJECT_GET_ARGUMENTS_OBJECT, vec![]);
+        self.emit_vm_native_call(
+            Some(arguments_reg.clone()),
+            crate::compiler::native_id::OBJECT_GET_ARGUMENTS_OBJECT,
+            vec![],
+        );
 
         if self.refcell_vars.contains(&arguments_symbol) {
             let refcell_reg = self.alloc_register(TypeId::new(0));
@@ -3331,9 +3320,7 @@ impl<'a> Lowerer<'a> {
                 self.interner.resolve(lit.value).to_string()
             }
             ast::PropertyKey::Computed(ast::Expression::IntLiteral(lit)) => lit.value.to_string(),
-            ast::PropertyKey::Computed(ast::Expression::FloatLiteral(lit)) => {
-                lit.value.to_string()
-            }
+            ast::PropertyKey::Computed(ast::Expression::FloatLiteral(lit)) => lit.value.to_string(),
             ast::PropertyKey::Computed(ast::Expression::Parenthesized(expr)) => self
                 .class_member_display_name(
                     &ast::PropertyKey::Computed(*expr.expression.clone()),
@@ -3463,7 +3450,11 @@ impl<'a> Lowerer<'a> {
         if has_runtime_extends {
             let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
             let parent_constructor = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
-            self.emit_vm_native_call(Some(parent_constructor.clone()), crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF, vec![class_value]);
+            self.emit_vm_native_call(
+                Some(parent_constructor.clone()),
+                crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF,
+                vec![class_value],
+            );
             return Some(parent_constructor);
         }
 
@@ -4276,25 +4267,22 @@ impl<'a> Lowerer<'a> {
                         if let Some(layout) =
                             self.structural_projection_layout_from_type_id(expected_ty)
                         {
-                            self.projection_layout_cache
-                                .insert(ident.name, layout);
+                            self.projection_layout_cache.insert(ident.name, layout);
                             self.nominal_binding_cache.remove(&ident.name);
                         } else {
-                            self.projection_layout_cache
-                                .remove(&ident.name);
+                            self.projection_layout_cache.remove(&ident.name);
                             self.nominal_binding_cache.remove(&ident.name);
                         }
                     } else {
-                        self.projection_layout_cache
-                            .remove(&ident.name);
+                        self.projection_layout_cache.remove(&ident.name);
                     }
                     if let Some(nominal_type_id) = nominal_type_id {
-                        self.nominal_binding_cache.insert(ident.name, nominal_type_id);
+                        self.nominal_binding_cache
+                            .insert(ident.name, nominal_type_id);
                         self.clear_runtime_dispatch_hint(ident.name);
                     } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
                         self.nominal_binding_cache.remove(&ident.name);
-                        self.projection_layout_cache
-                            .remove(&ident.name);
+                        self.projection_layout_cache.remove(&ident.name);
                         self.set_runtime_dispatch_hint(ident.name, ctor_symbol, ctor_type);
                     } else {
                         self.clear_runtime_dispatch_hint(ident.name);
@@ -4385,10 +4373,7 @@ impl<'a> Lowerer<'a> {
         let saved_hoisted_function_decl_spans =
             std::mem::take(&mut self.hoisted_function_decl_spans);
         self.js_strict_context = is_strict_js;
-        self.in_direct_eval_function = self
-            .direct_eval_entry_function
-            .as_deref()
-            .is_some_and(|target| target == name);
+        self.in_direct_eval_function = self.js_eval_compile_context.matches_entry_function(name);
         let inherited_parameter_env_scope = saved_active_parameter_env_function_depth > 0
             || (self.js_this_binding_compat && !saved_parameter_symbols.is_empty());
         self.active_parameter_env_function_depth =
@@ -4603,7 +4588,11 @@ impl<'a> Lowerer<'a> {
                     dest: name_reg.clone(),
                     value: IrValue::Constant(IrConstant::String(name)),
                 });
-                self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_JS_DECLARE_VAR, vec![name_reg]);
+                self.emit_vm_native_call(
+                    None,
+                    crate::compiler::native_id::OBJECT_JS_DECLARE_VAR,
+                    vec![name_reg],
+                );
             }
             return;
         }
@@ -4770,7 +4759,11 @@ impl<'a> Lowerer<'a> {
             value: IrValue::Constant(IrConstant::String(self.interner.resolve(name).to_string())),
         });
         let configurable = self.emit_bool_const(self.script_global_bindings_configurable);
-        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_BIND_SCRIPT_GLOBAL, vec![prop_name, value, configurable]);
+        self.emit_vm_native_call(
+            None,
+            crate::compiler::native_id::OBJECT_BIND_SCRIPT_GLOBAL,
+            vec![prop_name, value, configurable],
+        );
     }
 
     /// Lower a class declaration
@@ -4951,8 +4944,7 @@ impl<'a> Lowerer<'a> {
                     let saved_parameter_symbols = self.parameter_symbols.clone();
                     let saved_eval_completion_local = self.eval_completion_local;
                     let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
-                    let saved_body_scope_eval_arguments_mode =
-                        self.body_scope_eval_arguments_mode;
+                    let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
                     let saved_body_scope_eval_mode = self.body_scope_eval_mode;
                     let saved_active_parameter_env_function_depth =
                         self.active_parameter_env_function_depth;
@@ -5145,17 +5137,14 @@ impl<'a> Lowerer<'a> {
                                     if let Some(layout) =
                                         self.structural_projection_layout_from_type_id(expected_ty)
                                     {
-                                        self.projection_layout_cache
-                                            .insert(ident.name, layout);
+                                        self.projection_layout_cache.insert(ident.name, layout);
                                         self.nominal_binding_cache.remove(&ident.name);
                                     } else {
-                                        self.projection_layout_cache
-                                            .remove(&ident.name);
+                                        self.projection_layout_cache.remove(&ident.name);
                                         self.nominal_binding_cache.remove(&ident.name);
                                     }
                                 } else {
-                                    self.projection_layout_cache
-                                        .remove(&ident.name);
+                                    self.projection_layout_cache.remove(&ident.name);
                                 }
                                 if let Some(param_nominal_type_id) = param_nominal_type_id {
                                     self.nominal_binding_cache
@@ -5163,8 +5152,7 @@ impl<'a> Lowerer<'a> {
                                     self.clear_runtime_dispatch_hint(ident.name);
                                 } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
                                     self.nominal_binding_cache.remove(&ident.name);
-                                    self.projection_layout_cache
-                                        .remove(&ident.name);
+                                    self.projection_layout_cache.remove(&ident.name);
                                     self.set_runtime_dispatch_hint(
                                         ident.name,
                                         ctor_symbol,
@@ -5251,11 +5239,12 @@ impl<'a> Lowerer<'a> {
                     let saved_yield_buffer_local = self.yield_buffer_local.take();
                     self.js_strict_context = true;
                     self.in_direct_eval_function = false;
-                    let inherited_parameter_env_scope =
-                        saved_active_parameter_env_function_depth > 0
-                            || (self.js_this_binding_compat && !saved_parameter_symbols.is_empty());
-                    self.active_parameter_env_function_depth = saved_active_parameter_env_function_depth
-                        + usize::from(use_js_parameter_env);
+                    let inherited_parameter_env_scope = saved_active_parameter_env_function_depth
+                        > 0
+                        || (self.js_this_binding_compat && !saved_parameter_symbols.is_empty());
+                    self.active_parameter_env_function_depth =
+                        saved_active_parameter_env_function_depth
+                            + usize::from(use_js_parameter_env);
                     self.body_scope_eval_arguments_mode = false;
                     self.body_scope_eval_mode = saved_body_scope_eval_mode
                         || inherited_parameter_env_scope
@@ -5308,8 +5297,8 @@ impl<'a> Lowerer<'a> {
                                         self.register_object_fields
                                             .insert(value_reg.id, field_layout);
                                     }
-                                    if let Some(nested_array_layouts) =
-                                        self.extract_array_element_object_layouts_from_type(type_ann)
+                                    if let Some(nested_array_layouts) = self
+                                        .extract_array_element_object_layouts_from_type(type_ann)
                                     {
                                         for (field_idx, layout) in nested_array_layouts {
                                             self.register_nested_array_element_object_fields
@@ -5627,17 +5616,14 @@ impl<'a> Lowerer<'a> {
                                 if let Some(layout) =
                                     self.structural_projection_layout_from_type_id(expected_ty)
                                 {
-                                    self.projection_layout_cache
-                                        .insert(ident.name, layout);
+                                    self.projection_layout_cache.insert(ident.name, layout);
                                     self.nominal_binding_cache.remove(&ident.name);
                                 } else {
-                                    self.projection_layout_cache
-                                        .remove(&ident.name);
+                                    self.projection_layout_cache.remove(&ident.name);
                                     self.nominal_binding_cache.remove(&ident.name);
                                 }
                             } else {
-                                self.projection_layout_cache
-                                    .remove(&ident.name);
+                                self.projection_layout_cache.remove(&ident.name);
                             }
                             if let Some(param_nominal_type_id) = param_nominal_type_id {
                                 self.nominal_binding_cache
@@ -5645,13 +5631,8 @@ impl<'a> Lowerer<'a> {
                                 self.clear_runtime_dispatch_hint(ident.name);
                             } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
                                 self.nominal_binding_cache.remove(&ident.name);
-                                self.projection_layout_cache
-                                    .remove(&ident.name);
-                                self.set_runtime_dispatch_hint(
-                                    ident.name,
-                                    ctor_symbol,
-                                    ctor_type,
-                                );
+                                self.projection_layout_cache.remove(&ident.name);
+                                self.set_runtime_dispatch_hint(ident.name, ctor_symbol, ctor_type);
                             } else {
                                 self.clear_runtime_dispatch_hint(ident.name);
                             }
@@ -5713,8 +5694,8 @@ impl<'a> Lowerer<'a> {
                 self.in_direct_eval_function = false;
                 let inherited_parameter_env_scope = saved_active_parameter_env_function_depth > 0
                     || (self.js_this_binding_compat && !saved_parameter_symbols.is_empty());
-                self.active_parameter_env_function_depth = saved_active_parameter_env_function_depth
-                    + usize::from(use_js_parameter_env);
+                self.active_parameter_env_function_depth =
+                    saved_active_parameter_env_function_depth + usize::from(use_js_parameter_env);
                 self.body_scope_eval_arguments_mode = false;
                 self.body_scope_eval_mode = saved_body_scope_eval_mode
                     || inherited_parameter_env_scope
@@ -5740,8 +5721,10 @@ impl<'a> Lowerer<'a> {
                     .add_block(BasicBlock::with_label(entry_block, "entry"));
 
                 if use_js_parameter_env {
-                    let env_object = self
-                        .lower_activation_direct_eval_environment_object(ctor.span.start, ctor.span.start);
+                    let env_object = self.lower_activation_direct_eval_environment_object(
+                        ctor.span.start,
+                        ctor.span.start,
+                    );
                     let _ = self.emit_ensure_activation_direct_eval_env(env_object);
                     self.emit_js_parameter_initialization(&ctor.params, &raw_param_slots);
                 } else {
@@ -5990,7 +5973,11 @@ impl<'a> Lowerer<'a> {
                 native_args.push(parent_constructor);
                 native_args.push(new_target);
                 native_args.extend(forwarded_args.into_iter().skip(1));
-                self.emit_vm_native_call(Some(this_reg.clone()), crate::compiler::native_id::OBJECT_SUPER_CONSTRUCT, native_args);
+                self.emit_vm_native_call(
+                    Some(this_reg.clone()),
+                    crate::compiler::native_id::OBJECT_SUPER_CONSTRUCT,
+                    native_args,
+                );
             }
             self.emit_constructor_prologue(nominal_type_id, &this_reg, &[]);
             self.set_terminator(Terminator::Return(Some(this_reg.clone())));
@@ -6630,12 +6617,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn emit_vm_native_call(
-        &mut self,
-        dest: Option<Register>,
-        native_id: u16,
-        args: Vec<Register>,
-    ) {
+    fn emit_vm_native_call(&mut self, dest: Option<Register>, native_id: u16, args: Vec<Register>) {
         self.emit(IrInstr::KernelCall {
             dest,
             op: KernelOp::VmNative(native_id),
@@ -6709,7 +6691,11 @@ impl<'a> Lowerer<'a> {
                 dest: nominal_id_reg.clone(),
                 value: IrValue::Constant(IrConstant::I32(nominal_type_id.as_u32() as i32)),
             });
-            self.emit_vm_native_call(Some(class_value.clone()), crate::compiler::native_id::OBJECT_GET_CLASS_VALUE, vec![nominal_id_reg]);
+            self.emit_vm_native_call(
+                Some(class_value.clone()),
+                crate::compiler::native_id::OBJECT_GET_CLASS_VALUE,
+                vec![nominal_id_reg],
+            );
 
             let key_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
@@ -6718,7 +6704,11 @@ impl<'a> Lowerer<'a> {
                     self.interner.resolve(field_name).to_string(),
                 )),
             });
-            self.emit_vm_native_call(None, crate::compiler::native_id::REFLECT_SET, vec![class_value, key_reg, value_reg]);
+            self.emit_vm_native_call(
+                None,
+                crate::compiler::native_id::REFLECT_SET,
+                vec![class_value, key_reg, value_reg],
+            );
         }
     }
 
@@ -7031,7 +7021,11 @@ impl<'a> Lowerer<'a> {
         match &target {
             DecoratorTarget::Class { .. } => {
                 // registerClassDecorator(typeRef, decoratorName)
-                self.emit_vm_native_call(None, registration_native_id, vec![nominal_type_id_reg, dec_name_reg]);
+                self.emit_vm_native_call(
+                    None,
+                    registration_native_id,
+                    vec![nominal_type_id_reg, dec_name_reg],
+                );
             }
             DecoratorTarget::Method { method_name, .. } => {
                 // registerMethodDecorator(typeRef, methodName, decoratorName)
@@ -7040,7 +7034,11 @@ impl<'a> Lowerer<'a> {
                     dest: method_name_reg.clone(),
                     value: IrValue::Constant(IrConstant::String(method_name.clone())),
                 });
-                self.emit_vm_native_call(None, registration_native_id, vec![nominal_type_id_reg, method_name_reg, dec_name_reg]);
+                self.emit_vm_native_call(
+                    None,
+                    registration_native_id,
+                    vec![nominal_type_id_reg, method_name_reg, dec_name_reg],
+                );
             }
             DecoratorTarget::Field { field_name, .. } => {
                 // registerFieldDecorator(typeRef, fieldName, decoratorName)
@@ -7049,7 +7047,11 @@ impl<'a> Lowerer<'a> {
                     dest: field_name_reg.clone(),
                     value: IrValue::Constant(IrConstant::String(field_name.clone())),
                 });
-                self.emit_vm_native_call(None, registration_native_id, vec![nominal_type_id_reg, field_name_reg, dec_name_reg]);
+                self.emit_vm_native_call(
+                    None,
+                    registration_native_id,
+                    vec![nominal_type_id_reg, field_name_reg, dec_name_reg],
+                );
             }
             DecoratorTarget::Parameter {
                 method_name,
@@ -7067,12 +7069,16 @@ impl<'a> Lowerer<'a> {
                     dest: param_index_reg.clone(),
                     value: IrValue::Constant(IrConstant::I32(*param_index as i32)),
                 });
-                self.emit_vm_native_call(None, registration_native_id, vec![
+                self.emit_vm_native_call(
+                    None,
+                    registration_native_id,
+                    vec![
                         nominal_type_id_reg,
                         method_name_reg,
                         param_index_reg,
                         dec_name_reg,
-                    ]);
+                    ],
+                );
             }
         }
     }
@@ -7920,8 +7926,7 @@ impl<'a> Lowerer<'a> {
                         });
                         undefined
                     };
-                    let descriptor =
-                        self.lower_data_property_descriptor(value, true, true, true);
+                    let descriptor = self.lower_data_property_descriptor(value, true, true, true);
                     let define_result = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
                     self.emit_vm_native_call(
                         Some(define_result),
@@ -8599,7 +8604,12 @@ mod nominal_type_identity_tests {
         let parser = Parser::new(source).expect("lexer error");
         let (module, interner) = parser.parse().expect("parse error");
         let type_ctx = TypeContext::new();
-        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let semantic_plan = crate::semantics::build_semantic_lowering_plan(
+            &module,
+            &interner,
+            crate::semantics::SemanticProfile::ts_strict(),
+        );
+        let mut lowerer = Lowerer::new(&type_ctx, &interner).with_semantic_plan(semantic_plan);
         let ir = lowerer.lower_module(&module);
         assert!(
             lowerer.errors().is_empty(),
@@ -8770,16 +8780,11 @@ mod nominal_type_identity_tests {
             "env should map to wrapper class id"
         );
 
-        let call_method_count = ir
-            .functions
-            .iter()
-            .flat_map(|f| &f.blocks)
-            .flat_map(|b| &b.instructions)
-            .filter(|instr| matches!(instr, IrInstr::CallMethodExact { .. }))
-            .count();
+        let cwd_sym = interner.lookup("cwd").expect("cwd symbol");
+        let has_method_slot = lowerer.find_method_slot(env_nominal_type_id, cwd_sym).is_some();
         assert!(
-            call_method_count > 0,
-            "expected CallMethodExact dispatch, got no CallMethodExact in module IR"
+            has_method_slot,
+            "expected EnvNamespace.cwd to resolve to a nominal method slot"
         );
     }
 

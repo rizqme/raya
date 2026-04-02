@@ -174,30 +174,22 @@ pub fn bytecode_instruction_support(
     operands: &Operands,
 ) -> CompiledSupportDecision {
     match opcode {
-        Opcode::Ipow => {
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::NumericIntrinsic(
-                CompiledNumericIntrinsicOp::I32Pow,
-            ))
-        }
-        Opcode::Fpow => {
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::NumericIntrinsic(
-                CompiledNumericIntrinsicOp::F64Pow,
-            ))
-        }
-        Opcode::Fmod => {
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::NumericIntrinsic(
-                CompiledNumericIntrinsicOp::F64Mod,
-            ))
-        }
+        Opcode::Ipow => CompiledSupportDecision::AbiHelper(CompiledAbiOp::NumericIntrinsic(
+            CompiledNumericIntrinsicOp::I32Pow,
+        )),
+        Opcode::Fpow => CompiledSupportDecision::AbiHelper(CompiledAbiOp::NumericIntrinsic(
+            CompiledNumericIntrinsicOp::F64Pow,
+        )),
+        Opcode::Fmod => CompiledSupportDecision::AbiHelper(CompiledAbiOp::NumericIntrinsic(
+            CompiledNumericIntrinsicOp::F64Mod,
+        )),
         Opcode::KernelCall => CompiledSupportDecision::AbiHelper(CompiledAbiOp::KernelCall),
         Opcode::Await => CompiledSupportDecision::AbiHelper(CompiledAbiOp::AwaitTask),
         Opcode::WaitAll => CompiledSupportDecision::AbiHelper(CompiledAbiOp::WaitAll),
         Opcode::Sleep => CompiledSupportDecision::AbiHelper(CompiledAbiOp::Sleep),
         Opcode::Yield => CompiledSupportDecision::AbiHelper(CompiledAbiOp::YieldTask),
         Opcode::Spawn => CompiledSupportDecision::AbiHelper(CompiledAbiOp::SpawnFunction),
-        Opcode::SpawnClosure => {
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::SpawnClosure)
-        }
+        Opcode::SpawnClosure => CompiledSupportDecision::AbiHelper(CompiledAbiOp::SpawnClosure),
         Opcode::Call => match operands {
             Operands::Call {
                 func_index: 0xFFFF_FFFF,
@@ -205,7 +197,9 @@ pub fn bytecode_instruction_support(
             } => CompiledSupportDecision::Unsupported {
                 reason: "dynamic Call is unsupported in compiled backends",
             },
-            Operands::Call { .. } => CompiledSupportDecision::AbiHelper(CompiledAbiOp::CallFunction),
+            Operands::Call { .. } => {
+                CompiledSupportDecision::AbiHelper(CompiledAbiOp::CallFunction)
+            }
             _ => CompiledSupportDecision::Unsupported {
                 reason: "malformed Call operands",
             },
@@ -225,39 +219,29 @@ pub fn bytecode_instruction_support(
         Opcode::CallConstructor => {
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::CallConstructor)
         }
-        Opcode::ConstructType => {
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ConstructType)
-        }
+        Opcode::ConstructType => CompiledSupportDecision::AbiHelper(CompiledAbiOp::ConstructType),
         Opcode::CallSuper => CompiledSupportDecision::AbiHelper(CompiledAbiOp::CallSuper),
         Opcode::GetArgCount => {
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(ArgFrameOp::GetArgCount))
         }
-        Opcode::LoadArgLocal => CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(
-            ArgFrameOp::LoadArgLocal,
-        )),
+        Opcode::LoadArgLocal => {
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(ArgFrameOp::LoadArgLocal))
+        }
         Opcode::BindMethod => {
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::MemberOp(MemberOp::BindMethod))
         }
         Opcode::Eq => {
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
-                ValueBinaryOp::Equal,
-            ))
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(ValueBinaryOp::Equal))
         }
         Opcode::Ne => {
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
-                ValueBinaryOp::NotEqual,
-            ))
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(ValueBinaryOp::NotEqual))
         }
-        Opcode::StrictEq => {
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
-                ValueBinaryOp::StrictEqual,
-            ))
-        }
-        Opcode::StrictNe => {
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
-                ValueBinaryOp::StrictNotEqual,
-            ))
-        }
+        Opcode::StrictEq => CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
+            ValueBinaryOp::StrictEqual,
+        )),
+        Opcode::StrictNe => CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueBinary(
+            ValueBinaryOp::StrictNotEqual,
+        )),
         Opcode::Typeof => {
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueUnary(ValueUnaryOp::Typeof))
         }
@@ -325,8 +309,12 @@ fn bytecode_function_support_inner(
                     ..
                 } => return CompiledFunctionSupport::unsupported(true),
                 Operands::Call { func_index, .. } => {
-                    let callee =
-                        bytecode_function_support_inner(backend, module, func_index as usize, visiting);
+                    let callee = bytecode_function_support_inner(
+                        backend,
+                        module,
+                        func_index as usize,
+                        visiting,
+                    );
                     if !callee.is_supported {
                         return CompiledFunctionSupport::unsupported(
                             support.may_suspend || callee.may_suspend,
@@ -381,31 +369,19 @@ mod tests {
     #[test]
     fn classifies_numeric_intrinsics_as_exact_helpers() {
         assert_eq!(
-            bytecode_instruction_support(
-                CompiledBackendKind::Aot,
-                Opcode::Ipow,
-                &Operands::None
-            ),
+            bytecode_instruction_support(CompiledBackendKind::Aot, Opcode::Ipow, &Operands::None),
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::NumericIntrinsic(
                 CompiledNumericIntrinsicOp::I32Pow
             ))
         );
         assert_eq!(
-            bytecode_instruction_support(
-                CompiledBackendKind::Jit,
-                Opcode::Fpow,
-                &Operands::None
-            ),
+            bytecode_instruction_support(CompiledBackendKind::Jit, Opcode::Fpow, &Operands::None),
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::NumericIntrinsic(
                 CompiledNumericIntrinsicOp::F64Pow
             ))
         );
         assert_eq!(
-            bytecode_instruction_support(
-                CompiledBackendKind::Jit,
-                Opcode::Fmod,
-                &Operands::None
-            ),
+            bytecode_instruction_support(CompiledBackendKind::Jit, Opcode::Fmod, &Operands::None),
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::NumericIntrinsic(
                 CompiledNumericIntrinsicOp::F64Mod
             ))
@@ -420,9 +396,7 @@ mod tests {
                 Opcode::LoadArgLocal,
                 &Operands::None
             ),
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(
-                ArgFrameOp::LoadArgLocal
-            ))
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(ArgFrameOp::LoadArgLocal))
         );
         assert_eq!(
             bytecode_instruction_support(
@@ -430,26 +404,34 @@ mod tests {
                 Opcode::GetArgCount,
                 &Operands::None
             ),
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(
-                ArgFrameOp::GetArgCount
-            ))
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ArgFrameOp(ArgFrameOp::GetArgCount))
         );
         assert_eq!(
             bytecode_instruction_support(CompiledBackendKind::Jit, Opcode::Typeof, &Operands::None),
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueUnary(ValueUnaryOp::Typeof))
         );
         assert_eq!(
-            bytecode_instruction_support(CompiledBackendKind::Aot, Opcode::ToString, &Operands::None),
-            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueUnary(
-                ValueUnaryOp::ToString
-            ))
+            bytecode_instruction_support(
+                CompiledBackendKind::Aot,
+                Opcode::ToString,
+                &Operands::None
+            ),
+            CompiledSupportDecision::AbiHelper(CompiledAbiOp::ValueUnary(ValueUnaryOp::ToString))
         );
         assert_eq!(
-            bytecode_instruction_support(CompiledBackendKind::Aot, Opcode::Sconcat, &Operands::None),
+            bytecode_instruction_support(
+                CompiledBackendKind::Aot,
+                Opcode::Sconcat,
+                &Operands::None
+            ),
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::StringOp(StringOp::Concat))
         );
         assert_eq!(
-            bytecode_instruction_support(CompiledBackendKind::Jit, Opcode::BindMethod, &Operands::None),
+            bytecode_instruction_support(
+                CompiledBackendKind::Jit,
+                Opcode::BindMethod,
+                &Operands::None
+            ),
             CompiledSupportDecision::AbiHelper(CompiledAbiOp::MemberOp(MemberOp::BindMethod))
         );
     }

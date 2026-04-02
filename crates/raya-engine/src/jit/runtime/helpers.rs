@@ -901,7 +901,9 @@ fn jit_execute_sync_frame(
                     return_action: current_return_action,
                     arg_count: current_arg_count,
                     arg_values: current_arg_values.clone(),
+                    activation_env: task.current_activation_direct_eval_env(),
                 });
+                task.clear_activation_direct_eval_env(current_func_id, locals_base);
                 task.push_call_frame(func_id);
                 if let Some(cv) = closure_val {
                     task.push_closure(cv);

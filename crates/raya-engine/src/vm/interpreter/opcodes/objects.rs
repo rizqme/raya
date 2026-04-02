@@ -38,6 +38,14 @@ pub(in crate::vm::interpreter) enum CallableInvocationPlan {
 }
 
 impl<'a> Interpreter<'a> {
+    fn should_use_fixed_slot_field_reads(&self, obj_val: Value) -> bool {
+        let Some(obj_ptr) = (unsafe { obj_val.as_ptr::<Object>() }) else {
+            return false;
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        obj.nominal_type_id_usize().is_some() && !self.nominal_instance_uses_runtime_publication(obj_val)
+    }
+
     fn spawn_async_callable_task(
         &mut self,
         stack: &mut Stack,
@@ -111,6 +119,19 @@ impl<'a> Interpreter<'a> {
                     .get(*func_id)
                     .map(|function| (function.is_async, function.is_generator))
                     .unwrap_or((false, false));
+                if std::env::var_os("RAYA_DEBUG_CALL_FLOW").is_some() {
+                    let func_name = target_module
+                        .functions
+                        .get(*func_id)
+                        .map(|function| function.name.as_str())
+                        .unwrap_or("<unknown>");
+                    eprintln!(
+                        "[call-flow] bound-method {}::{} final_args={:?}",
+                        target_module.metadata.name,
+                        func_name,
+                        final_args
+                    );
+                }
                 Ok(Some(CallableInvocationPlan::Function {
                     func_id: *func_id,
                     module: target_module,
@@ -182,6 +203,19 @@ impl<'a> Interpreter<'a> {
                     final_args.push(this_arg);
                 }
                 final_args.extend_from_slice(args);
+                if std::env::var_os("RAYA_DEBUG_CALL_FLOW").is_some() {
+                    let func_name = target_module
+                        .functions
+                        .get(*func_id)
+                        .map(|function| function.name.as_str())
+                        .unwrap_or("<unknown>");
+                    eprintln!(
+                        "[call-flow] closure {}::{} final_args={:?}",
+                        target_module.metadata.name,
+                        func_name,
+                        final_args
+                    );
+                }
                 Ok(Some(CallableInvocationPlan::Function {
                     func_id: *func_id,
                     module: target_module,
@@ -422,6 +456,10 @@ impl<'a> Interpreter<'a> {
             self.call_builtin_constructor_as_function(callable, args, task, module)?
         {
             stack.push(result)?;
+            return Ok(Some(OpcodeResult::Continue));
+        }
+        if self.is_symbol_value(callable) {
+            stack.push(callable)?;
             return Ok(Some(OpcodeResult::Continue));
         }
         Ok(None)
@@ -871,38 +909,33 @@ impl<'a> Interpreter<'a> {
                         unreachable!()
                     }
                 };
-                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
-                    if let Some(getter) = self.descriptor_accessor(actual_obj, &field_name, "get") {
-                        match self.callable_frame_for_value(
-                            getter,
-                            stack,
-                            &[],
-                            Some(actual_obj),
-                            ReturnAction::PushReturnValue,
-                            module,
-                            task,
-                        ) {
-                            Ok(Some(frame)) => return frame,
-                            Ok(None) => {
-                                return OpcodeResult::Error(VmError::TypeError(format!(
-                                    "Property '{}' getter is not callable",
-                                    field_name
-                                )));
-                            }
-                            Err(e) => return OpcodeResult::Error(e),
+                if self.nominal_instance_uses_runtime_publication(actual_obj) {
+                    if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                        let value = self
+                            .get_field_value_by_name(actual_obj, &field_name)
+                            .unwrap_or(Value::null());
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
                         }
+                        return OpcodeResult::Continue;
                     }
-                    let value = self
-                        .get_field_value_by_name(actual_obj, &field_name)
-                        .unwrap_or(Value::null());
-                    if let Err(e) = stack.push(value) {
-                        return OpcodeResult::Error(e);
-                    }
-                    return OpcodeResult::Continue;
                 }
-                // Missing fields resolve to null. This matches object destructuring defaults
-                // and allows optional object properties to be absent at runtime.
-                let value = obj.get_field(field_offset).unwrap_or(Value::null());
+                // Exact nominal field loads must read the fixed slot directly. Falling back to
+                // own-property lookup can surface runtime metadata or virtual properties instead
+                // of the actual instance field payload.
+                let value = if self.should_use_fixed_slot_field_reads(actual_obj) {
+                    obj.get_field(field_offset).unwrap_or(Value::null())
+                } else {
+                    // Missing fields resolve to null. This matches object destructuring defaults
+                    // and allows optional object properties to be absent at runtime.
+                    obj.get_field(field_offset)
+                        .or_else(|| {
+                            self.field_name_for_offset(obj, field_offset)
+                                .as_deref()
+                                .and_then(|field_name| self.get_own_field_value_by_name(actual_obj, field_name))
+                        })
+                        .unwrap_or(Value::null())
+                };
                 if std::env::var("RAYA_DEBUG_FIELD_TRACE").is_ok() {
                     let class_debug = obj
                         .nominal_type_id_usize()
@@ -1014,36 +1047,28 @@ impl<'a> Interpreter<'a> {
                         unreachable!()
                     }
                 };
-                if let Some(ref field_name) = member_name {
-                    if let Some(getter) = self.descriptor_accessor(actual_obj, &field_name, "get") {
-                        match self.callable_frame_for_value(
-                            getter,
-                            stack,
-                            &[],
-                            Some(actual_obj),
-                            ReturnAction::PushReturnValue,
-                            module,
-                            task,
-                        ) {
-                            Ok(Some(frame)) => return frame,
-                            Ok(None) => {
-                                return OpcodeResult::Error(VmError::TypeError(format!(
-                                    "Property '{}' getter is not callable",
-                                    field_name
-                                )));
-                            }
-                            Err(e) => return OpcodeResult::Error(e),
+                if self.nominal_instance_uses_runtime_publication(actual_obj) {
+                    if let Some(ref field_name) = member_name {
+                        let value = self
+                            .get_field_value_by_name(actual_obj, field_name)
+                            .unwrap_or(Value::null());
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
                         }
+                        return OpcodeResult::Continue;
                     }
-                    let value = self
-                        .get_field_value_by_name(actual_obj, &field_name)
-                        .unwrap_or(Value::null());
-                    if let Err(e) = stack.push(value) {
-                        return OpcodeResult::Error(e);
-                    }
-                    return OpcodeResult::Continue;
                 }
-                let value = obj.get_field(field_offset).unwrap_or(Value::null());
+                let value = if self.should_use_fixed_slot_field_reads(actual_obj) {
+                    obj.get_field(field_offset).unwrap_or(Value::null())
+                } else {
+                    obj.get_field(field_offset)
+                        .or_else(|| {
+                            member_name
+                                .as_deref()
+                                .and_then(|field_name| self.get_own_field_value_by_name(actual_obj, field_name))
+                        })
+                        .unwrap_or(Value::null())
+                };
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -1098,22 +1123,41 @@ impl<'a> Interpreter<'a> {
                     let obj = unsafe { &*obj_ptr.as_ptr() };
                     self.field_name_for_offset(obj, field_offset)
                 };
-                if let Some(field_name) = field_name {
-                    return match self.set_property_value_via_js_semantics(
-                        actual_obj,
-                        &field_name,
-                        value,
-                        actual_obj,
-                        task,
-                        module,
-                    ) {
-                        Ok(_) => OpcodeResult::Continue,
-                        Err(error) => OpcodeResult::Error(error),
-                    };
+                if self.nominal_instance_uses_runtime_publication(actual_obj) {
+                    if let Some(ref field_name) = field_name {
+                        return match self.set_property_value_via_js_semantics(
+                            actual_obj,
+                            field_name,
+                            value,
+                            actual_obj,
+                            task,
+                            module,
+                        ) {
+                            Ok(_) => OpcodeResult::Continue,
+                            Err(error) => OpcodeResult::Error(error),
+                        };
+                    }
                 }
                 let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                if std::env::var("RAYA_DEBUG_FIELD_TRACE").is_ok() {
+                    let class_debug = obj
+                        .nominal_type_id_usize()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "structural".to_string());
+                    eprintln!(
+                        "[field-trace] StoreFieldExact[{}] nominal_type_id={} field_count={} <= {:?} (is_ptr={})",
+                        field_offset,
+                        class_debug,
+                        obj.field_count(),
+                        value,
+                        value.is_ptr()
+                    );
+                }
                 if let Err(e) = obj.set_field(field_offset, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
+                }
+                if let Some(field_name) = field_name {
+                    self.set_fixed_property_deleted(actual_obj, &field_name, false);
                 }
                 OpcodeResult::Continue
             }
@@ -1173,16 +1217,35 @@ impl<'a> Interpreter<'a> {
                         ));
                     }
                 };
-                if let Some(ref field_name) = member_name {
-                    return match self.set_property_value_via_js_semantics(
-                        actual_obj, field_name, value, actual_obj, task, module,
-                    ) {
-                        Ok(_) => OpcodeResult::Continue,
-                        Err(error) => OpcodeResult::Error(error),
-                    };
+                if self.nominal_instance_uses_runtime_publication(actual_obj) {
+                    if let Some(ref field_name) = member_name {
+                        return match self.set_property_value_via_js_semantics(
+                            actual_obj, field_name, value, actual_obj, task, module,
+                        ) {
+                            Ok(_) => OpcodeResult::Continue,
+                            Err(error) => OpcodeResult::Error(error),
+                        };
+                    }
+                }
+                if std::env::var("RAYA_DEBUG_FIELD_TRACE").is_ok() {
+                    let class_debug = obj
+                        .nominal_type_id_usize()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "structural".to_string());
+                    eprintln!(
+                        "[field-trace] StoreFieldShape[{}] nominal_type_id={} field_count={} <= {:?} (is_ptr={})",
+                        field_offset,
+                        class_debug,
+                        obj.field_count(),
+                        value,
+                        value.is_ptr()
+                    );
                 }
                 if let Err(e) = obj.set_field(field_offset, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
+                }
+                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                    self.set_fixed_property_deleted(actual_obj, &field_name, false);
                 }
                 OpcodeResult::Continue
             }
@@ -1240,8 +1303,9 @@ impl<'a> Interpreter<'a> {
                         unreachable!()
                     }
                 };
-                let value = if let Some(field_name) = self.field_name_for_offset(obj, field_offset)
-                {
+                let value = if self.should_use_fixed_slot_field_reads(actual_obj) {
+                    obj.get_field(field_offset).unwrap_or(Value::null())
+                } else if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
                     self.get_field_value_by_name(actual_obj, &field_name)
                         .unwrap_or(Value::null())
                 } else {
@@ -1348,7 +1412,9 @@ impl<'a> Interpreter<'a> {
                         unreachable!()
                     }
                 };
-                let value = if let Some(field_name) = member_name {
+                let value = if self.should_use_fixed_slot_field_reads(actual_obj) {
+                    obj.get_field(field_offset).unwrap_or(Value::null())
+                } else if let Some(field_name) = member_name {
                     self.get_field_value_by_name(actual_obj, &field_name)
                         .unwrap_or(Value::null())
                 } else {

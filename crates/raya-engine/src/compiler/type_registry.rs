@@ -28,8 +28,11 @@ pub enum DispatchAction {
     /// Emit a kernel-backed VM native used by derived builtin dispatch.
     VmNative(u16),
     /// Builtin primitive instance field declared in source.
-    /// Carries the resolved field type when it can be determined.
-    DeclaredField(Option<u32>),
+    /// Carries the resolved field type and builtin field slot when they can be determined.
+    DeclaredField {
+        field_type: Option<u32>,
+        field_index: Option<u16>,
+    },
     /// Emit Call to a pre-compiled class method function.
     /// Contains (type_name, method_name) to look up the IR builder.
     ClassMethod(String, String),
@@ -100,9 +103,8 @@ impl TypeRegistry {
         };
 
         let known_names = [
-            "number", "string", "boolean", "null", "void", "never", "unknown", "Mutex",
-            "RegExp", "Date", "Buffer", "Promise", "Channel", "Map", "Set", "Json", "int",
-            "Array",
+            "number", "string", "boolean", "null", "void", "never", "unknown", "Mutex", "RegExp",
+            "Date", "Buffer", "Promise", "Channel", "Map", "Set", "Json", "int", "Array",
         ];
         for name in &known_names {
             if let Some(id) = type_ctx.lookup_named_type(name) {
@@ -994,6 +996,7 @@ fn resolve_return_type_str(type_ctx: &TypeContext, return_type: &str) -> Option<
 
     // Handle known types
     match base {
+        "Array" => Some(TypeContext::ARRAY_TYPE_ID),
         "string" => type_ctx.lookup_named_type("string").map(|id| id.as_u32()),
         "number" => type_ctx.lookup_named_type("number").map(|id| id.as_u32()),
         "int" => type_ctx.lookup_named_type("int").map(|id| id.as_u32()),
@@ -1128,22 +1131,23 @@ class Array<T> {
         assert!(registry.lookup_method(arr_id, "pop").is_some());
         assert!(registry.lookup_property(arr_id, "length").is_some());
 
-        // Callback methods are dispatched as VmNative (array native opcodes)
+        // Callback methods are declared as class methods in the strict builtin surface.
         assert!(matches!(
             registry.lookup_method(arr_id, "map"),
-            Some(DispatchAction::VmNative(_))
+            Some(DispatchAction::ClassMethod(_, _))
         ));
         assert!(matches!(
             registry.lookup_method(arr_id, "filter"),
-            Some(DispatchAction::VmNative(_))
+            Some(DispatchAction::ClassMethod(_, _))
         ));
         assert!(matches!(
             registry.lookup_method(arr_id, "forEach"),
-            Some(DispatchAction::VmNative(_))
+            Some(DispatchAction::ClassMethod(_, _))
         ));
 
-        // Verify constructors
-        assert!(registry.constructor_native_id("RegExp").is_some());
+        // Verify constructors. Array-style direct native constructors remain surfaced here,
+        // while source-defined RegExp construction now stays on the class path.
+        assert!(registry.constructor_native_id("RegExp").is_none());
         assert!(registry.constructor_native_id("string").is_none());
 
         // Verify number methods
@@ -1154,10 +1158,11 @@ class Array<T> {
         let int_id = type_ctx.lookup_named_type("int").unwrap().as_u32();
         assert!(registry.lookup_method(int_id, "toFixed").is_some());
 
-        // Verify RegExp methods
+        // RegExp wrapper methods that depend on hidden regexp state stay off the
+        // direct dispatch registry and execute through their source-defined path.
         let re_id = type_ctx.lookup_named_type("RegExp").unwrap().as_u32();
-        assert!(registry.lookup_method(re_id, "test").is_some());
-        assert!(registry.lookup_method(re_id, "exec").is_some());
+        assert!(registry.lookup_method(re_id, "test").is_none());
+        assert!(registry.lookup_method(re_id, "exec").is_none());
         // replaceWith should be a ClassMethod
         assert!(matches!(
             registry.lookup_method(re_id, "replaceWith"),
@@ -1273,8 +1278,9 @@ class Array<T> {
         assert_eq!(registry.lookup_return_type(0x0F01), Some(str_id)); // toPrecision → string
         assert_eq!(registry.lookup_return_type(0x0F02), Some(str_id)); // toString → string
 
-        // RegExp methods — return types from regexp.raya
-        assert_eq!(registry.lookup_return_type(0x0A01), Some(bool_id)); // test → boolean
+        // RegExp wrapper methods keep their source-defined path, so they do not
+        // contribute native return-type propagation entries here.
+        assert_eq!(registry.lookup_return_type(0x0A01), None); // test → source-defined
 
         // Array push → return type is number (from array.raya)
         assert_eq!(registry.lookup_return_type(0x0100), Some(num_id)); // push → number

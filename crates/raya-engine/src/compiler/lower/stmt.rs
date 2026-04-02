@@ -92,7 +92,11 @@ impl<'a> Lowerer<'a> {
             value: IrValue::Constant(IrConstant::I32(kind)),
         });
 
-        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_DEFINE_CLASS_PROPERTY, vec![target, key_reg, func_id_reg, kind_reg]);
+        self.emit_vm_native_call(
+            None,
+            crate::compiler::native_id::OBJECT_DEFINE_CLASS_PROPERTY,
+            vec![target, key_reg, func_id_reg, kind_reg],
+        );
     }
 
     pub(super) fn emit_static_elements_for_class(
@@ -113,13 +117,21 @@ impl<'a> Lowerer<'a> {
         if self.js_this_binding_compat {
             if let Some(extends_expr) = &class.extends_expr {
                 let parent_constructor = self.lower_expr(extends_expr);
-                self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF, vec![class_value.clone(), parent_constructor.clone()]);
+                self.emit_vm_native_call(
+                    None,
+                    crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF,
+                    vec![class_value.clone(), parent_constructor.clone()],
+                );
 
                 let class_prototype =
                     self.ensure_class_prototype_target(&class_value, &mut prototype_value);
                 let parent_prototype = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
                 self.emit_dyn_get_named(parent_prototype.clone(), parent_constructor, "prototype");
-                self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF, vec![class_prototype, parent_prototype]);
+                self.emit_vm_native_call(
+                    None,
+                    crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF,
+                    vec![class_prototype, parent_prototype],
+                );
             }
         }
         for (member_idx, member) in class.members.iter().enumerate() {
@@ -150,10 +162,8 @@ impl<'a> Lowerer<'a> {
                     );
                 }
                 ast::ClassMember::Field(field) if !field.is_static => {
-                    let Some(dynamic_field) = self
-                        .class_info_map
-                        .get(&nominal_type_id)
-                        .and_then(|info| {
+                    let Some(dynamic_field) =
+                        self.class_info_map.get(&nominal_type_id).and_then(|info| {
                             info.dynamic_fields
                                 .iter()
                                 .find(|dynamic_field| dynamic_field.order == member_idx)
@@ -605,11 +615,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_with(&mut self, with_stmt: &ast::WithStatement) {
         let object = self.lower_expr(&with_stmt.object);
-        self.emit_js_kernel_call(
-            None,
-            crate::semantics::JsOpKind::PushWithEnv,
-            vec![object],
-        );
+        self.emit_js_kernel_call(None, crate::semantics::JsOpKind::PushWithEnv, vec![object]);
         self.active_with_env_depth += 1;
         self.lower_stmt(&with_stmt.body);
         self.active_with_env_depth = self.active_with_env_depth.saturating_sub(1);
@@ -675,7 +681,9 @@ impl<'a> Lowerer<'a> {
     }
 
     fn loop_scope_plan(&self, span_start: usize) -> Option<crate::semantics::LoopScopePlan> {
-        self.semantic_plan.loop_scope_plan_at_span(span_start).cloned()
+        self.semantic_plan
+            .loop_scope_plan_at_span(span_start)
+            .cloned()
     }
 
     fn with_runtime_loop_declaration_bindings<T>(
@@ -724,9 +732,9 @@ impl<'a> Lowerer<'a> {
     fn lower_for_of(&mut self, for_of: &ast::ForOfStatement) {
         let loop_plan = self.loop_scope_plan(for_of.span.start);
         let runtime_loop_env = self.js_this_binding_compat
-            && loop_plan
-                .as_ref()
-                .is_some_and(|plan| plan.creates_per_iteration_env && !plan.binding_names.is_empty());
+            && loop_plan.as_ref().is_some_and(|plan| {
+                plan.creates_per_iteration_env && !plan.binding_names.is_empty()
+            });
         let runtime_loop_binding_names = loop_plan
             .as_ref()
             .map(|plan| plan.binding_names.clone())
@@ -769,12 +777,7 @@ impl<'a> Lowerer<'a> {
                 iterator_reg.clone(),
                 undefined,
             );
-            let awaited_step = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::Await {
-                dest: awaited_step.clone(),
-                task: next_result,
-            });
-            awaited_step
+            self.emit_await_with_iterator_close_on_throw(iterator_reg.clone(), next_result)
         } else {
             self.emit_iterator_step_helper(iterator_reg.clone())
         };
@@ -802,12 +805,7 @@ impl<'a> Lowerer<'a> {
 
         let raw_elem_reg = self.emit_iterator_value_helper(step_result);
         let raw_elem_reg = if for_of.is_await {
-            let awaited_elem = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::Await {
-                dest: awaited_elem.clone(),
-                task: raw_elem_reg,
-            });
-            awaited_elem
+            self.emit_await_with_iterator_close_on_throw(iterator_reg.clone(), raw_elem_reg)
         } else {
             raw_elem_reg
         };
@@ -911,6 +909,54 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn emit_await_with_iterator_close_on_throw(
+        &mut self,
+        iterator: Register,
+        awaited_task: Register,
+    ) -> Register {
+        let catch_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+        let awaited_value = self.alloc_register(UNRESOLVED);
+
+        self.emit(IrInstr::SetupTry {
+            catch_block,
+            finally_block: None,
+        });
+        self.emit(IrInstr::Await {
+            dest: awaited_value.clone(),
+            task: awaited_task,
+        });
+        if !self.current_block_is_terminated() {
+            self.emit(IrInstr::EndTry);
+            self.set_terminator(Terminator::Jump(exit_block));
+        }
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                catch_block,
+                "forof.await.catch",
+            ));
+        self.current_block = catch_block;
+        let temp_local = self.next_local;
+        self.next_local += 1;
+        self.emit(IrInstr::PopToLocal { index: temp_local });
+        let exception = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadLocal {
+            index: temp_local,
+            dest: exception.clone(),
+        });
+        let completion = self.emit_iterator_close_completion_helper(iterator, exception);
+        self.set_terminator(Terminator::Throw(completion));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                exit_block,
+                "forof.await.exit",
+            ));
+        self.current_block = exit_block;
+        awaited_value
+    }
+
     fn lower_for_in(&mut self, for_in: &ast::ForInStatement) {
         // For-in loops are desugared to:
         //   let _keys = Reflect.getEnumerableKeys(obj);
@@ -927,9 +973,9 @@ impl<'a> Lowerer<'a> {
 
         let loop_plan = self.loop_scope_plan(for_in.span.start);
         let runtime_loop_env = self.js_this_binding_compat
-            && loop_plan
-                .as_ref()
-                .is_some_and(|plan| plan.creates_per_iteration_env && !plan.binding_names.is_empty());
+            && loop_plan.as_ref().is_some_and(|plan| {
+                plan.creates_per_iteration_env && !plan.binding_names.is_empty()
+            });
         let runtime_loop_binding_names = loop_plan
             .as_ref()
             .map(|plan| plan.binding_names.clone())
@@ -944,7 +990,11 @@ impl<'a> Lowerer<'a> {
 
         // Call Reflect.getEnumerableKeys(obj) to get keys array
         let keys_reg = self.alloc_register(UNRESOLVED);
-        self.emit_vm_native_call(Some(keys_reg.clone()), crate::vm::builtin::reflect::GET_ENUMERABLE_KEYS, vec![obj_reg]);
+        self.emit_vm_native_call(
+            Some(keys_reg.clone()),
+            crate::vm::builtin::reflect::GET_ENUMERABLE_KEYS,
+            vec![obj_reg],
+        );
 
         // Get keys array length
         let len_reg = self.alloc_register(number_ty);
@@ -1304,7 +1354,11 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn emit_require_object_coercible(&mut self, value: Register) {
-        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_REQUIRE_OBJECT_COERCIBLE, vec![value]);
+        self.emit_vm_native_call(
+            None,
+            crate::compiler::native_id::OBJECT_REQUIRE_OBJECT_COERCIBLE,
+            vec![value],
+        );
     }
 
     fn is_anonymous_binding_initializer(&self, expr: &ast::Expression) -> bool {
@@ -1393,7 +1447,11 @@ impl<'a> Lowerer<'a> {
         }
 
         let binding_name = self.emit_named_key_register(self.interner.resolve(ident.name));
-        self.emit_vm_native_call(None, crate::compiler::native_id::OBJECT_ASSIGN_BINDING_NAME_IF_MISSING, vec![value.clone(), binding_name]);
+        self.emit_vm_native_call(
+            None,
+            crate::compiler::native_id::OBJECT_ASSIGN_BINDING_NAME_IF_MISSING,
+            vec![value.clone(), binding_name],
+        );
     }
 
     fn emit_binding_default_value(
@@ -1455,13 +1513,21 @@ impl<'a> Lowerer<'a> {
         ty: TypeId,
     ) -> Register {
         let loaded = self.alloc_register(ty);
-        self.emit_vm_native_call(Some(loaded.clone()), crate::compiler::native_id::OBJECT_GET_DESTRUCTURING_PROPERTY, vec![object, key]);
+        self.emit_vm_native_call(
+            Some(loaded.clone()),
+            crate::compiler::native_id::OBJECT_GET_DESTRUCTURING_PROPERTY,
+            vec![object, key],
+        );
         loaded
     }
 
     pub(super) fn emit_property_key_coercion(&mut self, key: Register) -> Register {
         let coerced = self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
-        self.emit_vm_native_call(Some(coerced.clone()), crate::compiler::native_id::OBJECT_COERCE_PROPERTY_KEY, vec![key]);
+        self.emit_vm_native_call(
+            Some(coerced.clone()),
+            crate::compiler::native_id::OBJECT_COERCE_PROPERTY_KEY,
+            vec![key],
+        );
         coerced
     }
 
@@ -1822,8 +1888,8 @@ impl<'a> Lowerer<'a> {
 
                     if self.js_this_binding_compat {
                         if let ast::Pattern::Identifier(ident) = &property.value {
-                            let _ =
-                                self.emit_direct_eval_binding_has(self.interner.resolve(ident.name));
+                            let _ = self
+                                .emit_direct_eval_binding_has(self.interner.resolve(ident.name));
                         }
                     }
 
@@ -1849,7 +1915,7 @@ impl<'a> Lowerer<'a> {
                         if let (Some(layout), Some(prop_name)) =
                             (field_layout.as_ref(), static_prop_name.as_ref())
                         {
-                        // Statically known layout: use direct field slot when present.
+                            // Statically known layout: use direct field slot when present.
                             let Some(field_index) = layout
                                 .iter()
                                 .find(|(name, _)| name == prop_name)
@@ -2134,8 +2200,7 @@ impl<'a> Lowerer<'a> {
 
         let ty = self.resolve_structural_slot_type_from_annotation(type_ann);
         if let Some(layout) = self.structural_projection_layout_from_type_id(ty) {
-            self.projection_layout_cache
-                .insert(name, layout);
+            self.projection_layout_cache.insert(name, layout);
         } else {
             self.projection_layout_cache.remove(&name);
         }
@@ -2230,8 +2295,7 @@ impl<'a> Lowerer<'a> {
         };
 
         if let Some(layout) = projected_layout {
-            self.projection_layout_cache
-                .insert(name, layout);
+            self.projection_layout_cache.insert(name, layout);
         }
     }
 
@@ -2327,8 +2391,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
-        let is_js_lexical = self.js_this_binding_compat
-            && decl.kind != crate::parser::ast::VariableKind::Var;
+        let is_js_lexical =
+            self.js_this_binding_compat && decl.kind != crate::parser::ast::VariableKind::Var;
         if decl.kind == crate::parser::ast::VariableKind::Const {
             super::collect_pattern_names(&decl.pattern, &mut self.immutable_bindings);
         }
@@ -2435,7 +2499,7 @@ impl<'a> Lowerer<'a> {
         }
 
         // Populate field layout from inline object type annotation (e.g. `const x: { a: T } = ...`).
-        // This gives has_concrete_layout=true so LoadFieldExact is emitted instead of LateBoundMember.
+        // This gives has_concrete_layout=true so lowering can emit exact field access.
         if !self.variable_object_fields.contains_key(&name) {
             if let Some(type_ann) = &decl.type_annotation {
                 if let ast::Type::Object(obj_type) = &type_ann.ty {
@@ -2578,10 +2642,7 @@ impl<'a> Lowerer<'a> {
                         }
                         self.track_variable_object_alias_from_annotation(name, type_ann);
                         self.track_variable_structural_projection_from_annotation(name, type_ann);
-                        if self
-                            .projection_layout_cache
-                            .contains_key(&name)
-                        {
+                        if self.projection_layout_cache.contains_key(&name) {
                             self.nominal_binding_cache.remove(&name);
                         }
                         if let ast::Type::Array(arr_ty) = &type_ann.ty {
@@ -2589,7 +2650,8 @@ impl<'a> Lowerer<'a> {
                                 if let Some(&nominal_type_id) =
                                     self.class_map.get(&elem_ref.name.name)
                                 {
-                                    self.array_element_nominal_cache.insert(name, nominal_type_id);
+                                    self.array_element_nominal_cache
+                                        .insert(name, nominal_type_id);
                                 }
                             }
                         }
@@ -2638,7 +2700,11 @@ impl<'a> Lowerer<'a> {
                         if let Some((ctor_symbol, constructor_type)) =
                             self.identifier_constructor_binding_hint(ident)
                         {
-                            self.mark_constructor_value_binding(name, ctor_symbol, constructor_type);
+                            self.mark_constructor_value_binding(
+                                name,
+                                ctor_symbol,
+                                constructor_type,
+                            );
                         } else {
                             self.clear_constructor_value_binding(name);
                         }
@@ -2663,10 +2729,7 @@ impl<'a> Lowerer<'a> {
                     self.track_task_result_alias_from_initializer(name, init);
                     self.track_variable_object_alias_from_initializer(name, init);
                     self.track_variable_structural_projection_from_initializer(name, init);
-                    if self
-                        .projection_layout_cache
-                        .contains_key(&name)
-                    {
+                    if self.projection_layout_cache.contains_key(&name) {
                         self.nominal_binding_cache.remove(&name);
                     }
 
@@ -2725,8 +2788,7 @@ impl<'a> Lowerer<'a> {
                         if let Some(layout) =
                             self.structural_projection_layout_from_type_id(value.ty)
                         {
-                            self.projection_layout_cache
-                                .insert(name, layout);
+                            self.projection_layout_cache.insert(name, layout);
                             self.nominal_binding_cache.remove(&name);
                         }
                     }
@@ -2873,17 +2935,15 @@ impl<'a> Lowerer<'a> {
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
                 self.track_variable_structural_projection_from_annotation(name, type_ann);
-                if self
-                    .projection_layout_cache
-                    .contains_key(&name)
-                {
+                if self.projection_layout_cache.contains_key(&name) {
                     self.nominal_binding_cache.remove(&name);
                 }
                 // Track array element class type (e.g., `let items: Item[] = [...]`)
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
                     if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
                         if let Some(&nominal_type_id) = self.class_map.get(&elem_ref.name.name) {
-                            self.array_element_nominal_cache.insert(name, nominal_type_id);
+                            self.array_element_nominal_cache
+                                .insert(name, nominal_type_id);
                         }
                     }
                 }
@@ -2959,10 +3019,7 @@ impl<'a> Lowerer<'a> {
             self.track_task_result_alias_from_initializer(name, init);
             self.track_variable_object_alias_from_initializer(name, init);
             self.track_variable_structural_projection_from_initializer(name, init);
-            if self
-                .projection_layout_cache
-                .contains_key(&name)
-            {
+            if self.projection_layout_cache.contains_key(&name) {
                 self.nominal_binding_cache.remove(&name);
             }
 
@@ -3000,8 +3057,7 @@ impl<'a> Lowerer<'a> {
             if self.type_is_handle_dispatch_builtin(value.ty) {
                 self.clear_runtime_dispatch_hint(name);
             }
-            let keep_late_bound_builtin_dispatch =
-                self.binding_uses_builtin_dispatch_hint(name);
+            let keep_late_bound_builtin_dispatch = self.binding_uses_builtin_dispatch_hint(name);
             if self.type_has_checker_validated_class_members(value.ty)
                 && !keep_late_bound_builtin_dispatch
             {
@@ -3009,8 +3065,7 @@ impl<'a> Lowerer<'a> {
             }
             if !keep_late_bound_builtin_dispatch {
                 if let Some(layout) = self.structural_projection_layout_from_type_id(value.ty) {
-                    self.projection_layout_cache
-                        .insert(name, layout);
+                    self.projection_layout_cache.insert(name, layout);
                     self.nominal_binding_cache.remove(&name);
                 }
             }
@@ -3162,16 +3217,14 @@ impl<'a> Lowerer<'a> {
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
                 self.track_variable_structural_projection_from_annotation(name, type_ann);
-                if self
-                    .projection_layout_cache
-                    .contains_key(&name)
-                {
+                if self.projection_layout_cache.contains_key(&name) {
                     self.nominal_binding_cache.remove(&name);
                 }
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
                     if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
                         if let Some(&nominal_type_id) = self.class_map.get(&elem_ref.name.name) {
-                            self.array_element_nominal_cache.insert(name, nominal_type_id);
+                            self.array_element_nominal_cache
+                                .insert(name, nominal_type_id);
                         }
                     }
                 }
@@ -3484,7 +3537,11 @@ impl<'a> Lowerer<'a> {
             dest: resumed_payload.clone(),
         });
         let resumed = self.alloc_register(UNRESOLVED);
-        self.emit_vm_native_call(Some(resumed), crate::compiler::native_id::OBJECT_HANDLE_GENERATOR_RESUME, vec![resumed_payload]);
+        self.emit_vm_native_call(
+            Some(resumed),
+            crate::compiler::native_id::OBJECT_HANDLE_GENERATOR_RESUME,
+            vec![resumed_payload],
+        );
     }
 
     fn close_active_loop_iterators(&mut self) {
@@ -3616,9 +3673,9 @@ impl<'a> Lowerer<'a> {
     fn lower_for(&mut self, for_stmt: &ast::ForStatement) {
         let loop_plan = self.loop_scope_plan(for_stmt.span.start);
         let runtime_loop_env = self.js_this_binding_compat
-            && loop_plan
-                .as_ref()
-                .is_some_and(|plan| plan.creates_per_iteration_env && !plan.binding_names.is_empty());
+            && loop_plan.as_ref().is_some_and(|plan| {
+                plan.creates_per_iteration_env && !plan.binding_names.is_empty()
+            });
         let runtime_loop_binding_names = loop_plan
             .as_ref()
             .map(|plan| plan.binding_names.clone())
@@ -3948,7 +4005,6 @@ impl<'a> Lowerer<'a> {
                         let exc_ty = TypeId::new(0); // Exception type (unknown)
                         let exc_reg = self.alloc_register(exc_ty);
                         self.local_registers.insert(local_idx, exc_reg);
-
                     }
                     _ => {
                         // Destructuring pattern: pop exception into temp local, load into register, then bind pattern

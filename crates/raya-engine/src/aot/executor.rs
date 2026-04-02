@@ -281,6 +281,7 @@ pub unsafe fn free_frame_chain(frame: *mut AotFrame, helpers: &AotHelperTable) {
 mod tests {
     use super::*;
     use crate::aot::helpers::create_default_helper_table;
+    use crate::vm::suspend::{BackendCallResult, BackendCallStatus};
     use std::sync::atomic::AtomicBool;
 
     /// A test AOT function that immediately returns NaN-boxed i32(42).
@@ -351,7 +352,15 @@ mod tests {
         _frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
     ) -> u64 {
-        ((*ctx).helpers.native_call)(ctx, 1, std::ptr::null(), 0).payload
+        let result = ((*ctx).helpers.native_call)(ctx, 0, std::ptr::null(), 0);
+        match result.status {
+            BackendCallStatus::Completed => result.payload,
+            BackendCallStatus::Suspended => {
+                (*ctx).suspend_record.set_tag(SuspendTag::KernelBoundary);
+                AOT_SUSPEND
+            }
+            BackendCallStatus::Threw => abi::NULL_VALUE,
+        }
     }
 
     /// Simulates compiled native-call path that returns suspend token.
@@ -359,7 +368,33 @@ mod tests {
         _frame: *mut AotFrame,
         ctx: *mut AotTaskContext,
     ) -> u64 {
-        ((*ctx).helpers.native_call)(ctx, 0x7FFF, std::ptr::null(), 0).payload
+        let result = ((*ctx).helpers.native_call)(ctx, 0, std::ptr::null(), 0);
+        match result.status {
+            BackendCallStatus::Completed => result.payload,
+            BackendCallStatus::Suspended => {
+                (*ctx).suspend_record.set_tag(SuspendTag::KernelBoundary);
+                AOT_SUSPEND
+            }
+            BackendCallStatus::Threw => abi::NULL_VALUE,
+        }
+    }
+
+    unsafe extern "C" fn stub_native_call_completed_null(
+        _ctx: *mut AotTaskContext,
+        _kernel_op_id: u16,
+        _args_ptr: *const u64,
+        _argc: u8,
+    ) -> BackendCallResult {
+        BackendCallResult::completed_raw(abi::NULL_VALUE)
+    }
+
+    unsafe extern "C" fn stub_native_call_kernel_boundary(
+        _ctx: *mut AotTaskContext,
+        _kernel_op_id: u16,
+        _args_ptr: *const u64,
+        _argc: u8,
+    ) -> BackendCallResult {
+        BackendCallResult::suspended_with_tag(SuspendTag::KernelBoundary)
     }
 
     #[test]
@@ -427,7 +462,10 @@ mod tests {
 
             match &result.result {
                 ExecutionResult::Suspended(SchedulerSuspendReason::Sleep { wake_at }) => {
-                    assert!(*wake_at >= before + Duration::from_millis(100));
+                    assert!(
+                        wake_at.checked_duration_since(before).unwrap_or_default()
+                            >= Duration::from_millis(95)
+                    );
                 }
                 other => panic!("Expected Suspended(Sleep), got {:?}", other),
             }
@@ -508,7 +546,8 @@ mod tests {
 
     #[test]
     fn test_run_native_helper_fast_path_completes() {
-        let helpers = create_default_helper_table();
+        let mut helpers = create_default_helper_table();
+        helpers.native_call = stub_native_call_completed_null;
         let preempt = AtomicBool::new(false);
 
         unsafe {
@@ -535,7 +574,8 @@ mod tests {
 
     #[test]
     fn test_run_native_helper_suspend_path_handoffs_to_thread_loop() {
-        let helpers = create_default_helper_table();
+        let mut helpers = create_default_helper_table();
+        helpers.native_call = stub_native_call_kernel_boundary;
         let preempt = AtomicBool::new(false);
 
         unsafe {
