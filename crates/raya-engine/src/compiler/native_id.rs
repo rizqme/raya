@@ -259,6 +259,9 @@ pub const STRING_LAST_INDEX_OF: u16 = 0x020F;
 pub const STRING_SLICE: u16 = 0x0210;
 pub const STRING_TRIM_START: u16 = 0x0211;
 pub const STRING_TRIM_END: u16 = 0x0212;
+pub const STRING_REPLACE_REGEXP: u16 = 0x0215;
+pub const STRING_SPLIT_REGEXP: u16 = 0x0216;
+pub const STRING_REPLACE_WITH_REGEXP: u16 = 0x0217;
 
 // ============================================================================
 // Mutex (0x03xx)
@@ -353,6 +356,7 @@ pub const SET_FOR_EACH: u16 = 0x0907;
 pub const SET_UNION: u16 = 0x0908;
 pub const SET_INTERSECTION: u16 = 0x0909;
 pub const SET_DIFFERENCE: u16 = 0x090A;
+pub const SET_ENTRIES: u16 = 0x090B;
 
 // ============================================================================
 // RegExp (0x0Axx)
@@ -836,6 +840,9 @@ pub fn native_name(id: u16) -> &'static str {
         STRING_SLICE => "String.slice",
         STRING_TRIM_START => "String.trimStart",
         STRING_TRIM_END => "String.trimEnd",
+        STRING_REPLACE_REGEXP => "String.replace(regexp)",
+        STRING_SPLIT_REGEXP => "String.split(regexp)",
+        STRING_REPLACE_WITH_REGEXP => "String.replaceWith(regexp)",
         OBJECT_STRING_FROM_CHAR_CODE => "String.fromCharCode",
 
         // RegExp

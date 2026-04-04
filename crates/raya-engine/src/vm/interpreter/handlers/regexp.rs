@@ -13,11 +13,11 @@ impl<'a> Interpreter<'a> {
     /// Handle built-in regexp methods
     pub(in crate::vm::interpreter) fn call_regexp_method(
         &mut self,
-        _task: &Arc<Task>,
+        task: &Arc<Task>,
         stack: &mut Stack,
         method_id: u16,
         arg_count: usize,
-        _module: &Module,
+        module: &Module,
     ) -> Result<(), VmError> {
         use crate::vm::builtin::regexp;
 
@@ -30,9 +30,7 @@ impl<'a> Interpreter<'a> {
 
         // Pop receiver (the RegExp handle)
         let receiver = stack.pop()?;
-        let handle = receiver
-            .as_u64()
-            .ok_or_else(|| VmError::TypeError("Expected RegExp handle".to_string()))?;
+        let handle = self.regexp_handle_from_value(receiver)?;
         let re_ptr = handle as *const RegExpObject;
         if re_ptr.is_null() {
             return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -194,11 +192,72 @@ impl<'a> Interpreter<'a> {
                 stack.push(arr_val)?;
             }
             id if id == regexp::REPLACE_WITH => {
-                // replaceWith is now handled as a compiler intrinsic (inline loop + CallClosure).
-                // This path should never be reached.
-                return Err(VmError::RuntimeError(
-                    "RegExp.replaceWith is handled by compiler intrinsic, should not reach VM handler".to_string()
-                ));
+                if args.len() != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "RegExp.replaceWith expects 2 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                let (input_value, replacer) = if unsafe { args[0].as_ptr::<RayaString>() }.is_some()
+                {
+                    (args[0], args[1])
+                } else {
+                    (args[1], args[0])
+                };
+                let input = self.js_function_argument_to_string(input_value, task, module)?;
+                let input = input.as_str().to_string();
+
+                let mut result = String::new();
+                let mut last_index = 0usize;
+                let callback_this = Some(Value::undefined());
+                if re.flags.contains('g') {
+                    for m in re.compiled.find_iter(&input) {
+                        result.push_str(&input[last_index..m.start()]);
+
+                        let matched_str = RayaString::new(m.as_str().to_string());
+                        let gc_ptr = self.gc.lock().allocate(matched_str);
+                        let matched_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+                        let replacement_val = self.invoke_callable_sync_with_this(
+                            replacer,
+                            callback_this,
+                            &[matched_val],
+                            task,
+                            module,
+                        )?;
+                        let replacement =
+                            self.js_function_argument_to_string(replacement_val, task, module)?;
+                        result.push_str(replacement.as_str());
+                        last_index = m.end();
+                    }
+                } else if let Some(m) = re.compiled.find(&input) {
+                    result.push_str(&input[last_index..m.start()]);
+
+                    let matched_str = RayaString::new(m.as_str().to_string());
+                    let gc_ptr = self.gc.lock().allocate(matched_str);
+                    let matched_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
+                    let replacement_val = self.invoke_callable_sync_with_this(
+                        replacer,
+                        callback_this,
+                        &[matched_val],
+                        task,
+                        module,
+                    )?;
+                    let replacement =
+                        self.js_function_argument_to_string(replacement_val, task, module)?;
+                    result.push_str(replacement.as_str());
+                    last_index = m.end();
+                }
+
+                result.push_str(&input[last_index..]);
+                let result_str = RayaString::new(result);
+                let gc_ptr = self.gc.lock().allocate(result_str);
+                let result_val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                stack.push(result_val)?;
             }
             id if id == regexp::REPLACE_MATCHES => {
                 // Get match data for replaceWith class method IR.

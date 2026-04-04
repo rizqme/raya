@@ -3225,9 +3225,11 @@ mod tests {
             dispatch.kind == raya_engine::ConstructorDispatchKind::BuiltinNativeConstructor
         }));
         assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
-            dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::HostHandleOp
-                && dispatch.host_handle_op
-                    == Some(raya_engine::semantics::HostHandleOpKind::MutexConstructor)
+            dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::Constructor
+                && dispatch.builtin_op
+                    == Some(raya_engine::compiler::builtins::BuiltinOp::HostHandle(
+                        raya_engine::semantics::HostHandleOpKind::MutexConstructor,
+                    ))
         }));
     }
 
@@ -3244,9 +3246,10 @@ mod tests {
 
         assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
             dispatch.member_name.as_deref() == Some("lock")
-                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::HostHandleOp
-                && dispatch.host_handle_op
-                    == Some(raya_engine::semantics::HostHandleOpKind::MutexLock)
+                && dispatch.builtin_op
+                    == Some(raya_engine::compiler::builtins::BuiltinOp::HostHandle(
+                        raya_engine::semantics::HostHandleOpKind::MutexLock,
+                    ))
         }));
     }
 
@@ -3263,9 +3266,10 @@ mod tests {
 
         assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
             dispatch.member_name.as_deref() == Some("lock")
-                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::HostHandleOp
-                && dispatch.host_handle_op
-                    == Some(raya_engine::semantics::HostHandleOpKind::MutexLock)
+                && dispatch.builtin_op
+                    == Some(raya_engine::compiler::builtins::BuiltinOp::HostHandle(
+                        raya_engine::semantics::HostHandleOpKind::MutexLock,
+                    ))
         }));
     }
 
@@ -3291,6 +3295,116 @@ mod tests {
                     ))
                 )
         }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_string_replace_with_as_builtin_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            let re = new RegExp("world", "");
+            "hello world".replaceWith(re, (match: (string | number)[]): string => {
+                return "UNIVERSE";
+            });
+            "#,
+            SemanticProfile::raya(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("replaceWith")
+                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
+                && dispatch.builtin_op
+                    == Some(raya_engine::compiler::builtins::BuiltinOp::Native(
+                        raya_engine::vm::builtin::string::REPLACE_WITH_REGEXP,
+                    ))
+        }));
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_regexp_constructor_as_builtin_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            new RegExp("world", "");
+            "#,
+            SemanticProfile::raya(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.constructor_dispatches.iter().any(|dispatch| {
+            dispatch.kind == raya_engine::ConstructorDispatchKind::BuiltinNativeConstructor
+        }));
+        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
+            dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::Constructor
+                && dispatch.export_name.as_deref() == Some("RegExp")
+                && dispatch.builtin_op
+                    == Some(raya_engine::compiler::builtins::BuiltinOp::Native(
+                        raya_engine::vm::builtin::regexp::NEW,
+                    ))
+        }));
+    }
+
+    #[test]
+    fn test_compile_debug_lowers_regexp_constructor_and_replace_with_without_source_fallback() {
+        let checked = GraphFrontend::new(
+            r#"
+            let re = new RegExp("world", "");
+            "hello world".replaceWith(re, (match: (string | number)[]): string => {
+                return "UNIVERSE";
+            });
+            "#,
+            BuiltinMode::RayaStrict,
+            SemanticProfile::raya(),
+            None,
+        )
+        .expect("frontend should build")
+        .compile_checked()
+        .expect("checked frontend should build");
+
+        let compiler = Compiler::new(checked.type_ctx, &checked.interner)
+            .with_semantic_profile(SemanticProfile::raya())
+            .with_expr_types(checked.check_result.expr_types)
+            .with_type_annotation_types(checked.check_result.type_annotation_types)
+            .with_source_text(checked.full_source.clone());
+        let (_, debug) = compiler
+            .compile_with_debug(&checked.ast)
+            .expect("compile with debug should succeed");
+
+        assert!(
+            !debug.contains("Object.constructDynamicClass"),
+            "{debug}"
+        );
+        assert!(!debug.contains("RegExp.replaceMatches"), "{debug}");
+    }
+
+    #[test]
+    fn test_compile_debug_lowers_regexp_test_without_source_fallback() {
+        let checked = GraphFrontend::new(
+            r#"
+            let re = new RegExp("hello", "");
+            re.test("hello world");
+            "#,
+            BuiltinMode::RayaStrict,
+            SemanticProfile::raya(),
+            None,
+        )
+        .expect("frontend should build")
+        .compile_checked()
+        .expect("checked frontend should build");
+
+        let compiler = Compiler::new(checked.type_ctx, &checked.interner)
+            .with_semantic_profile(SemanticProfile::raya())
+            .with_expr_types(checked.check_result.expr_types)
+            .with_type_annotation_types(checked.check_result.type_annotation_types)
+            .with_source_text(checked.full_source.clone());
+        let (_, debug) = compiler
+            .compile_with_debug(&checked.ast)
+            .expect("compile with debug should succeed");
+
+        assert!(
+            !debug.contains("Object.constructDynamicClass"),
+            "{debug}"
+        );
+        assert!(!debug.contains("CallMethod"), "{debug}");
     }
 
     #[test]

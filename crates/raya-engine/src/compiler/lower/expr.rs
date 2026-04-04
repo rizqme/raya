@@ -593,6 +593,12 @@ impl<'a> Lowerer<'a> {
         op: KernelOp,
         args: Vec<Register>,
     ) {
+        let op = match op {
+            KernelOp::Builtin(crate::compiler::builtins::BuiltinOp::Native(native_id)) => {
+                KernelOp::VmNative(native_id)
+            }
+            other => other,
+        };
         self.emit(IrInstr::KernelCall { dest, op, args });
     }
 
@@ -622,6 +628,12 @@ impl<'a> Lowerer<'a> {
                 KernelOp::Builtin(metaobject_op.into()),
                 args.to_vec(),
             );
+        } else if let Some(op) = dispatch.builtin_op {
+            self.emit_builtin_kernel_call(
+                Some(dispatch_dest.clone()),
+                KernelOp::Builtin(op),
+                args.to_vec(),
+            );
         } else if let Some(native_id) = dispatch.native_id {
             self.emit_builtin_kernel_call(
                 Some(dispatch_dest.clone()),
@@ -634,6 +646,11 @@ impl<'a> Lowerer<'a> {
             return None;
         }
         if matches!(
+            dispatch.builtin_op,
+            Some(crate::compiler::builtins::BuiltinOp::Metaobject(
+                crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor
+            ))
+        ) || matches!(
             dispatch.metaobject_op,
             Some(crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor)
         ) {
@@ -732,80 +749,30 @@ impl<'a> Lowerer<'a> {
                 let object = prelowered_object
                     .clone()
                     .unwrap_or_else(|| self.lower_expr(&member.object));
-                match builtin_dispatch.host_handle_op {
-                    Some(
-                        crate::semantics::HostHandleOpKind::ChannelSend
-                        | crate::semantics::HostHandleOpKind::ChannelReceive
-                        | crate::semantics::HostHandleOpKind::ChannelTrySend
-                        | crate::semantics::HostHandleOpKind::ChannelTryReceive
-                        | crate::semantics::HostHandleOpKind::ChannelClose
-                        | crate::semantics::HostHandleOpKind::ChannelIsClosed
-                        | crate::semantics::HostHandleOpKind::ChannelLength
-                        | crate::semantics::HostHandleOpKind::ChannelCapacity
-                        | crate::semantics::HostHandleOpKind::MutexTryLock
-                        | crate::semantics::HostHandleOpKind::MutexIsLocked,
-                    ) => {
+                match builtin_dispatch.builtin_op {
+                    Some(crate::compiler::builtins::BuiltinOp::HostHandle(op)) => {
                         let mut builtin_args = Vec::with_capacity(args.len() + 1);
                         builtin_args.push(object);
                         builtin_args.extend(args.iter().cloned());
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::Builtin(builtin_dispatch.host_handle_op.unwrap().into()),
+                            KernelOp::Builtin(crate::compiler::builtins::BuiltinOp::HostHandle(op)),
                             builtin_args,
                         );
                         Some(dest)
                     }
-                    Some(crate::semantics::HostHandleOpKind::MutexLock) => {
+                    Some(op) => {
+                        let mut builtin_args = Vec::with_capacity(args.len() + 1);
+                        builtin_args.push(object);
+                        builtin_args.extend(args.iter().cloned());
                         self.emit_builtin_kernel_call(
                             Some(dest.clone()),
-                            KernelOp::Builtin(
-                                crate::semantics::HostHandleOpKind::MutexLock.into(),
-                            ),
-                            vec![object],
+                            KernelOp::Builtin(op),
+                            builtin_args,
                         );
                         Some(dest)
                     }
-                    Some(crate::semantics::HostHandleOpKind::MutexUnlock) => {
-                        self.emit_builtin_kernel_call(
-                            Some(dest.clone()),
-                            KernelOp::Builtin(
-                                crate::semantics::HostHandleOpKind::MutexUnlock.into(),
-                            ),
-                            vec![object],
-                        );
-                        Some(dest)
-                    }
-                    Some(crate::semantics::HostHandleOpKind::TaskCancel) => {
-                        self.emit_builtin_kernel_call(
-                            Some(dest.clone()),
-                            KernelOp::Builtin(
-                                crate::semantics::HostHandleOpKind::TaskCancel.into(),
-                            ),
-                            vec![object],
-                        );
-                        Some(dest)
-                    }
-                    Some(crate::semantics::HostHandleOpKind::TaskIsDone) => {
-                        self.emit_builtin_kernel_call(
-                            Some(dest.clone()),
-                            KernelOp::Builtin(
-                                crate::semantics::HostHandleOpKind::TaskIsDone.into(),
-                            ),
-                            vec![object],
-                        );
-                        Some(dest)
-                    }
-                    Some(crate::semantics::HostHandleOpKind::TaskIsCancelled) => {
-                        self.emit_builtin_kernel_call(
-                            Some(dest.clone()),
-                            KernelOp::Builtin(
-                                crate::semantics::HostHandleOpKind::TaskIsCancelled.into(),
-                            ),
-                            vec![object],
-                        );
-                        Some(dest)
-                    }
-                    _ => None,
+                    None => None,
                 }
             }
             _ => None,
@@ -1095,18 +1062,9 @@ impl<'a> Lowerer<'a> {
                         .result_type_id
                         .unwrap_or(TypeId::new(UNRESOLVED_TYPE_ID)),
                 );
-                self.emit_builtin_kernel_call(Some(dest.clone()), KernelOp::Builtin(op), vec![object]);
-                Some(dest)
-            }
-            crate::compiler::type_registry::DispatchAction::VmNative(native_id) => {
-                let mut dest = self.alloc_register(
-                    dispatch
-                        .result_type_id
-                        .unwrap_or(TypeId::new(UNRESOLVED_TYPE_ID)),
-                );
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
-                    KernelOp::VmNative(native_id),
+                    KernelOp::Builtin(op),
                     vec![object],
                 );
                 Some(dest)
@@ -1599,7 +1557,7 @@ impl<'a> Lowerer<'a> {
         }
 
         match action {
-            crate::compiler::type_registry::DispatchAction::VmNative(mut id) => {
+            crate::compiler::type_registry::DispatchAction::Builtin(mut op) => {
                 let first_arg_is_regexp = if !args.is_empty() {
                     let reg_ty = self.normalize_type_for_dispatch(args[0].ty.as_u32());
                     let checker_ty = call
@@ -1615,25 +1573,27 @@ impl<'a> Lowerer<'a> {
                 if obj_type_id == STRING_TYPE_ID && first_arg_is_regexp {
                     use crate::vm::builtin::string as bs;
                     match method_name {
-                        "replace" => id = bs::REPLACE_REGEXP,
-                        "split" => id = bs::SPLIT_REGEXP,
+                        "replace" => op = crate::compiler::builtins::BuiltinOp::Native(bs::REPLACE_REGEXP),
+                        "split" => op = crate::compiler::builtins::BuiltinOp::Native(bs::SPLIT_REGEXP),
+                        "replaceWith" => {
+                            op = crate::compiler::builtins::BuiltinOp::Native(bs::REPLACE_WITH_REGEXP)
+                        }
                         _ => {}
                     }
                 }
-
-                let mut native_args = Vec::with_capacity(args.len() + 1);
-                native_args.push(object);
-                native_args.extend(args.iter().cloned());
-                self.emit_builtin_kernel_call(
-                    Some(dest.clone()),
-                    KernelOp::VmNative(id),
-                    native_args,
-                );
-                Some(dest)
-            }
-            crate::compiler::type_registry::DispatchAction::Builtin(op) => {
                 let mut builtin_args = Vec::with_capacity(args.len() + 1);
                 builtin_args.push(object);
+                if obj_type_id == TASK_TYPE_ID
+                    && method_name == "catch"
+                    && matches!(op, crate::compiler::builtins::BuiltinOp::Native(id) if id == crate::vm::builtin::promise::CHAIN)
+                {
+                    let undefined = self.alloc_register(UNRESOLVED);
+                    self.emit(IrInstr::Assign {
+                        dest: undefined.clone(),
+                        value: IrValue::Constant(IrConstant::Undefined),
+                    });
+                    builtin_args.push(undefined);
+                }
                 builtin_args.extend(args.iter().cloned());
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
@@ -2322,8 +2282,10 @@ impl<'a> Lowerer<'a> {
         dest: Register,
         builtin_dispatch: &crate::semantics::SemanticBuiltinDispatch,
     ) -> Option<Register> {
-        match builtin_dispatch.host_handle_op {
-            Some(crate::semantics::HostHandleOpKind::ChannelConstructor) => {
+        match builtin_dispatch.builtin_op {
+            Some(crate::compiler::builtins::BuiltinOp::HostHandle(
+                crate::semantics::HostHandleOpKind::ChannelConstructor,
+            )) => {
                 let capacity = if let Some(first_arg) = new_expr.argument_expression(0) {
                     self.lower_expr(first_arg)
                 } else {
@@ -2338,7 +2300,9 @@ impl<'a> Lowerer<'a> {
                 );
                 Some(dest)
             }
-            Some(crate::semantics::HostHandleOpKind::MutexConstructor) => {
+            Some(crate::compiler::builtins::BuiltinOp::HostHandle(
+                crate::semantics::HostHandleOpKind::MutexConstructor,
+            )) => {
                 self.emit_builtin_kernel_call(
                     Some(dest.clone()),
                     KernelOp::Builtin(
@@ -2346,6 +2310,15 @@ impl<'a> Lowerer<'a> {
                     ),
                     vec![],
                 );
+                Some(dest)
+            }
+            Some(op) => {
+                let args = new_expr
+                    .arguments
+                    .iter()
+                    .map(|arg| self.lower_expr(arg.expression()))
+                    .collect::<Vec<_>>();
+                self.emit_builtin_kernel_call(Some(dest.clone()), KernelOp::Builtin(op), args);
                 Some(dest)
             }
             _ => None,

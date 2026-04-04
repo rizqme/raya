@@ -10,7 +10,6 @@ use crate::compiler::builtins::{builtin_op_from_native_id, native_id_for_builtin
 use crate::compiler::module::{BuiltinDispatchBinding, BuiltinSurfaceManifest};
 use crate::parser::types::ty::{Type, TypeId};
 use crate::parser::TypeContext;
-use crate::vm::builtin::array;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Sentinel TypeId for when the lowerer cannot determine the type.
@@ -28,8 +27,6 @@ pub enum DispatchAction {
     Opcode(OpcodeKind),
     /// Emit a typed builtin runtime op.
     Builtin(BuiltinOp),
-    /// Emit a kernel-backed VM native used by derived builtin dispatch.
-    VmNative(u16),
     /// Builtin primitive instance field declared in source.
     /// Carries the resolved field type and builtin field slot when they can be determined.
     DeclaredField {
@@ -77,19 +74,12 @@ pub struct TypeRegistry {
 }
 
 impl TypeRegistry {
-    fn array_callback_native_id(method_name: &str) -> Option<u16> {
-        Some(match method_name {
-            "forEach" => array::FOR_EACH,
-            "filter" => array::FILTER,
-            "find" => array::FIND,
-            "findIndex" => array::FIND_INDEX,
-            "every" => array::EVERY,
-            "some" => array::SOME,
-            "sort" => array::SORT,
-            "map" => array::MAP,
-            "reduce" => array::REDUCE,
-            _ => return None,
-        })
+    fn runtime_builtin_method_action(&self, type_id: u32, name: &str) -> Option<DispatchAction> {
+        let type_name = self.type_name(type_id)?;
+        let native_id = crate::vm::builtin::lookup_builtin_method(type_name, name)?;
+        Some(DispatchAction::Builtin(
+            builtin_op_from_native_id(native_id).unwrap_or(BuiltinOp::Native(native_id)),
+        ))
     }
 
     /// Build the registry from the derived builtin surface manifest and TypeContext.
@@ -173,7 +163,11 @@ impl TypeRegistry {
                 self.builtin_primitives.insert(type_name.clone());
             }
 
-            if let Some(native_id) = surface.constructor_native_id {
+            if let Some(native_id) = surface
+                .constructor_binding
+                .as_ref()
+                .and_then(BuiltinDispatchBinding::native_id)
+            {
                 self.constructors.insert(type_name.clone(), native_id);
             }
 
@@ -233,15 +227,14 @@ impl TypeRegistry {
         binding: &BuiltinDispatchBinding,
         type_ctx: &TypeContext,
     ) {
-        let BuiltinDispatchBinding::VmNative {
-            native_id,
-            return_type_name: Some(return_type_name),
-        } = binding
-        else {
+        let Some(return_type_name) = binding.return_type_name() else {
+            return;
+        };
+        let Some(native_id) = binding.native_id() else {
             return;
         };
         if let Some(ret_tid) = resolve_return_type_str(type_ctx, return_type_name) {
-            self.method_return_types.insert(*native_id, ret_tid);
+            self.method_return_types.insert(native_id, ret_tid);
         }
     }
 
@@ -271,20 +264,30 @@ impl TypeRegistry {
         // Exact type match
         if let Some(meths) = self.method_dispatch.get(&type_id) {
             if let Some(action) = meths.get(name) {
-                return Some(action.clone());
+                return match action {
+                    DispatchAction::DeclaredField { .. } | DispatchAction::Opcode(_) => {
+                        Some(action.clone())
+                    }
+                    _ => self
+                        .runtime_builtin_method_action(type_id, name)
+                        .or_else(|| Some(action.clone())),
+                };
             }
+        }
+        if let Some(action) = self.runtime_builtin_method_action(type_id, name) {
+            return Some(action);
         }
         // Array type fallback
         if self.is_array_type_id(type_id) {
             if let Some(action) = self.array_methods.get(name) {
-                return Some(action.clone());
-            }
-            if let Some(native_id) = crate::vm::builtin::lookup_builtin_method("Array", name) {
-                return Some(
-                    builtin_op_from_native_id(native_id)
-                        .map(DispatchAction::Builtin)
-                        .unwrap_or(DispatchAction::VmNative(native_id)),
-                );
+                return match action {
+                    DispatchAction::DeclaredField { .. } | DispatchAction::Opcode(_) => {
+                        Some(action.clone())
+                    }
+                    _ => self
+                        .runtime_builtin_method_action(type_id, name)
+                        .or_else(|| Some(action.clone())),
+                };
             }
         }
         None
@@ -332,7 +335,6 @@ impl TypeRegistry {
         let type_id = canonical_dispatch_type_id(type_name)?;
         match self.lookup_method(type_id, method_name) {
             Some(DispatchAction::Builtin(op)) => native_id_for_builtin_op(op),
-            Some(DispatchAction::VmNative(id)) => Some(id),
             _ => None,
         }
     }
@@ -1011,6 +1013,7 @@ fn resolve_return_type_str(type_ctx: &TypeContext, return_type: &str) -> Option<
         "boolean" => type_ctx.lookup_named_type("boolean").map(|id| id.as_u32()),
         "void" => type_ctx.lookup_named_type("void").map(|id| id.as_u32()),
         "null" => type_ctx.lookup_named_type("null").map(|id| id.as_u32()),
+        "Json" => type_ctx.lookup_named_type("Json").map(|id| id.as_u32()),
         "RegExp" => type_ctx.lookup_named_type("RegExp").map(|id| id.as_u32()),
         _ => None, // Generic types (T, U, etc.) — no propagation
     }
@@ -1127,10 +1130,10 @@ class Array<T> {
         );
         assert!(registry.lookup_property(str_id, "length").is_some());
 
-        // replaceWith should be a ClassMethod (Raya loop, not NativeCall)
+        // replaceWith now prefers the Rust builtin runtime path.
         assert!(matches!(
             registry.lookup_method(str_id, "replaceWith"),
-            Some(DispatchAction::ClassMethod(_, _))
+            Some(DispatchAction::Builtin(_))
         ));
 
         // Verify Array methods
@@ -1139,24 +1142,28 @@ class Array<T> {
         assert!(registry.lookup_method(arr_id, "pop").is_some());
         assert!(registry.lookup_property(arr_id, "length").is_some());
 
-        // Callback methods are declared as class methods in the strict builtin surface.
+        // Callback methods now prefer the Rust builtin runtime path when available.
         assert!(matches!(
             registry.lookup_method(arr_id, "map"),
-            Some(DispatchAction::ClassMethod(_, _))
+            Some(DispatchAction::Builtin(_))
         ));
         assert!(matches!(
             registry.lookup_method(arr_id, "filter"),
-            Some(DispatchAction::ClassMethod(_, _))
+            Some(DispatchAction::Builtin(_))
         ));
         assert!(matches!(
             registry.lookup_method(arr_id, "forEach"),
-            Some(DispatchAction::ClassMethod(_, _))
+            Some(DispatchAction::Builtin(_))
         ));
 
         // Verify constructors. Array-style direct native constructors remain surfaced here,
         // while source-defined RegExp construction now stays on the class path.
         assert!(registry.constructor_native_id("RegExp").is_none());
         assert!(registry.constructor_native_id("string").is_none());
+        assert_eq!(
+            registry.constructor_native_id("Buffer"),
+            Some(crate::vm::builtin::buffer::NEW)
+        );
 
         // Verify number methods
         let num_id = type_ctx.lookup_named_type("number").unwrap().as_u32();
@@ -1166,15 +1173,72 @@ class Array<T> {
         let int_id = type_ctx.lookup_named_type("int").unwrap().as_u32();
         assert!(registry.lookup_method(int_id, "toFixed").is_some());
 
-        // RegExp wrapper methods that depend on hidden regexp state stay off the
-        // direct dispatch registry and execute through their source-defined path.
+        // RegExp runtime-backed methods now prefer the Rust builtin runtime path.
         let re_id = type_ctx.lookup_named_type("RegExp").unwrap().as_u32();
-        assert!(registry.lookup_method(re_id, "test").is_none());
-        assert!(registry.lookup_method(re_id, "exec").is_none());
-        // replaceWith should be a ClassMethod
+        assert!(matches!(
+            registry.lookup_method(re_id, "test"),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            registry.lookup_method(re_id, "exec"),
+            Some(DispatchAction::Builtin(_))
+        ));
+        // replaceWith now prefers the Rust builtin runtime path.
         assert!(matches!(
             registry.lookup_method(re_id, "replaceWith"),
-            Some(DispatchAction::ClassMethod(_, _))
+            Some(DispatchAction::Builtin(_))
+        ));
+
+        let map_id = type_ctx.lookup_named_type("Map").unwrap().as_u32();
+        assert!(matches!(
+            registry.lookup_property(map_id, "size"),
+            Some(DispatchAction::Builtin(_))
+        ));
+
+        let promise_id = type_ctx.lookup_named_type("Promise").unwrap().as_u32();
+        assert!(matches!(
+            registry.lookup_method(promise_id, "isDone"),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            registry.lookup_method(promise_id, "isCancelled"),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            registry.lookup_method(promise_id, "then"),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            registry.lookup_method(promise_id, "finally"),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            registry.lookup_method(promise_id, "catch"),
+            Some(DispatchAction::Builtin(_))
+        ));
+
+        let set_id = type_ctx.lookup_named_type("Set").unwrap().as_u32();
+        assert!(matches!(
+            registry.lookup_property(set_id, "size"),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            registry.lookup_method(set_id, "keys"),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            registry.lookup_method(set_id, "entries"),
+            Some(DispatchAction::Builtin(_))
+        ));
+
+        let buffer_id = type_ctx.lookup_named_type("Buffer").unwrap().as_u32();
+        assert!(matches!(
+            registry.lookup_method(buffer_id, "getByte"),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            registry.lookup_property(buffer_id, "length"),
+            Some(DispatchAction::Builtin(_))
         ));
     }
 

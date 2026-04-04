@@ -240,6 +240,22 @@ pub mod task {
     pub const IS_CANCELLED: u16 = 0x0501;
 }
 
+/// Built-in method IDs for Promise<T>
+pub mod promise {
+    /// `Promise.reject(reason)` - Create rejected promise immediately
+    pub const REJECT_NOW: u16 = 0x0506;
+    /// `Promise.resolve(value)` - Adopt/resolve value into promise
+    pub const ADOPT: u16 = 0x0507;
+    /// `promise.then(onFulfilled, onRejected?)` - Chain fulfillment/rejection
+    pub const CHAIN: u16 = 0x050A;
+    /// `promise.finally(onFinally)` - Run finally callback
+    pub const FINALLY: u16 = 0x050B;
+    /// `Promise.all(values)` - Await all input promises/values
+    pub const ALL: u16 = 0x050C;
+    /// `Promise.race(values)` - Resolve/reject on first completion
+    pub const RACE: u16 = 0x050D;
+}
+
 /// Built-in method IDs for Buffer
 pub mod buffer {
     /// `new Buffer(size)` - Create buffer
@@ -318,6 +334,8 @@ pub mod set {
     pub const INTERSECTION: u16 = 0x0909;
     /// `set.difference(other)` - Difference with other set
     pub const DIFFERENCE: u16 = 0x090A;
+    /// `set.entries()` - Get all [value, value] pairs
+    pub const ENTRIES: u16 = 0x090B;
 }
 
 /// Built-in method IDs for RegExp
@@ -1327,6 +1345,7 @@ pub fn lookup_builtin_method(type_name: &str, method_name: &str) -> Option<u16> 
             "startsWith" => Some(string::STARTS_WITH),
             "endsWith" => Some(string::ENDS_WITH),
             "replace" => Some(string::REPLACE),
+            "replaceWith" => Some(string::REPLACE_WITH_REGEXP),
             "repeat" => Some(string::REPEAT),
             "padStart" => Some(string::PAD_START),
             "padEnd" => Some(string::PAD_END),
@@ -1334,6 +1353,61 @@ pub fn lookup_builtin_method(type_name: &str, method_name: &str) -> Option<u16> 
             "lastIndexOf" => Some(string::LAST_INDEX_OF),
             "trimStart" => Some(string::TRIM_START),
             "trimEnd" => Some(string::TRIM_END),
+            _ => None,
+        },
+        "Map" | "map" => match method_name {
+            "size" => Some(map::SIZE),
+            "get" => Some(map::GET),
+            "set" => Some(map::SET),
+            "has" => Some(map::HAS),
+            "delete" => Some(map::DELETE),
+            "clear" => Some(map::CLEAR),
+            "keys" => Some(map::KEYS),
+            "values" => Some(map::VALUES),
+            "entries" => Some(map::ENTRIES),
+            "forEach" => Some(map::FOR_EACH),
+            _ => None,
+        },
+        "Set" | "set" => match method_name {
+            "size" => Some(set::SIZE),
+            "add" => Some(set::ADD),
+            "has" => Some(set::HAS),
+            "delete" => Some(set::DELETE),
+            "clear" => Some(set::CLEAR),
+            "keys" => Some(set::VALUES),
+            "values" => Some(set::VALUES),
+            "entries" => Some(set::ENTRIES),
+            "forEach" => Some(set::FOR_EACH),
+            "union" => Some(set::UNION),
+            "intersection" => Some(set::INTERSECTION),
+            "difference" => Some(set::DIFFERENCE),
+            _ => None,
+        },
+        "RegExp" | "regexp" => match method_name {
+            "test" => Some(regexp::TEST),
+            "exec" => Some(regexp::EXEC),
+            "execAll" => Some(regexp::EXEC_ALL),
+            "replace" => Some(regexp::REPLACE),
+            "replaceWith" => Some(regexp::REPLACE_WITH),
+            "split" => Some(regexp::SPLIT),
+            _ => None,
+        },
+        "Buffer" | "buffer" => match method_name {
+            "getByte" => Some(buffer::GET_BYTE),
+            "setByte" => Some(buffer::SET_BYTE),
+            "getInt32" => Some(buffer::GET_INT32),
+            "setInt32" => Some(buffer::SET_INT32),
+            "getFloat64" => Some(buffer::GET_FLOAT64),
+            "setFloat64" => Some(buffer::SET_FLOAT64),
+            "slice" => Some(buffer::SLICE),
+            "copy" => Some(buffer::COPY),
+            "toString" => Some(buffer::TO_STRING),
+            _ => None,
+        },
+        "number" | "int" => match method_name {
+            "toFixed" => Some(number::TO_FIXED),
+            "toPrecision" => Some(number::TO_PRECISION),
+            "toString" => Some(number::TO_STRING_RADIX),
             _ => None,
         },
         _ => None,

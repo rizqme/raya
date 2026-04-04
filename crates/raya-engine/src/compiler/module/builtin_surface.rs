@@ -2,7 +2,9 @@ use std::sync::OnceLock;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::compiler::builtins::builtin_op_from_native_id;
+use crate::compiler::builtins::{
+    builtin_op_from_native_id, native_id_for_builtin_op, BuiltinOp, BuiltinRegistry,
+};
 use crate::compiler::module::BuiltinSurfaceMode;
 use crate::compiler::type_registry::{DispatchAction, OpcodeKind};
 use crate::parser::ast::{
@@ -12,8 +14,6 @@ use crate::parser::ast::{
 use crate::parser::checker::SymbolKind;
 use crate::parser::{Interner, Parser, TypeContext};
 use crate::semantics::{SemanticProfile, SourceKind};
-
-use super::builtin_contract::builtin_source_modules_for_mode;
 
 static STRICT_BUILTIN_SURFACE: OnceLock<BuiltinSurfaceManifest> = OnceLock::new();
 static NODE_COMPAT_BUILTIN_SURFACE: OnceLock<BuiltinSurfaceManifest> = OnceLock::new();
@@ -36,30 +36,7 @@ pub(crate) fn builtin_surface_manifest_for_mode(
 }
 
 pub(crate) fn builtin_class_method_sources() -> &'static [(&'static str, &'static str)] {
-    &[
-        (
-            "string",
-            include_str!("../../../builtins/strict/string.raya"),
-        ),
-        (
-            "number",
-            include_str!("../../../builtins/strict/number.raya"),
-        ),
-        ("Array", include_str!("../../../builtins/strict/array.raya")),
-        (
-            "RegExp",
-            include_str!("../../../builtins/strict/regexp.raya"),
-        ),
-        ("Set", include_str!("../../../builtins/strict/set.raya")),
-        (
-            "Promise",
-            include_str!("../../../builtins/strict/promise.raya"),
-        ),
-        (
-            "Mutex",
-            include_str!("../../../builtins/strict/mutex.raya"),
-        ),
-    ]
+    &[]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +68,7 @@ pub(crate) struct BuiltinGlobalSurface {
 pub(crate) struct BuiltinTypeSurface {
     pub(crate) builtin_primitive: bool,
     pub(crate) wrapper_method_surface: bool,
-    pub(crate) constructor_native_id: Option<u16>,
+    pub(crate) constructor_binding: Option<BuiltinDispatchBinding>,
     pub(crate) instance_methods: FxHashMap<String, BuiltinDispatchBinding>,
     pub(crate) instance_properties: FxHashMap<String, BuiltinDispatchBinding>,
     pub(crate) static_methods: FxHashMap<String, BuiltinDispatchBinding>,
@@ -102,8 +79,8 @@ pub(crate) struct BuiltinTypeSurface {
 pub(crate) enum BuiltinDispatchBinding {
     SourceDefined,
     Opcode(OpcodeKind),
-    VmNative {
-        native_id: u16,
+    Builtin {
+        op: BuiltinOp,
         return_type_name: Option<String>,
     },
     DeclaredField {
@@ -287,7 +264,18 @@ impl BuiltinSurfaceManifest {
     pub(crate) fn constructor_native_id(&self, type_name: &str) -> Option<u16> {
         self.types
             .get(type_name)
-            .and_then(|surface| surface.constructor_native_id)
+            .and_then(|surface| {
+                surface
+                    .constructor_binding
+                    .as_ref()
+                    .and_then(BuiltinDispatchBinding::native_id)
+            })
+    }
+
+    pub(crate) fn constructor_binding(&self, type_name: &str) -> Option<&BuiltinDispatchBinding> {
+        self.types
+            .get(type_name)
+            .and_then(|surface| surface.constructor_binding.as_ref())
     }
 }
 
@@ -296,11 +284,7 @@ impl BuiltinDispatchBinding {
         match self {
             Self::SourceDefined => None,
             Self::Opcode(kind) => Some(DispatchAction::Opcode(*kind)),
-            Self::VmNative { native_id, .. } => Some(
-                builtin_op_from_native_id(*native_id)
-                    .map(DispatchAction::Builtin)
-                    .unwrap_or(DispatchAction::VmNative(*native_id)),
-            ),
+            Self::Builtin { op, .. } => Some(DispatchAction::Builtin(*op)),
             Self::DeclaredField {
                 field_type_name,
                 field_index,
@@ -322,10 +306,24 @@ impl BuiltinDispatchBinding {
 
     pub(crate) fn return_type_name(&self) -> Option<&str> {
         match self {
-            Self::VmNative {
+            Self::Builtin {
                 return_type_name: Some(name),
                 ..
             } => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn native_id(&self) -> Option<u16> {
+        match self {
+            Self::Builtin { op, .. } => native_id_for_builtin_op(*op),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn builtin_op(&self) -> Option<BuiltinOp> {
+        match self {
+            Self::Builtin { op, .. } => Some(*op),
             _ => None,
         }
     }
@@ -333,122 +331,33 @@ impl BuiltinDispatchBinding {
 
 fn build_builtin_surface_manifest(mode: BuiltinSurfaceMode) -> BuiltinSurfaceManifest {
     let mut classes = FxHashMap::<String, BuiltinTypeSurface>::default();
-    let mut locals = FxHashMap::<String, LocalBuiltinBindingKind>::default();
-    let mut static_patches = FxHashMap::<String, StaticSurfacePatch>::default();
+    let mut globals = FxHashMap::<String, BuiltinGlobalSurface>::default();
     let mut exported_names = FxHashSet::<String>::default();
-
-    let mut source_modules = Vec::new();
-    source_modules.extend(builtin_class_method_sources().iter().copied());
-    source_modules.extend(builtin_source_modules_for_mode(mode).iter().copied());
-
-    for (_logical_path, source) in source_modules {
-        let parser = Parser::new(source)
-            .unwrap_or_else(|errors| panic!("failed to lex builtin surface source: {errors:?}"));
-        let (module, interner) = parser
-            .parse()
-            .unwrap_or_else(|errors| panic!("failed to parse builtin surface source: {errors:?}"));
-        let constants = extract_constants(source);
-        let mut functions = FxHashMap::<String, ParsedFunctionBinding>::default();
-
-        collect_top_level_bindings(
-            &module.statements,
-            source,
-            &interner,
-            &constants,
-            &mut locals,
-            &mut functions,
-        );
-        collect_export_names(&module.statements, &interner, &mut exported_names);
-        collect_class_surfaces(
-            &module.statements,
-            source,
-            &interner,
-            &constants,
-            &mut classes,
-        );
-        collect_static_surface_patches(
-            &module.statements,
-            source,
-            &interner,
-            &constants,
-            &functions,
-            &mut static_patches,
-        );
-    }
-
-    let mut globals = FxHashMap::default();
     let mut builtin_global_names = FxHashSet::default();
     let mut builtin_namespace_names = FxHashSet::default();
-
-    for exported_name in &exported_names {
-        builtin_global_names.insert(exported_name.clone());
-        let local_name = exported_name.as_str();
-        let patch = static_patches.remove(local_name).unwrap_or_default();
-        let global_surface = match locals.get(local_name) {
-            Some(LocalBuiltinBindingKind::Class(type_name)) => {
-                let type_surface = classes.get(type_name);
-                BuiltinGlobalSurface {
-                    kind: BuiltinGlobalKind::ClassValue,
-                    backing_type_name: Some(type_name.clone()),
-                    static_methods: merge_surface_maps(
-                        type_surface.map(|surface| &surface.static_methods),
-                        &patch.methods,
-                    ),
-                    static_properties: merge_surface_maps(
-                        type_surface.map(|surface| &surface.static_properties),
-                        &patch.properties,
-                    ),
-                }
-            }
-            Some(LocalBuiltinBindingKind::NamespaceInstance(type_name)) => {
-                builtin_namespace_names.insert(exported_name.clone());
-                let type_surface = classes.get(type_name);
-                BuiltinGlobalSurface {
-                    kind: BuiltinGlobalKind::Namespace,
-                    backing_type_name: Some(type_name.clone()),
-                    static_methods: merge_surface_maps(
-                        type_surface.map(|surface| &surface.instance_methods),
-                        &patch.methods,
-                    ),
-                    static_properties: merge_surface_maps(
-                        type_surface.map(|surface| &surface.instance_properties),
-                        &patch.properties,
-                    ),
-                }
-            }
-            Some(LocalBuiltinBindingKind::Function)
-                if !patch.methods.is_empty() || !patch.properties.is_empty() =>
-            {
-                BuiltinGlobalSurface {
-                    kind: BuiltinGlobalKind::StaticValue,
-                    backing_type_name: None,
-                    static_methods: patch.methods,
-                    static_properties: patch.properties,
-                }
-            }
-            Some(LocalBuiltinBindingKind::Function) => BuiltinGlobalSurface {
+    seed_builtin_surface_from_signatures(
+        mode,
+        &mut classes,
+        &mut globals,
+        &mut exported_names,
+        &mut builtin_global_names,
+    );
+    if matches!(mode, BuiltinSurfaceMode::NodeCompat) {
+        builtin_global_names.insert("globalThis".to_string());
+        exported_names.insert("globalThis".to_string());
+        globals
+            .entry("globalThis".to_string())
+            .or_insert_with(|| BuiltinGlobalSurface {
                 kind: BuiltinGlobalKind::Value,
                 backing_type_name: None,
                 static_methods: FxHashMap::default(),
                 static_properties: FxHashMap::default(),
-            },
-            _ if !patch.methods.is_empty() || !patch.properties.is_empty() => {
-                BuiltinGlobalSurface {
-                    kind: BuiltinGlobalKind::StaticValue,
-                    backing_type_name: None,
-                    static_methods: patch.methods,
-                    static_properties: patch.properties,
-                }
-            }
-            _ => BuiltinGlobalSurface {
-                kind: BuiltinGlobalKind::Value,
-                backing_type_name: None,
-                static_methods: FxHashMap::default(),
-                static_properties: FxHashMap::default(),
-            },
-        };
-        globals.insert(exported_name.clone(), global_surface);
+            });
     }
+
+    apply_builtin_registry_overlays(mode, &mut classes);
+
+    apply_builtin_registry_global_overlays(mode, &mut globals, &mut builtin_global_names);
 
     BuiltinSurfaceManifest {
         mode,
@@ -456,6 +365,274 @@ fn build_builtin_surface_manifest(mode: BuiltinSurfaceMode) -> BuiltinSurfaceMan
         types: classes,
         builtin_global_names,
         builtin_namespace_names,
+    }
+}
+
+fn seed_builtin_surface_from_signatures(
+    mode: BuiltinSurfaceMode,
+    classes: &mut FxHashMap<String, BuiltinTypeSurface>,
+    globals: &mut FxHashMap<String, BuiltinGlobalSurface>,
+    exported_names: &mut FxHashSet<String>,
+    builtin_global_names: &mut FxHashSet<String>,
+) {
+    for signatures in crate::vm::builtins::get_all_signatures() {
+        for class in signatures.classes {
+            if class.name.starts_with("__") || !builtin_root_visible_in_mode(class.name, mode) {
+                continue;
+            }
+
+            let surface = classes.entry(class.name.to_string()).or_default();
+            if class.constructor.is_some() {
+                surface
+                    .constructor_binding
+                    .get_or_insert(BuiltinDispatchBinding::SourceDefined);
+            }
+
+            for property in class.properties {
+                if property.is_static
+                    && !builtin_static_member_visible_in_mode(class.name, property.name, mode)
+                {
+                    continue;
+                }
+                let target = if property.is_static {
+                    &mut surface.static_properties
+                } else {
+                    &mut surface.instance_properties
+                };
+                target
+                    .entry(property.name.to_string())
+                    .or_insert(BuiltinDispatchBinding::SourceDefined);
+            }
+
+            for method in class.methods {
+                if method.is_static
+                    && !builtin_static_member_visible_in_mode(class.name, method.name, mode)
+                {
+                    continue;
+                }
+                let target = if method.is_static {
+                    &mut surface.static_methods
+                } else {
+                    &mut surface.instance_methods
+                };
+                target
+                    .entry(method.name.to_string())
+                    .or_insert(BuiltinDispatchBinding::SourceDefined);
+            }
+
+            exported_names.insert(class.name.to_string());
+            builtin_global_names.insert(class.name.to_string());
+            let has_static_surface =
+                class.methods.iter().any(|method| method.is_static)
+                    || class.properties.iter().any(|property| property.is_static);
+            let kind = if class.constructor.is_some() {
+                BuiltinGlobalKind::ClassValue
+            } else if has_static_surface {
+                BuiltinGlobalKind::StaticValue
+            } else {
+                BuiltinGlobalKind::Value
+            };
+            let global = globals
+                .entry(class.name.to_string())
+                .or_insert_with(|| BuiltinGlobalSurface {
+                    kind,
+                    backing_type_name: Some(class.name.to_string()),
+                    static_methods: FxHashMap::default(),
+                    static_properties: FxHashMap::default(),
+                });
+            if global.backing_type_name.is_none() {
+                global.backing_type_name = Some(class.name.to_string());
+            }
+            for (member_name, binding) in &surface.static_methods {
+                global
+                    .static_methods
+                    .entry(member_name.clone())
+                    .or_insert_with(|| binding.clone());
+            }
+            for (property_name, binding) in &surface.static_properties {
+                global
+                    .static_properties
+                    .entry(property_name.clone())
+                    .or_insert_with(|| binding.clone());
+            }
+        }
+
+        for function in signatures.functions {
+            if !builtin_root_visible_in_mode(function.name, mode) {
+                continue;
+            }
+            exported_names.insert(function.name.to_string());
+            builtin_global_names.insert(function.name.to_string());
+            globals
+                .entry(function.name.to_string())
+                .or_insert_with(|| BuiltinGlobalSurface {
+                    kind: BuiltinGlobalKind::Value,
+                    backing_type_name: None,
+                    static_methods: FxHashMap::default(),
+                    static_properties: FxHashMap::default(),
+                });
+        }
+    }
+}
+
+fn builtin_root_visible_in_mode(name: &str, mode: BuiltinSurfaceMode) -> bool {
+    if matches!(mode, BuiltinSurfaceMode::NodeCompat) {
+        return true;
+    }
+    !matches!(
+        name,
+        "ArrayBuffer"
+            | "DataView"
+            | "Uint8Array"
+            | "Uint8ClampedArray"
+            | "Int8Array"
+            | "Int16Array"
+            | "Int32Array"
+            | "Uint16Array"
+            | "Uint32Array"
+            | "Float32Array"
+            | "Float16Array"
+            | "Float64Array"
+            | "BigInt"
+            | "BigInt64Array"
+            | "BigUint64Array"
+            | "TypedArray"
+            | "SharedArrayBuffer"
+            | "Atomics"
+            | "parseInt"
+            | "parseFloat"
+            | "isNaN"
+            | "isFinite"
+            | "eval"
+            | "Function"
+            | "AsyncFunction"
+            | "Generator"
+            | "GeneratorFunction"
+            | "AsyncGenerator"
+            | "AsyncGeneratorFunction"
+            | "AsyncIterator"
+            | "Proxy"
+            | "Reflect"
+            | "WeakMap"
+            | "WeakSet"
+            | "WeakRef"
+            | "FinalizationRegistry"
+            | "DisposableStack"
+            | "AsyncDisposableStack"
+            | "Intl"
+            | "globalThis"
+            | "escape"
+            | "unescape"
+    )
+}
+
+fn builtin_static_member_visible_in_mode(
+    type_name: &str,
+    member_name: &str,
+    mode: BuiltinSurfaceMode,
+) -> bool {
+    if matches!(mode, BuiltinSurfaceMode::NodeCompat) {
+        return true;
+    }
+    !matches!(
+        (type_name, member_name),
+        ("Object", "defineProperty")
+            | ("Object", "getOwnPropertyDescriptor")
+            | ("Object", "defineProperties")
+    )
+}
+
+fn apply_builtin_registry_global_overlays(
+    mode: BuiltinSurfaceMode,
+    globals: &mut FxHashMap<String, BuiltinGlobalSurface>,
+    builtin_global_names: &mut FxHashSet<String>,
+) {
+    for (global_name, descriptor) in BuiltinRegistry::shared().global_descriptors() {
+        if !builtin_root_visible_in_mode(global_name, mode) {
+            continue;
+        }
+        builtin_global_names.insert(global_name.to_string());
+        let mut registry_static_methods = FxHashMap::default();
+        if let Some(type_descriptor) =
+            BuiltinRegistry::shared().type_descriptor(descriptor.backing_type_name)
+        {
+            for (method_name, binding) in &type_descriptor.static_methods {
+                if !builtin_static_member_visible_in_mode(global_name, method_name, mode) {
+                    continue;
+                }
+                registry_static_methods.insert(
+                    (*method_name).to_string(),
+                    BuiltinDispatchBinding::Builtin {
+                        op: binding.op,
+                        return_type_name: binding.return_type_name.map(str::to_string),
+                    },
+                );
+            }
+        }
+        let entry = globals
+            .entry(global_name.to_string())
+            .or_insert_with(|| BuiltinGlobalSurface {
+                kind: BuiltinGlobalKind::ClassValue,
+                backing_type_name: Some(descriptor.backing_type_name.to_string()),
+                static_methods: FxHashMap::default(),
+                static_properties: FxHashMap::default(),
+            });
+        if entry.backing_type_name.is_none() {
+            entry.backing_type_name = Some(descriptor.backing_type_name.to_string());
+        }
+        for (method_name, binding) in registry_static_methods {
+            entry.static_methods.insert(method_name, binding);
+        }
+    }
+}
+
+fn apply_builtin_registry_overlays(
+    mode: BuiltinSurfaceMode,
+    classes: &mut FxHashMap<String, BuiltinTypeSurface>,
+) {
+    for (type_name, descriptor) in BuiltinRegistry::shared().type_descriptors() {
+        if !builtin_root_visible_in_mode(type_name, mode) {
+            continue;
+        }
+        let surface = classes.entry(type_name.to_string()).or_default();
+        surface.builtin_primitive |= descriptor.builtin_primitive;
+        surface.wrapper_method_surface |= descriptor.wrapper_method_surface;
+        if let Some(constructor) = descriptor.constructor {
+            surface.constructor_binding = Some(BuiltinDispatchBinding::Builtin {
+                op: constructor.op,
+                return_type_name: constructor.return_type_name.map(str::to_string),
+            });
+        }
+        for (method_name, binding) in &descriptor.instance_methods {
+            surface.instance_methods.insert(
+                (*method_name).to_string(),
+                BuiltinDispatchBinding::Builtin {
+                    op: binding.op,
+                    return_type_name: binding.return_type_name.map(str::to_string),
+                },
+            );
+        }
+        for (method_name, binding) in &descriptor.static_methods {
+            if !builtin_static_member_visible_in_mode(type_name, method_name, mode) {
+                continue;
+            }
+            surface.static_methods.insert(
+                (*method_name).to_string(),
+                BuiltinDispatchBinding::Builtin {
+                    op: binding.op,
+                    return_type_name: binding.return_type_name.map(str::to_string),
+                },
+            );
+        }
+        for (property_name, binding) in &descriptor.instance_properties {
+            surface.instance_properties.insert(
+                (*property_name).to_string(),
+                BuiltinDispatchBinding::Builtin {
+                    op: binding.op,
+                    return_type_name: binding.return_type_name.map(str::to_string),
+                },
+            );
+        }
     }
 }
 
@@ -689,7 +866,7 @@ fn collect_class_surfaces(
                             target.insert(name, binding);
                         }
                         ClassMember::Constructor(ctor) => {
-                            surface.constructor_native_id = match direct_wrapper_binding_from_block(
+                            surface.constructor_binding = match direct_wrapper_binding_from_block(
                                 &ctor.body,
                                 None,
                                 source,
@@ -698,10 +875,8 @@ fn collect_class_surfaces(
                                 &FxHashMap::default(),
                                 NativeWrapperMode::ExplicitArgsOnly,
                             ) {
-                                BuiltinDispatchBinding::VmNative { native_id, .. } => {
-                                    Some(native_id)
-                                }
-                                _ => None,
+                                BuiltinDispatchBinding::SourceDefined => None,
+                                binding => Some(binding),
                             };
                         }
                         ClassMember::StaticBlock(_) => {}
@@ -1052,11 +1227,29 @@ fn direct_wrapper_binding_from_expression(
             functions,
             wrapper_mode,
         ),
+        Expression::Assignment(assign) => direct_wrapper_binding_from_expression(
+            &assign.right,
+            return_type,
+            source,
+            interner,
+            constants,
+            functions,
+            wrapper_mode,
+        ),
         Expression::Call(call) => {
             let Expression::Identifier(callee) = &*call.callee else {
                 return BuiltinDispatchBinding::SourceDefined;
             };
             let callee_name = interner.resolve(callee.name);
+            if let Some(binding) = opcode_wrapper_binding_from_call(
+                callee_name,
+                call,
+                return_type,
+                interner,
+                wrapper_mode,
+            ) {
+                return binding;
+            }
             if callee_name == "__NATIVE_CALL" {
                 return native_wrapper_binding_from_call(
                     call,
@@ -1100,10 +1293,38 @@ fn native_wrapper_binding_from_call(
 
     let first_arg = call.argument_expression(0)?;
     native_wrapper_native_id(first_arg, interner, constants).map(|native_id| {
-        BuiltinDispatchBinding::VmNative {
-            native_id,
+        BuiltinDispatchBinding::Builtin {
+            op: builtin_op_from_native_id(native_id).unwrap_or(BuiltinOp::Native(native_id)),
             return_type_name: type_name_from_annotation(return_type, interner),
         }
+    })
+}
+
+fn opcode_wrapper_binding_from_call(
+    callee_name: &str,
+    call: &ast::CallExpression,
+    return_type: Option<&TypeAnnotation>,
+    interner: &Interner,
+    wrapper_mode: NativeWrapperMode,
+) -> Option<BuiltinDispatchBinding> {
+    if !call
+        .arguments
+        .iter()
+        .all(|arg| native_wrapper_arg_is_passthrough(arg.expression(), wrapper_mode))
+    {
+        return None;
+    }
+
+    let op = match callee_name {
+        "__OPCODE_CHANNEL_NEW" => BuiltinOp::HostHandle(crate::semantics::HostHandleOpKind::ChannelConstructor),
+        "__OPCODE_MUTEX_NEW" => BuiltinOp::HostHandle(crate::semantics::HostHandleOpKind::MutexConstructor),
+        "__OPCODE_MUTEX_LOCK" => BuiltinOp::HostHandle(crate::semantics::HostHandleOpKind::MutexLock),
+        "__OPCODE_MUTEX_UNLOCK" => BuiltinOp::HostHandle(crate::semantics::HostHandleOpKind::MutexUnlock),
+        _ => return None,
+    };
+    Some(BuiltinDispatchBinding::Builtin {
+        op,
+        return_type_name: type_name_from_annotation(return_type, interner),
     })
 }
 
@@ -1262,4 +1483,76 @@ fn extract_native_call_id(body: &str, constants: &FxHashMap<String, u16>) -> Opt
         .get(native_token)
         .copied()
         .or_else(|| parse_number_literal(native_token).map(|value| value as u16))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strict_builtin_manifest() -> &'static BuiltinSurfaceManifest {
+        builtin_surface_manifest_for_mode(BuiltinSurfaceMode::RayaStrict)
+    }
+
+    #[test]
+    fn test_registry_overlay_exposes_date_static_methods() {
+        let manifest = strict_builtin_manifest();
+        let type_ctx = TypeContext::new();
+
+        assert!(matches!(
+            manifest.lookup_static_method("Date", "now", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Date", "parse", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Number", "isNaN", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Number", "isFinite", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("String", "fromCharCode", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("JSON", "parse", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("JSON", "stringify", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Object", "is", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Object", "getPrototypeOf", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Object", "defineProperty", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Math", "abs", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Math", "random", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Promise", "resolve", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+        assert!(matches!(
+            manifest.lookup_static_method("Promise", "all", &type_ctx),
+            Some(DispatchAction::Builtin(_))
+        ));
+    }
 }

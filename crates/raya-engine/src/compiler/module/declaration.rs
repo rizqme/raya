@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::compiler::{
-    module_id_from_name, symbol_id_from_name, ModuleId, SymbolId, SymbolScope, SymbolType,
-    TypeSignatureHash,
+    builtins::BuiltinRegistry, module_id_from_name, symbol_id_from_name, ModuleId, SymbolId,
+    SymbolScope, SymbolType, TypeSignatureHash,
 };
 use crate::parser::ast::{
     self, ClassDecl, ClassMember, ExportDecl, ExportSpecifier, Expression, FunctionDecl,
@@ -24,7 +24,6 @@ use crate::parser::types::signature_hash;
 use crate::parser::types::{TypeContext, TypeId};
 use crate::parser::{Interner, Parser};
 
-use super::builtin_contract::builtin_global_exports_from_source;
 use super::exports::{ExportedSymbol, ModuleExports};
 
 fn class_member_key_name(interner: &Interner, key: &ast::PropertyKey) -> Option<String> {
@@ -264,7 +263,188 @@ pub fn load_declaration_module_from_source(
 
 /// Load embedded builtin declaration exports for global checker seeding.
 pub fn builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExports, DeclarationError> {
-    builtin_global_exports_from_source(mode)
+    let module_name = match mode {
+        BuiltinSurfaceMode::RayaStrict => "__raya_builtin__/strict".to_string(),
+        BuiltinSurfaceMode::NodeCompat => "__raya_builtin__/node_compat".to_string(),
+    };
+    let path = PathBuf::from(format!("{module_name}.raya"));
+    let module_id = module_id_from_name(&module_name);
+    let mut merged = ModuleExports::new(path, module_name.clone());
+    let placeholder_signature = "unknown".to_string();
+    let placeholder_hash = signature_hash(&placeholder_signature);
+
+    for (global_name, descriptor) in BuiltinRegistry::shared().global_descriptors() {
+        if !builtin_root_visible_in_mode(global_name, mode) {
+            continue;
+        }
+        let kind = registry_global_symbol_kind(global_name, descriptor);
+        merged.add_symbol(ExportedSymbol {
+            name: global_name.to_string(),
+            local_name: global_name.to_string(),
+            kind,
+            ty: TypeId::new(TypeContext::UNKNOWN_TYPE_ID),
+            is_const: true,
+            is_async: false,
+            module_name: module_name.clone(),
+            module_id,
+            symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, global_name),
+            signature_hash: placeholder_hash,
+            type_signature: registry_global_type_signature(global_name, descriptor),
+            scope: SymbolScope::Module,
+        });
+    }
+
+    for signatures in crate::vm::builtins::get_all_signatures() {
+        for class in signatures.classes {
+            if class.name.starts_with("__")
+                || !builtin_root_visible_in_mode(class.name, mode)
+                || merged.has(class.name)
+            {
+                continue;
+            }
+            let kind = if class.constructor.is_some() {
+                SymbolKind::Class
+            } else {
+                SymbolKind::Variable
+            };
+            merged.add_symbol(ExportedSymbol {
+                name: class.name.to_string(),
+                local_name: class.name.to_string(),
+                kind,
+                ty: TypeId::new(TypeContext::UNKNOWN_TYPE_ID),
+                is_const: true,
+                is_async: false,
+                module_name: module_name.clone(),
+                module_id,
+                symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, class.name),
+                signature_hash: signature_hash(class.name),
+                type_signature: class.name.to_string(),
+                scope: SymbolScope::Module,
+            });
+        }
+
+        for function in signatures.functions {
+            if !builtin_root_visible_in_mode(function.name, mode) || merged.has(function.name) {
+                continue;
+            }
+            merged.add_symbol(ExportedSymbol {
+                name: function.name.to_string(),
+                local_name: function.name.to_string(),
+                kind: SymbolKind::Function,
+                ty: TypeId::new(TypeContext::UNKNOWN_TYPE_ID),
+                is_const: true,
+                is_async: false,
+                module_name: module_name.clone(),
+                module_id,
+                symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, function.name),
+                signature_hash: placeholder_hash,
+                type_signature: placeholder_signature.clone(),
+                scope: SymbolScope::Module,
+            });
+        }
+    }
+
+    if matches!(mode, BuiltinSurfaceMode::NodeCompat) && !merged.has("globalThis") {
+        merged.add_symbol(ExportedSymbol {
+            name: "globalThis".to_string(),
+            local_name: "globalThis".to_string(),
+            kind: SymbolKind::Variable,
+            ty: TypeId::new(TypeContext::UNKNOWN_TYPE_ID),
+            is_const: true,
+            is_async: false,
+            module_name: module_name.clone(),
+            module_id,
+            symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, "globalThis"),
+            signature_hash: placeholder_hash,
+            type_signature: placeholder_signature,
+            scope: SymbolScope::Module,
+        });
+    }
+
+    Ok(merged)
+}
+
+fn registry_global_symbol_kind(
+    global_name: &str,
+    descriptor: &crate::compiler::builtins::BuiltinGlobalDescriptor,
+) -> SymbolKind {
+    if descriptor.symbol_type == SymbolType::Function {
+        return SymbolKind::Function;
+    }
+    if descriptor.symbol_type == SymbolType::Class {
+        return SymbolKind::Class;
+    }
+    if BuiltinRegistry::shared()
+        .type_descriptor(descriptor.backing_type_name)
+        .is_some_and(|surface| surface.constructor.is_some())
+    {
+        return SymbolKind::Class;
+    }
+    if global_name == "globalThis" {
+        return SymbolKind::Variable;
+    }
+    SymbolKind::Variable
+}
+
+fn registry_global_type_signature(
+    global_name: &str,
+    descriptor: &crate::compiler::builtins::BuiltinGlobalDescriptor,
+) -> String {
+    match registry_global_symbol_kind(global_name, descriptor) {
+        SymbolKind::Class => descriptor.backing_type_name.to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn builtin_root_visible_in_mode(name: &str, mode: BuiltinSurfaceMode) -> bool {
+    if matches!(mode, BuiltinSurfaceMode::NodeCompat) {
+        return true;
+    }
+    !matches!(
+        name,
+        "ArrayBuffer"
+            | "DataView"
+            | "Uint8Array"
+            | "Uint8ClampedArray"
+            | "Int8Array"
+            | "Int16Array"
+            | "Int32Array"
+            | "Uint16Array"
+            | "Uint32Array"
+            | "Float32Array"
+            | "Float16Array"
+            | "Float64Array"
+            | "BigInt"
+            | "BigInt64Array"
+            | "BigUint64Array"
+            | "TypedArray"
+            | "SharedArrayBuffer"
+            | "Atomics"
+            | "parseInt"
+            | "parseFloat"
+            | "isNaN"
+            | "isFinite"
+            | "eval"
+            | "Function"
+            | "AsyncFunction"
+            | "Generator"
+            | "GeneratorFunction"
+            | "AsyncGenerator"
+            | "AsyncGeneratorFunction"
+            | "AsyncIterator"
+            | "Proxy"
+            | "Reflect"
+            | "WeakMap"
+            | "WeakSet"
+            | "WeakRef"
+            | "FinalizationRegistry"
+            | "DisposableStack"
+            | "AsyncDisposableStack"
+            | "Intl"
+            | "globalThis"
+            | "escape"
+            | "unescape"
+    )
 }
 
 fn detect_unsupported_dts_syntax(path: &Path, source: &str) -> Result<(), DeclarationError> {

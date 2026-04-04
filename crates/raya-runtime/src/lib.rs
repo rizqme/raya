@@ -1053,57 +1053,13 @@ impl Runtime {
     pub(crate) fn builtin_global_exports_for_mode(
         mode: BuiltinMode,
     ) -> Result<ModuleExports, RuntimeError> {
-        let mut merged = match mode {
-            BuiltinMode::RayaStrict => declaration_builtin_global_exports(
-                BuiltinSurfaceMode::RayaStrict,
-            )
-            .map_err(|error| {
-                RuntimeError::TypeCheck(format!("builtin declaration exports: {error}"))
-            })?,
-            BuiltinMode::NodeCompat => {
-                let module_name = "__raya_builtin__/node_compat";
-                let mut merged = ModuleExports::new(
-                    Path::new(module_name).to_path_buf(),
-                    module_name.to_string(),
-                );
-
-                for module in Self::compiled_builtin_runtime_modules(mode)? {
-                    for export in module.exports {
-                        let Some(type_signature) = export.type_signature.clone() else {
-                            continue;
-                        };
-                        let export_name = export.name.clone();
-                        let kind = match export.symbol_type {
-                            SymbolType::Function => SymbolKind::Function,
-                            SymbolType::Class => SymbolKind::Class,
-                            SymbolType::Constant => SymbolKind::Variable,
-                        };
-                        merged.add_symbol(raya_engine::compiler::module::ExportedSymbol {
-                            name: export_name.clone(),
-                            local_name: export_name.clone(),
-                            kind,
-                            ty: raya_engine::parser::types::TypeId::new(
-                                raya_engine::TypeContext::UNKNOWN_TYPE_ID,
-                            ),
-                            is_const: !matches!(kind, SymbolKind::Function),
-                            is_async: false,
-                            module_name: merged.module_name.clone(),
-                            module_id: module_id_from_name(&merged.module_name),
-                            symbol_id: symbol_id_from_name(
-                                &merged.module_name,
-                                SymbolScope::Module,
-                                &export_name,
-                            ),
-                            signature_hash: export.signature_hash,
-                            type_signature,
-                            scope: export.scope,
-                        });
-                    }
-                }
-
-                merged
-            }
+        let declaration_mode = match mode {
+            BuiltinMode::RayaStrict => BuiltinSurfaceMode::RayaStrict,
+            BuiltinMode::NodeCompat => BuiltinSurfaceMode::NodeCompat,
         };
+        let mut merged = declaration_builtin_global_exports(declaration_mode).map_err(|error| {
+            RuntimeError::TypeCheck(format!("builtin declaration exports: {error}"))
+        })?;
 
         for name in Self::runtime_only_ambient_builtin_names(mode) {
             if merged.symbols.contains_key(&name) {

@@ -161,20 +161,8 @@ mod tests {
 
     #[test]
     fn test_build_all_class_methods() {
-        // Verify all 11 builders produce valid IR functions
-        let methods = [
-            ("Array", "forEach"),
-            ("Array", "map"),
-            ("Array", "filter"),
-            ("Array", "find"),
-            ("Array", "findIndex"),
-            ("Array", "every"),
-            ("Array", "some"),
-            ("Array", "reduce"),
-            ("Array", "sort"),
-            ("string", "replaceWith"),
-            ("RegExp", "replaceWith"),
-        ];
+        // Verify all remaining class-method builders produce valid IR functions.
+        let methods: [(&str, &str); 0] = [];
 
         for (type_name, method_name) in &methods {
             let func = build_class_method_ir(type_name, method_name)
@@ -189,55 +177,12 @@ mod tests {
     fn test_unknown_method_returns_none() {
         assert!(build_class_method_ir("Array", "nonexistent").is_none());
         assert!(build_class_method_ir("string", "map").is_none());
+        assert!(build_class_method_ir("string", "replaceWith").is_none());
+        assert!(build_class_method_ir("RegExp", "replaceWith").is_none());
     }
 
     #[test]
-    fn test_foreach_structure() {
-        let func = build_class_method_ir("Array", "forEach").unwrap();
-        assert_eq!(func.params.len(), 3); // this, fn, thisArg?
-    }
-
-    #[test]
-    fn test_sort_structure() {
-        let func = build_class_method_ir("Array", "sort").unwrap();
-        assert_eq!(func.params.len(), 2); // this, compareFn
-    }
-
-    #[test]
-    fn test_reduce_structure() {
-        let func = build_class_method_ir("Array", "reduce").unwrap();
-        assert_eq!(func.params.len(), 2); // this, fn (+ ...rest is a single rest param)
-    }
-
-    #[test]
-    fn test_string_replace_with_structure() {
-        let func = build_class_method_ir("string", "replaceWith").unwrap();
-        assert_eq!(func.params.len(), 3); // this, pattern, replacer
-    }
-
-    #[test]
-    fn test_regexp_replace_with_structure() {
-        let func = build_class_method_ir("RegExp", "replaceWith").unwrap();
-        assert_eq!(func.params.len(), 3); // this, str, replacer
-    }
-
-    #[test]
-    fn test_array_callback_methods_do_not_emit_unresolved_callmethod() {
-        use crate::compiler::ir::IrInstr;
-
-        for method_name in ["map", "filter", "reduce"] {
-            let func = build_class_method_ir("Array", method_name).unwrap();
-            for block in &func.blocks {
-                for instr in &block.instructions {
-                    if let IrInstr::CallMethodExact { method, .. } = instr {
-                        assert_ne!(
-                            *method, 0,
-                            "Array.{} contains CallMethodExact with unresolved method id 0 in block {:?}: {:?}",
-                            method_name, block.label, instr
-                        );
-                    }
-                }
-            }
-        }
+    fn test_class_method_source_list_is_empty() {
+        assert!(builtin_class_method_sources().is_empty());
     }
 }

@@ -15518,14 +15518,84 @@ impl<'a> Interpreter<'a> {
             VmError::TypeError("Expected RegExp object or regexp handle".to_string())
         })?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        let field_index = self
-            .get_field_index_for_value(value, "regexpPtr")
-            .ok_or_else(|| {
-                VmError::RuntimeError("RegExp field 'regexpPtr' not found".to_string())
-            })?;
-        let raw = obj
-            .get_field(field_index)
-            .ok_or_else(|| VmError::RuntimeError("RegExp.regexpPtr is missing".to_string()))?;
+        let raw = if let Some(raw) = self.get_own_js_property_value_by_name(value, "regexpPtr") {
+            raw
+        } else if let Some(field_index) = self.get_field_index_for_value(value, "regexpPtr") {
+            obj.get_field(field_index)
+                .ok_or_else(|| VmError::RuntimeError("RegExp.regexpPtr is missing".to_string()))?
+        } else {
+            let mut discovered = None;
+            for field_index in 0..obj.field_count() {
+                let Some(candidate) = obj.get_field(field_index) else {
+                    continue;
+                };
+                let Some(handle) = Self::decode_u64_handle(candidate) else {
+                    continue;
+                };
+                let ptr = handle as *const u8;
+                if ptr.is_null() {
+                    continue;
+                }
+                let header = unsafe { &*header_ptr_from_value_ptr(ptr) };
+                if header.type_id() == std::any::TypeId::of::<RegExpObject>() {
+                    discovered = Some(candidate);
+                    break;
+                }
+            }
+            if let Some(candidate) = discovered {
+                candidate
+            } else {
+                let source = self
+                    .get_own_js_property_value_by_name(value, "source")
+                    .ok_or_else(|| {
+                        VmError::RuntimeError(
+                            format!(
+                                "RegExp field 'regexpPtr' not found and RegExp.source is unavailable (raw={:#x}, field_count={}, nominal={:?}, layout={:?}, is_ptr={}, is_u64={})",
+                                value.raw(),
+                                obj.field_count(),
+                                obj.nominal_type_id_usize(),
+                                self.layout_field_names_for_object(obj),
+                                value.is_ptr(),
+                                value.as_u64().is_some()
+                            ),
+                        )
+                    })
+                    .and_then(|raw| {
+                        unsafe { raw.as_ptr::<RayaString>() }
+                            .map(|ptr| unsafe { &*ptr.as_ptr() }.data.clone())
+                            .ok_or_else(|| {
+                                VmError::RuntimeError(
+                                    "RegExp.source is not a string".to_string(),
+                                )
+                            })
+                    })?;
+                let flags = self
+                    .get_own_js_property_value_by_name(value, "flags")
+                    .map(|raw| {
+                        unsafe { raw.as_ptr::<RayaString>() }
+                            .map(|ptr| unsafe { &*ptr.as_ptr() }.data.clone())
+                            .ok_or_else(|| {
+                                VmError::RuntimeError("RegExp.flags is not a string".to_string())
+                            })
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                let reconstructed = RegExpObject::new(&source, &flags).map_err(|error| {
+                    VmError::RuntimeError(format!(
+                        "Invalid RegExp object state while reconstructing handle: {}",
+                        error
+                    ))
+                })?;
+                let handle = self.allocate_pinned_handle(reconstructed);
+                self.metadata.lock().define_metadata_property(
+                    NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
+                    Value::u64(handle),
+                    value,
+                    "regexpPtr".to_string(),
+                );
+                Value::u64(handle)
+            }
+        };
         Self::decode_u64_handle(raw).ok_or_else(|| {
             VmError::RuntimeError("RegExp.regexpPtr is not a valid handle".to_string())
         })
@@ -17517,6 +17587,9 @@ impl<'a> Interpreter<'a> {
                         }
                     },
                     crate::compiler::ir::KernelOp::Builtin(kind) => match kind {
+                        crate::compiler::builtins::BuiltinOp::Native(native_id) => {
+                        dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
+                        }
                         crate::compiler::builtins::BuiltinOp::Metaobject(kind) => {
                         let native_id = match kind {
                             crate::semantics::MetaobjectOpKind::DefineProperty => {
@@ -18183,6 +18256,36 @@ impl<'a> Interpreter<'a> {
                     }
                     let method_arg_count = args.len().saturating_sub(1);
                     return match self.call_string_method(
+                        task,
+                        stack,
+                        native_id,
+                        method_arg_count,
+                        module,
+                    ) {
+                        Ok(()) => OpcodeResult::Continue,
+                        Err(e) => OpcodeResult::Error(e),
+                    };
+                }
+
+                if crate::vm::builtin::is_regexp_method(native_id)
+                    && !matches!(
+                        native_id,
+                        crate::vm::builtin::regexp::NEW
+                            | crate::vm::builtin::regexp::REPLACE_MATCHES
+                    )
+                {
+                    if args.is_empty() {
+                        return OpcodeResult::Error(VmError::RuntimeError(
+                            "RegExp native call requires receiver".to_string(),
+                        ));
+                    }
+                    for arg in &args {
+                        if let Err(e) = stack.push(*arg) {
+                            return OpcodeResult::Error(e);
+                        }
+                    }
+                    let method_arg_count = args.len().saturating_sub(1);
+                    return match self.call_regexp_method(
                         task,
                         stack,
                         native_id,
@@ -20410,6 +20513,47 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    id if id == map::FOR_EACH => {
+                        if !(2..=3).contains(&arg_count) {
+                            return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                "Map.forEach expects 2-3 arguments, got {}",
+                                arg_count
+                            )));
+                        }
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
+                        let callback = args[1];
+                        let callback_this = if arg_count == 3 {
+                            args[2]
+                        } else {
+                            Value::undefined()
+                        };
+                        let map_ptr = handle as *const MapObject;
+                        if map_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid map handle".to_string(),
+                            ));
+                        }
+                        let map = unsafe { &*map_ptr };
+                        let entries = map.entries();
+                        for (key, value) in entries {
+                            if let Err(error) = self.invoke_callable_sync_with_this(
+                                callback,
+                                Some(callback_this),
+                                &[value, key, args[0]],
+                                task,
+                                module,
+                            ) {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        if let Err(e) = stack.push(Value::undefined()) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
                     // Set native calls
                     id if id == set::NEW => {
                         let set_obj = SetObject::new();
@@ -20532,6 +20676,80 @@ impl<'a> Interpreter<'a> {
                             Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
                         };
                         if let Err(e) = stack.push(arr_val) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == set::ENTRIES => {
+                        let handle = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
+                        let set_ptr = handle as *const SetObject;
+                        if set_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid set handle".to_string(),
+                            ));
+                        }
+                        let set_obj = unsafe { &*set_ptr };
+                        let values = set_obj.values();
+                        let mut arr = Array::new(0, 0);
+                        for value in values {
+                            let mut entry = Array::new(0, 0);
+                            entry.push(value);
+                            entry.push(value);
+                            let entry_gc = self.gc.lock().allocate(entry);
+                            let entry_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(entry_gc.as_ptr()).unwrap())
+                            };
+                            arr.push(entry_val);
+                        }
+                        let arr_gc = self.gc.lock().allocate(arr);
+                        let arr_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(arr_val) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == set::FOR_EACH => {
+                        if !(2..=3).contains(&arg_count) {
+                            return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                "Set.forEach expects 2-3 arguments, got {}",
+                                arg_count
+                            )));
+                        }
+                        let handle = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
+                        let callback = args[1];
+                        let callback_this = if arg_count == 3 {
+                            args[2]
+                        } else {
+                            Value::undefined()
+                        };
+                        let set_ptr = handle as *const SetObject;
+                        if set_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid set handle".to_string(),
+                            ));
+                        }
+                        let set_obj = unsafe { &*set_ptr };
+                        let values = set_obj.values();
+                        for value in values {
+                            if let Err(error) = self.invoke_callable_sync_with_this(
+                                callback,
+                                Some(callback_this),
+                                &[value, value, args[0]],
+                                task,
+                                module,
+                            ) {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        if let Err(e) = stack.push(Value::undefined()) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

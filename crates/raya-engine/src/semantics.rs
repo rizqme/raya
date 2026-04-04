@@ -8,6 +8,7 @@ use crate::compiler::module::{
     builtin_surface_manifest_for_mode, builtin_surface_mode_for_profile, BuiltinGlobalKind,
     BuiltinSurfaceManifest,
 };
+use crate::compiler::builtins::BuiltinOp;
 use crate::compiler::type_registry::TypeRegistry;
 use crate::parser::ast::{
     self, AssignmentOperator, Expression, FunctionDecl, MethodDecl, Pattern, Statement,
@@ -779,6 +780,7 @@ pub struct SemanticBuiltinDispatch {
     pub span_end: usize,
     pub origin: BuiltinOriginKind,
     pub kind: BuiltinDispatchKind,
+    pub builtin_op: Option<BuiltinOp>,
     pub metaobject_op: Option<MetaobjectOpKind>,
     pub iterator_op: Option<IteratorOpKind>,
     pub host_handle_op: Option<HostHandleOpKind>,
@@ -1992,6 +1994,14 @@ impl<'a> SemanticHirBuilder<'a> {
         let Some(type_ctx) = self.typed.map(|typed| typed.type_ctx) else {
             return false;
         };
+        if let (Some(registry), Some(type_id)) = (
+            self.type_registry.as_ref(),
+            receiver_ty.and_then(|ty| self.dispatch_type_id_for_type_id(ty)),
+        ) {
+            if registry.lookup_property(type_id, name).is_some() {
+                return true;
+            }
+        }
         self.receiver_builtin_surface_type_name_for_expr(receiver_expr, receiver_ty)
             .and_then(|type_name| {
                 self.builtin_surface
@@ -2010,6 +2020,14 @@ impl<'a> SemanticHirBuilder<'a> {
         let Some(type_ctx) = self.typed.map(|typed| typed.type_ctx) else {
             return false;
         };
+        if let (Some(registry), Some(type_id)) = (
+            self.type_registry.as_ref(),
+            receiver_ty.and_then(|ty| self.dispatch_type_id_for_type_id(ty)),
+        ) {
+            if registry.lookup_method(type_id, name).is_some() {
+                return true;
+            }
+        }
         self.receiver_builtin_surface_type_name_for_expr(receiver_expr, receiver_ty)
             .and_then(|type_name| self.builtin_surface.instance_method_binding(&type_name, name))
             .and_then(|binding| binding.to_dispatch_action(type_ctx))
@@ -2029,6 +2047,14 @@ impl<'a> SemanticHirBuilder<'a> {
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> Option<crate::compiler::type_registry::DispatchAction> {
+        if let (Some(registry), Some(type_id)) = (
+            self.type_registry.as_ref(),
+            receiver_ty.and_then(|ty| self.dispatch_type_id_for_type_id(ty)),
+        ) {
+            if let Some(action) = registry.lookup_property(type_id, name) {
+                return Some(action);
+            }
+        }
         let type_ctx = self.typed?.type_ctx;
         self.receiver_builtin_surface_type_name_for_expr(receiver_expr, receiver_ty)
             .and_then(|type_name| {
@@ -2044,6 +2070,14 @@ impl<'a> SemanticHirBuilder<'a> {
         receiver_ty: Option<TypeId>,
         name: &str,
     ) -> Option<crate::compiler::type_registry::DispatchAction> {
+        if let (Some(registry), Some(type_id)) = (
+            self.type_registry.as_ref(),
+            receiver_ty.and_then(|ty| self.dispatch_type_id_for_type_id(ty)),
+        ) {
+            if let Some(action) = registry.lookup_method(type_id, name) {
+                return Some(action);
+            }
+        }
         let type_ctx = self.typed?.type_ctx;
         self.receiver_builtin_surface_type_name_for_expr(receiver_expr, receiver_ty)
             .and_then(|type_name| self.builtin_surface.instance_method_binding(&type_name, name))
@@ -2153,6 +2187,18 @@ impl<'a> SemanticHirBuilder<'a> {
         }
     }
 
+    fn metaobject_op_from_builtin_op(
+        op: crate::compiler::builtins::BuiltinOp,
+    ) -> Option<MetaobjectOpKind> {
+        match op {
+            crate::compiler::builtins::BuiltinOp::Metaobject(kind) => Some(kind),
+            crate::compiler::builtins::BuiltinOp::Native(native_id) => {
+                Self::metaobject_op_from_native_id(native_id)
+            }
+            _ => None,
+        }
+    }
+
     fn namespace_call_kind_from_native_id(native_id: u16) -> Option<BuiltinNamespaceCallKind> {
         match native_id {
             crate::compiler::native_id::OBJECT_SAME_VALUE => {
@@ -2171,6 +2217,17 @@ impl<'a> SemanticHirBuilder<'a> {
             }
             crate::compiler::native_id::DATE_NOW => Some(BuiltinNamespaceCallKind::DateNow),
             crate::compiler::native_id::DATE_PARSE => Some(BuiltinNamespaceCallKind::DateParse),
+            _ => None,
+        }
+    }
+
+    fn namespace_call_kind_from_builtin_op(
+        op: crate::compiler::builtins::BuiltinOp,
+    ) -> Option<BuiltinNamespaceCallKind> {
+        match op {
+            crate::compiler::builtins::BuiltinOp::Native(native_id) => {
+                Self::namespace_call_kind_from_native_id(native_id)
+            }
             _ => None,
         }
     }
@@ -2259,7 +2316,7 @@ impl<'a> SemanticHirBuilder<'a> {
     fn is_builtin_constructor_type_name(&self, name: &str) -> bool {
         self.builtin_surface
             .type_surface(name)
-            .is_some_and(|surface| surface.constructor_native_id.is_some())
+            .is_some_and(|surface| surface.constructor_binding.is_some())
     }
 
     fn runtime_late_bound_receiver(&self, expr: &Expression, receiver_ty: Option<TypeId>) -> bool {
@@ -2570,18 +2627,13 @@ impl<'a> SemanticHirBuilder<'a> {
                             span_end: member.span.end,
                             origin,
                             kind: BuiltinDispatchKind::NamespaceProperty,
+                            builtin_op: binding.builtin_op(),
                             metaobject_op: None,
                             iterator_op: None,
                             host_handle_op: None,
                             namespace_call: None,
                             registry_dispatch: None,
-                            native_id: match binding {
-                                crate::compiler::module::BuiltinDispatchBinding::VmNative {
-                                    native_id,
-                                    ..
-                                } => Some(*native_id),
-                                _ => None,
-                            },
+                            native_id: binding.native_id(),
                             receiver_type_id,
                             callee_type_id: None,
                             result_type_id: self.expr_type(expr),
@@ -2594,6 +2646,10 @@ impl<'a> SemanticHirBuilder<'a> {
                         span_end: member.span.end,
                         origin,
                         kind: BuiltinDispatchKind::InstanceProperty,
+                        builtin_op: registry_dispatch.as_ref().and_then(|dispatch| match dispatch {
+                            crate::compiler::type_registry::DispatchAction::Builtin(op) => Some(*op),
+                            _ => None,
+                        }),
                         metaobject_op: None,
                         iterator_op: None,
                         host_handle_op: None,
@@ -2622,21 +2678,18 @@ impl<'a> SemanticHirBuilder<'a> {
                         if let Some((export_name, binding)) = self
                             .builtin_static_method_binding_for_expr(&member.object, &member_name)
                         {
-                            let native_id = match binding {
-                                crate::compiler::module::BuiltinDispatchBinding::VmNative {
-                                    native_id,
-                                    ..
-                                } => Some(*native_id),
-                                _ => None,
-                            };
-                            if let Some(metaobject_op) =
-                                native_id.and_then(Self::metaobject_op_from_native_id)
+                            let builtin_op = binding.builtin_op();
+                            let native_id = binding.native_id();
+                            if let Some(metaobject_op) = builtin_op
+                                .and_then(Self::metaobject_op_from_builtin_op)
+                                .or_else(|| native_id.and_then(Self::metaobject_op_from_native_id))
                             {
                                 Some(SemanticBuiltinDispatch {
                                     span_start: call.span.start,
                                     span_end: call.span.end,
                                     origin,
                                     kind: BuiltinDispatchKind::MetaobjectOp,
+                                    builtin_op,
                                     metaobject_op: Some(metaobject_op),
                                     iterator_op: None,
                                     host_handle_op: None,
@@ -2656,11 +2709,15 @@ impl<'a> SemanticHirBuilder<'a> {
                                     span_end: call.span.end,
                                     origin,
                                     kind: BuiltinDispatchKind::NamespaceCall,
+                                    builtin_op,
                                     metaobject_op: None,
                                     iterator_op: None,
                                     host_handle_op: None,
-                                    namespace_call: native_id
-                                        .and_then(Self::namespace_call_kind_from_native_id),
+                                    namespace_call: builtin_op
+                                        .and_then(Self::namespace_call_kind_from_builtin_op)
+                                        .or_else(|| {
+                                            native_id.and_then(Self::namespace_call_kind_from_native_id)
+                                        }),
                                     registry_dispatch: None,
                                     native_id,
                                     receiver_type_id,
@@ -2671,17 +2728,44 @@ impl<'a> SemanticHirBuilder<'a> {
                                     export_name: Some(export_name),
                                 })
                             }
+                        } else if let Some(registry_dispatch) = self.receiver_builtin_registry_method_dispatch(
+                                &member.object,
+                                receiver_type_id,
+                                &member_name,
+                            ) {
+                            Some(SemanticBuiltinDispatch {
+                                span_start: call.span.start,
+                                span_end: call.span.end,
+                                origin,
+                                kind: BuiltinDispatchKind::InstanceMethod,
+                                builtin_op: match &registry_dispatch {
+                                    crate::compiler::type_registry::DispatchAction::Builtin(op) => Some(*op),
+                                    _ => None,
+                                },
+                                metaobject_op: None,
+                                iterator_op: None,
+                                host_handle_op: None,
+                                namespace_call: None,
+                                native_id: None,
+                                registry_dispatch: Some(registry_dispatch),
+                                receiver_type_id,
+                                callee_type_id: self.expr_type(&call.callee),
+                                result_type_id: self.expr_type(expr),
+                                property_name: None,
+                                member_name: Some(member_name),
+                                export_name: None,
+                            })
                         } else if let Some(host_handle_op) = self.host_handle_op_for_member(
                             &member.object,
                             receiver_type_id,
                             &member_name,
-                        )
-                        {
+                        ) {
                             Some(SemanticBuiltinDispatch {
                                 span_start: call.span.start,
                                 span_end: call.span.end,
                                 origin,
                                 kind: BuiltinDispatchKind::HostHandleOp,
+                                builtin_op: Some(host_handle_op.into()),
                                 metaobject_op: None,
                                 iterator_op: None,
                                 host_handle_op: Some(host_handle_op),
@@ -2696,31 +2780,7 @@ impl<'a> SemanticHirBuilder<'a> {
                                 export_name: None,
                             })
                         } else {
-                            self.receiver_builtin_registry_method_dispatch(
-                                &member.object,
-                                receiver_type_id,
-                                &member_name,
-                            )
-                            .map(|registry_dispatch| {
-                                SemanticBuiltinDispatch {
-                                    span_start: call.span.start,
-                                    span_end: call.span.end,
-                                    origin,
-                                    kind: BuiltinDispatchKind::InstanceMethod,
-                                    metaobject_op: None,
-                                    iterator_op: None,
-                                    host_handle_op: None,
-                                    namespace_call: None,
-                                    native_id: None,
-                                    registry_dispatch: Some(registry_dispatch),
-                                    receiver_type_id,
-                                    callee_type_id: self.expr_type(&call.callee),
-                                    result_type_id: self.expr_type(expr),
-                                    property_name: None,
-                                    member_name: Some(member_name),
-                                    export_name: None,
-                                }
-                            })
+                            None
                         }
                     }
                     _ => None,
@@ -2747,20 +2807,20 @@ impl<'a> SemanticHirBuilder<'a> {
                 };
                 let dispatch = match constructor_dispatch.map(|dispatch| dispatch.kind) {
                     Some(ConstructorDispatchKind::BuiltinNativeConstructor) => {
-                        let host_handle_op = match callee_name.as_deref() {
-                            Some(TypeContext::CHANNEL_TYPE_NAME) => {
-                                Some(HostHandleOpKind::ChannelConstructor)
-                            }
-                            Some(TypeContext::MUTEX_TYPE_NAME) => {
-                                Some(HostHandleOpKind::MutexConstructor)
-                            }
+                        let builtin_op = callee_name
+                            .as_deref()
+                            .and_then(|name| self.builtin_surface.constructor_binding(name))
+                            .and_then(|binding| binding.builtin_op());
+                        let host_handle_op = builtin_op.and_then(|op| match op {
+                            crate::compiler::builtins::BuiltinOp::HostHandle(op) => Some(op),
                             _ => None,
-                        };
+                        });
                         Some(SemanticBuiltinDispatch {
                             span_start: new_expr.span.start,
                             span_end: new_expr.span.end,
                             origin: callee_origin,
-                            kind: BuiltinDispatchKind::HostHandleOp,
+                            kind: BuiltinDispatchKind::Constructor,
+                            builtin_op,
                             metaobject_op: None,
                             iterator_op: None,
                             host_handle_op,
@@ -2787,6 +2847,7 @@ impl<'a> SemanticHirBuilder<'a> {
                             span_end: new_expr.span.end,
                             origin: callee_origin,
                             kind: BuiltinDispatchKind::Constructor,
+                            builtin_op: None,
                             metaobject_op: None,
                             iterator_op: None,
                             host_handle_op: None,
@@ -2807,6 +2868,7 @@ impl<'a> SemanticHirBuilder<'a> {
                             span_end: new_expr.span.end,
                             origin: BuiltinOriginKind::ImportedBuiltinBinding,
                             kind: BuiltinDispatchKind::Constructor,
+                            builtin_op: None,
                             metaobject_op: None,
                             iterator_op: None,
                             host_handle_op: None,
@@ -3064,12 +3126,11 @@ impl<'a> SemanticHirBuilder<'a> {
                     ConstructorDispatchKind::ImportedConstructorValue
                 }
                 ValueOriginKind::BuiltinGlobalValue
-                    if callee_name.as_deref().is_some_and(|name| {
-                        matches!(
-                            name,
-                            TypeContext::CHANNEL_TYPE_NAME | TypeContext::MUTEX_TYPE_NAME
-                        )
-                    }) =>
+                    if callee_name
+                        .as_deref()
+                        .and_then(|name| self.builtin_surface.constructor_binding(name))
+                        .and_then(|binding| binding.builtin_op())
+                        .is_some() =>
                 {
                     ConstructorDispatchKind::BuiltinNativeConstructor
                 }

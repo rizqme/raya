@@ -127,6 +127,44 @@ fn test_map_clear() {
     );
 }
 
+#[test]
+fn test_map_for_each_accumulates_values() {
+    expect_i32_with_builtins(
+        r#"
+        let map = new Map<string, number>();
+        map.set("a", 1);
+        map.set("b", 2);
+        map.set("c", 3);
+        let sum = 0;
+        map.forEach((value: number, key: string): void => {
+            sum = sum + value;
+        });
+        return sum;
+    "#,
+        6,
+    );
+}
+
+#[test]
+fn test_map_for_each_passes_key_and_receiver() {
+    expect_i32_with_builtins(
+        r#"
+        let map = new Map<string, number>();
+        map.set("a", 2);
+        map.set("b", 5);
+        let score = 0;
+        map.forEach((value: number, key: string, owner: Map<string, number>): void => {
+            if (key == "a") {
+                score = score + 100;
+            }
+            score = score + value + owner.size;
+        });
+        return score;
+    "#,
+        111,
+    );
+}
+
 // ============================================================================
 // Set tests
 // ============================================================================
@@ -230,6 +268,44 @@ fn test_set_entries_value_value_pairs() {
         return ok && entries.length == 2;
     "#,
         true,
+    );
+}
+
+#[test]
+fn test_set_for_each_accumulates_values() {
+    expect_i32_with_builtins(
+        r#"
+        let set = new Set<number>();
+        set.add(4);
+        set.add(5);
+        set.add(6);
+        let sum = 0;
+        set.forEach((value: number): void => {
+            sum = sum + value;
+        });
+        return sum;
+    "#,
+        15,
+    );
+}
+
+#[test]
+fn test_set_for_each_passes_value_value_and_receiver() {
+    expect_i32_with_builtins(
+        r#"
+        let set = new Set<number>();
+        set.add(4);
+        set.add(6);
+        let score = 0;
+        set.forEach((value: number, same: number, owner: Set<number>): void => {
+            if (value == same) {
+                score = score + 10;
+            }
+            score = score + owner.size;
+        });
+        return score;
+    "#,
+        24,
     );
 }
 
@@ -1904,6 +1980,34 @@ fn test_string_replace_with_non_global() {
     );
 }
 
+#[test]
+fn test_regexp_replace_with_simple() {
+    expect_string(
+        r#"
+        let re = new RegExp("world", "");
+        let result = re.replaceWith("hello world", (match: string): string => {
+            return "UNIVERSE";
+        });
+        return result;
+    "#,
+        "hello UNIVERSE",
+    );
+}
+
+#[test]
+fn test_regexp_replace_with_global() {
+    expect_string(
+        r#"
+        let re = new RegExp("o", "g");
+        let result = re.replaceWith("foo bar boo", (match: string): string => {
+            return "O";
+        });
+        return result;
+    "#,
+        "fOO bar bOO",
+    );
+}
+
 // ============================================================================
 // Native Call Basic Test
 // ============================================================================
@@ -2247,8 +2351,69 @@ fn test_date_to_string() {
     );
 }
 
-// Note: Date.parse tests require adding a static parse() method to date.raya
-// The VM handler (DATE_PARSE) exists but the class method is not yet defined
+#[test]
+fn test_date_now_returns_positive_timestamp() {
+    expect_bool_with_builtins(
+        r#"
+        let now = Date.now();
+        return now > 0;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_date_parse_iso_string() {
+    expect_bool_with_builtins(
+        r#"
+        let ts = Date.parse("1970-01-02T00:00:00.000Z");
+        return ts == 86400000;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_number_static_predicates() {
+    expect_bool_with_builtins(
+        r#"
+        let nan = 0.0 / 0.0;
+        return Number.isNaN(nan) && !Number.isFinite(nan) && Number.isFinite(12);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_string_from_char_code_static() {
+    expect_string_with_builtins(
+        r#"
+        return String.fromCharCode(65, 66, 67);
+    "#,
+        "ABC",
+    );
+}
+
+#[test]
+fn test_json_stringify_static() {
+    expect_string_with_builtins(
+        r#"
+        return JSON.stringify([1, 2, 3]);
+    "#,
+        "[1,2,3]",
+    );
+}
+
+#[test]
+fn test_json_parse_static() {
+    expect_bool_with_builtins(
+        r#"
+        let value = JSON.parse("{\"x\":1,\"ok\":true}");
+        return value.x == 1 && value.ok == true;
+    "#,
+        true,
+    );
+}
 
 // ============================================================================
 // Object tests

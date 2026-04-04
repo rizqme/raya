@@ -2,7 +2,7 @@
 
 use crate::compiler::Module;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, RayaString, RegExpObject};
+use crate::vm::object::{Array, Object, RayaString, RegExpObject};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -577,11 +577,109 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             string::REPLACE_WITH_REGEXP => {
-                // replaceWith is now handled as a compiler intrinsic (inline loop + CallClosure).
-                // This path should never be reached.
-                Err(VmError::RuntimeError(
-                    "String.replaceWith is handled by compiler intrinsic, should not reach VM handler".to_string()
-                ))
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "String.replaceWith expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let (handle, replacer) = match self.regexp_handle_from_value(args[0]) {
+                    Ok(handle) => (handle, args[1]),
+                    Err(err0) => match self.regexp_handle_from_value(args[1]) {
+                        Ok(handle) => (handle, args[0]),
+                        Err(err1) => {
+                            return Err(VmError::RuntimeError(format!(
+                                "String.replaceWith could not resolve RegExp argument: arg0 raw={:#x} ptr={} u64={} str={} obj={} err0={} ; arg1 raw={:#x} ptr={} u64={} str={} obj={} err1={}",
+                                args[0].raw(),
+                                args[0].is_ptr(),
+                                args[0].as_u64().is_some(),
+                                unsafe { args[0].as_ptr::<RayaString>() }.is_some(),
+                                unsafe { args[0].as_ptr::<crate::vm::object::Object>() }.is_some(),
+                                err0,
+                                args[1].raw(),
+                                args[1].is_ptr(),
+                                args[1].as_u64().is_some(),
+                                unsafe { args[1].as_ptr::<RayaString>() }.is_some(),
+                                unsafe { args[1].as_ptr::<crate::vm::object::Object>() }.is_some(),
+                                err1
+                            )));
+                        }
+                    },
+                };
+                let re_ptr = handle as *const RegExpObject;
+                if re_ptr.is_null() {
+                    return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
+                }
+                let re = unsafe { &*re_ptr };
+
+                let mut result = String::new();
+                let mut last_index = 0usize;
+                let callback_this = Some(Value::undefined());
+                if re.flags.contains('g') {
+                    for m in re.compiled.find_iter(s) {
+                        result.push_str(&s[last_index..m.start()]);
+
+                        let mut match_arr = Array::new(0, 0);
+                        let matched_str = RayaString::new(m.as_str().to_string());
+                        let gc_ptr = self.gc.lock().allocate(matched_str);
+                        let matched_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+                        match_arr.push(matched_val);
+                        match_arr.push(Value::i32(m.start() as i32));
+                        let match_arr_gc = self.gc.lock().allocate(match_arr);
+                        let match_arr_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(match_arr_gc.as_ptr()).unwrap())
+                        };
+
+                        let replacement_val = self.invoke_callable_sync_with_this(
+                            replacer,
+                            callback_this,
+                            &[match_arr_val],
+                            task,
+                            module,
+                        )?;
+                        let replacement =
+                            self.js_function_argument_to_string(replacement_val, task, module)?;
+                        result.push_str(replacement.as_str());
+                        last_index = m.end();
+                    }
+                } else if let Some(m) = re.compiled.find(s) {
+                    result.push_str(&s[last_index..m.start()]);
+
+                    let mut match_arr = Array::new(0, 0);
+                    let matched_str = RayaString::new(m.as_str().to_string());
+                    let gc_ptr = self.gc.lock().allocate(matched_str);
+                    let matched_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
+                    match_arr.push(matched_val);
+                    match_arr.push(Value::i32(m.start() as i32));
+                    let match_arr_gc = self.gc.lock().allocate(match_arr);
+                    let match_arr_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(match_arr_gc.as_ptr()).unwrap())
+                    };
+
+                    let replacement_val = self.invoke_callable_sync_with_this(
+                        replacer,
+                        callback_this,
+                        &[match_arr_val],
+                        task,
+                        module,
+                    )?;
+                    let replacement =
+                        self.js_function_argument_to_string(replacement_val, task, module)?;
+                    result.push_str(replacement.as_str());
+                    last_index = m.end();
+                }
+
+                result.push_str(&s[last_index..]);
+                let raya_string = RayaString::new(result);
+                let gc_ptr = self.gc.lock().allocate(raya_string);
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                stack.push(value)?;
+                Ok(())
             }
             string::SLICE => {
                 // slice(start, end?)
