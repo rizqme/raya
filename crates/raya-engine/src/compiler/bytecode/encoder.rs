@@ -460,7 +460,9 @@ impl BytecodeWriter {
         self.emit_opcode(Opcode::KernelCall);
         self.emit_u16(crate::compiler::ir::encode_kernel_op_id(
             crate::compiler::ir::KernelOp::Builtin(
-                crate::semantics::HostHandleOpKind::MutexConstructor.into(),
+                crate::compiler::builtins::builtin_op_id_from_host_handle(
+                    crate::semantics::HostHandleOpKind::MutexConstructor,
+                ),
             ),
         ));
         self.emit_u8(0);
@@ -471,7 +473,9 @@ impl BytecodeWriter {
         self.emit_opcode(Opcode::KernelCall);
         self.emit_u16(crate::compiler::ir::encode_kernel_op_id(
             crate::compiler::ir::KernelOp::Builtin(
-                crate::semantics::HostHandleOpKind::MutexLock.into(),
+                crate::compiler::builtins::builtin_op_id_from_host_handle(
+                    crate::semantics::HostHandleOpKind::MutexLock,
+                ),
             ),
         ));
         self.emit_u8(1);
@@ -482,7 +486,9 @@ impl BytecodeWriter {
         self.emit_opcode(Opcode::KernelCall);
         self.emit_u16(crate::compiler::ir::encode_kernel_op_id(
             crate::compiler::ir::KernelOp::Builtin(
-                crate::semantics::HostHandleOpKind::MutexUnlock.into(),
+                crate::compiler::builtins::builtin_op_id_from_host_handle(
+                    crate::semantics::HostHandleOpKind::MutexUnlock,
+                ),
             ),
         ));
         self.emit_u8(1);

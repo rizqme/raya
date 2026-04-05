@@ -22,6 +22,7 @@ pub use context::{
     ContextRegistry, ResourceCounters, ResourceLimits, VmContext, VmContextId, VmOptions,
 };
 pub use core::Interpreter;
+pub(crate) use opcodes::native::dispatch_builtin_kernel_call_impl;
 pub use debug_state::DebugState;
 pub use execution::{ControlFlow, ExecutionFrame, ExecutionResult, OpcodeResult, ReturnAction};
 pub use marshal::{marshal, unmarshal, ForeignHandleManager, MarshalError, MarshalledValue};

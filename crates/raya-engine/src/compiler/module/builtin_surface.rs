@@ -1,9 +1,9 @@
 use std::sync::OnceLock;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::compiler::builtins::{
-    native_id_for_builtin_op, BuiltinOp, BuiltinRegistry, BuiltinSurfaceMemberDescriptor,
+    builtin_native_alias_id, BuiltinOpId, BuiltinRegistry, BuiltinSurfaceMemberDescriptor,
 };
 use crate::compiler::module::BuiltinSurfaceMode;
 use crate::compiler::type_registry::{DispatchAction, OpcodeKind};
@@ -27,7 +27,7 @@ pub(crate) fn builtin_surface_manifest_for_mode(
         BuiltinSurfaceMode::RayaStrict => &STRICT_BUILTIN_SURFACE,
         BuiltinSurfaceMode::NodeCompat => &NODE_COMPAT_BUILTIN_SURFACE,
     };
-    cache.get_or_init(|| build_builtin_surface_manifest(mode))
+    cache.get_or_init(|| BuiltinSurfaceManifest { mode })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,13 +38,9 @@ pub(crate) enum BuiltinGlobalKind {
     Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct BuiltinSurfaceManifest {
     pub(crate) mode: BuiltinSurfaceMode,
-    pub(crate) globals: FxHashMap<String, BuiltinGlobalSurface>,
-    pub(crate) types: FxHashMap<String, BuiltinTypeSurface>,
-    builtin_global_names: FxHashSet<String>,
-    builtin_namespace_names: FxHashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,51 +62,144 @@ pub(crate) struct BuiltinTypeSurface {
     pub(crate) static_properties: FxHashMap<String, BuiltinDispatchBinding>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuiltinDispatchBinding {
     SurfaceOnly,
     Opcode(OpcodeKind),
     Builtin {
-        op: BuiltinOp,
-        return_type_name: Option<String>,
+        op: BuiltinOpId,
+        return_type_name: Option<&'static str>,
     },
     DeclaredField {
-        field_type_name: Option<String>,
+        field_type_name: Option<&'static str>,
         field_index: Option<u16>,
     },
 }
 
 impl BuiltinSurfaceManifest {
-    pub(crate) fn global_surface(&self, name: &str) -> Option<&BuiltinGlobalSurface> {
-        self.globals.get(name)
+    pub(crate) fn global_surface(&self, name: &str) -> Option<BuiltinGlobalSurface> {
+        if name == "globalThis" && matches!(self.mode, BuiltinSurfaceMode::NodeCompat) {
+            return Some(BuiltinGlobalSurface {
+                kind: BuiltinGlobalKind::Value,
+                backing_type_name: None,
+                static_methods: FxHashMap::default(),
+                static_properties: FxHashMap::default(),
+            });
+        }
+
+        if !builtin_root_visible_in_mode(name, self.mode) {
+            return None;
+        }
+
+        let descriptor = BuiltinRegistry::shared().global_descriptor(name)?;
+        let mut static_methods = FxHashMap::default();
+        let mut static_properties = FxHashMap::default();
+
+        if let Some(type_descriptor) =
+            BuiltinRegistry::shared().type_descriptor(descriptor.backing_type_name)
+        {
+            for (member_name, binding) in &type_descriptor.static_methods {
+                if builtin_static_member_visible_in_mode(name, member_name, self.mode) {
+                    static_methods.insert((*member_name).to_string(), member_binding_to_dispatch(*binding));
+                }
+            }
+            for (property_name, binding) in &type_descriptor.static_properties {
+                if builtin_static_member_visible_in_mode(name, property_name, self.mode) {
+                    static_properties
+                        .insert((*property_name).to_string(), member_binding_to_dispatch(*binding));
+                }
+            }
+        }
+
+        let has_constructor = BuiltinRegistry::shared()
+            .type_descriptor(descriptor.backing_type_name)
+            .is_some_and(|surface| surface.constructor.is_some());
+        let has_static_surface = !static_methods.is_empty() || !static_properties.is_empty();
+
+        Some(BuiltinGlobalSurface {
+            kind: builtin_global_kind_for_name(name, has_constructor, has_static_surface),
+            backing_type_name: Some(descriptor.backing_type_name.to_string()),
+            static_methods,
+            static_properties,
+        })
     }
 
-    pub(crate) fn type_surface(&self, name: &str) -> Option<&BuiltinTypeSurface> {
-        self.types.get(name)
+    pub(crate) fn type_surface(&self, name: &str) -> Option<BuiltinTypeSurface> {
+        if !builtin_root_visible_in_mode(name, self.mode) {
+            return None;
+        }
+
+        let descriptor = BuiltinRegistry::shared().type_descriptor(name)?;
+        let mut surface = BuiltinTypeSurface {
+            builtin_primitive: descriptor.builtin_primitive,
+            wrapper_method_surface: descriptor.wrapper_method_surface,
+            constructor_binding: descriptor.constructor.map(member_binding_to_dispatch),
+            instance_methods: FxHashMap::default(),
+            instance_properties: FxHashMap::default(),
+            static_methods: FxHashMap::default(),
+            static_properties: FxHashMap::default(),
+        };
+
+        for (method_name, binding) in &descriptor.instance_methods {
+            surface.instance_methods.insert(
+                (*method_name).to_string(),
+                member_binding_to_dispatch(*binding),
+            );
+        }
+        for (property_name, binding) in &descriptor.instance_properties {
+            surface.instance_properties.insert(
+                (*property_name).to_string(),
+                member_binding_to_dispatch(*binding),
+            );
+        }
+        for (method_name, binding) in &descriptor.static_methods {
+            if builtin_static_member_visible_in_mode(name, method_name, self.mode) {
+                surface.static_methods.insert(
+                    (*method_name).to_string(),
+                    member_binding_to_dispatch(*binding),
+                );
+            }
+        }
+        for (property_name, binding) in &descriptor.static_properties {
+            if builtin_static_member_visible_in_mode(name, property_name, self.mode) {
+                surface.static_properties.insert(
+                    (*property_name).to_string(),
+                    member_binding_to_dispatch(*binding),
+                );
+            }
+        }
+
+        Some(surface)
     }
 
     pub(crate) fn is_builtin_global(&self, name: &str) -> bool {
-        self.builtin_global_names.contains(name)
+        self.global_surface(name).is_some()
     }
 
     pub(crate) fn is_namespace_global(&self, name: &str) -> bool {
-        self.builtin_namespace_names.contains(name)
+        self.global_kind(name) == Some(BuiltinGlobalKind::Namespace)
     }
 
     pub(crate) fn global_kind(&self, name: &str) -> Option<BuiltinGlobalKind> {
-        self.globals.get(name).map(|surface| surface.kind)
+        self.global_surface(name).map(|surface| surface.kind)
     }
 
     pub(crate) fn backing_type_name(&self, global_name: &str) -> Option<&str> {
-        self.globals
-            .get(global_name)
-            .and_then(|surface| surface.backing_type_name.as_deref())
+        if global_name == "globalThis" && matches!(self.mode, BuiltinSurfaceMode::NodeCompat) {
+            return None;
+        }
+        if !builtin_root_visible_in_mode(global_name, self.mode) {
+            return None;
+        }
+        BuiltinRegistry::shared()
+            .global_descriptor(global_name)
+            .map(|descriptor| descriptor.backing_type_name)
     }
 
     pub(crate) fn global_uses_static_surface(&self, name: &str) -> bool {
-        self.globals.get(name).is_some_and(|surface| {
+        self.global_kind(name).is_some_and(|kind| {
             matches!(
-                surface.kind,
+                kind,
                 BuiltinGlobalKind::Namespace
                     | BuiltinGlobalKind::ClassValue
                     | BuiltinGlobalKind::StaticValue
@@ -119,59 +208,52 @@ impl BuiltinSurfaceManifest {
     }
 
     pub(crate) fn has_dispatch_type(&self, type_name: &str) -> bool {
-        self.types.contains_key(type_name)
+        self.type_surface(type_name).is_some()
     }
 
     pub(crate) fn static_method_binding(
         &self,
         global_name: &str,
         member_name: &str,
-    ) -> Option<&BuiltinDispatchBinding> {
-        self.globals
-            .get(global_name)
-            .and_then(|surface| surface.static_methods.get(member_name))
+    ) -> Option<BuiltinDispatchBinding> {
+        self.global_surface(global_name)
+            .and_then(|surface| surface.static_methods.get(member_name).copied())
     }
 
     pub(crate) fn static_property_binding(
         &self,
         global_name: &str,
         property_name: &str,
-    ) -> Option<&BuiltinDispatchBinding> {
-        self.globals
-            .get(global_name)
-            .and_then(|surface| surface.static_properties.get(property_name))
+    ) -> Option<BuiltinDispatchBinding> {
+        self.global_surface(global_name)
+            .and_then(|surface| surface.static_properties.get(property_name).copied())
     }
 
     pub(crate) fn instance_method_binding(
         &self,
         type_name: &str,
         member_name: &str,
-    ) -> Option<&BuiltinDispatchBinding> {
-        self.types
-            .get(type_name)
-            .and_then(|surface| surface.instance_methods.get(member_name))
+    ) -> Option<BuiltinDispatchBinding> {
+        self.type_surface(type_name)
+            .and_then(|surface| surface.instance_methods.get(member_name).copied())
     }
 
     pub(crate) fn instance_property_binding(
         &self,
         type_name: &str,
         property_name: &str,
-    ) -> Option<&BuiltinDispatchBinding> {
-        self.types
-            .get(type_name)
-            .and_then(|surface| surface.instance_properties.get(property_name))
+    ) -> Option<BuiltinDispatchBinding> {
+        self.type_surface(type_name)
+            .and_then(|surface| surface.instance_properties.get(property_name).copied())
     }
 
     pub(crate) fn has_static_method(&self, global_name: &str, member_name: &str) -> bool {
-        self.globals
-            .get(global_name)
-            .is_some_and(|surface| surface.static_methods.contains_key(member_name))
+        self.static_method_binding(global_name, member_name).is_some()
     }
 
     pub(crate) fn has_static_property(&self, global_name: &str, property_name: &str) -> bool {
-        self.globals
-            .get(global_name)
-            .is_some_and(|surface| surface.static_properties.contains_key(property_name))
+        self.static_property_binding(global_name, property_name)
+            .is_some()
     }
 
     pub(crate) fn lookup_static_method(
@@ -180,9 +262,7 @@ impl BuiltinSurfaceManifest {
         member_name: &str,
         type_ctx: &TypeContext,
     ) -> Option<DispatchAction> {
-        self.globals
-            .get(global_name)
-            .and_then(|surface| surface.static_methods.get(member_name))
+        self.static_method_binding(global_name, member_name)
             .and_then(|binding| binding.to_dispatch_action(type_ctx))
     }
 
@@ -192,9 +272,7 @@ impl BuiltinSurfaceManifest {
         property_name: &str,
         type_ctx: &TypeContext,
     ) -> Option<DispatchAction> {
-        self.globals
-            .get(global_name)
-            .and_then(|surface| surface.static_properties.get(property_name))
+        self.static_property_binding(global_name, property_name)
             .and_then(|binding| binding.to_dispatch_action(type_ctx))
     }
 
@@ -204,9 +282,7 @@ impl BuiltinSurfaceManifest {
         member_name: &str,
         type_ctx: &TypeContext,
     ) -> Option<DispatchAction> {
-        self.types
-            .get(type_name)
-            .and_then(|surface| surface.instance_methods.get(member_name))
+        self.instance_method_binding(type_name, member_name)
             .and_then(|binding| binding.to_dispatch_action(type_ctx))
     }
 
@@ -216,27 +292,18 @@ impl BuiltinSurfaceManifest {
         property_name: &str,
         type_ctx: &TypeContext,
     ) -> Option<DispatchAction> {
-        self.types
-            .get(type_name)
-            .and_then(|surface| surface.instance_properties.get(property_name))
+        self.instance_property_binding(type_name, property_name)
             .and_then(|binding| binding.to_dispatch_action(type_ctx))
     }
 
     pub(crate) fn constructor_native_id(&self, type_name: &str) -> Option<u16> {
-        self.types
-            .get(type_name)
-            .and_then(|surface| {
-                surface
-                    .constructor_binding
-                    .as_ref()
-                    .and_then(BuiltinDispatchBinding::native_id)
-            })
+        self.constructor_binding(type_name)
+            .and_then(|binding| binding.native_id())
     }
 
-    pub(crate) fn constructor_binding(&self, type_name: &str) -> Option<&BuiltinDispatchBinding> {
-        self.types
-            .get(type_name)
-            .and_then(|surface| surface.constructor_binding.as_ref())
+    pub(crate) fn constructor_binding(&self, type_name: &str) -> Option<BuiltinDispatchBinding> {
+        self.type_surface(type_name)
+            .and_then(|surface| surface.constructor_binding)
     }
 }
 
@@ -251,7 +318,6 @@ impl BuiltinDispatchBinding {
                 field_index,
             } => Some(DispatchAction::DeclaredField {
                 field_type: field_type_name
-                    .as_deref()
                     .and_then(|name| resolve_type_name(type_ctx, name)),
                 field_index: *field_index,
             }),
@@ -263,59 +329,23 @@ impl BuiltinDispatchBinding {
             Self::Builtin {
                 return_type_name: Some(name),
                 ..
-            } => Some(name.as_str()),
+            } => Some(*name),
             _ => None,
         }
     }
 
     pub(crate) fn native_id(&self) -> Option<u16> {
         match self {
-            Self::Builtin { op, .. } => native_id_for_builtin_op(*op),
+            Self::Builtin { op, .. } => builtin_native_alias_id(*op),
             _ => None,
         }
     }
 
-    pub(crate) fn builtin_op(&self) -> Option<BuiltinOp> {
+    pub(crate) fn builtin_op(&self) -> Option<BuiltinOpId> {
         match self {
             Self::Builtin { op, .. } => Some(*op),
             _ => None,
         }
-    }
-}
-
-fn build_builtin_surface_manifest(mode: BuiltinSurfaceMode) -> BuiltinSurfaceManifest {
-    let mut classes = FxHashMap::<String, BuiltinTypeSurface>::default();
-    let mut globals = FxHashMap::<String, BuiltinGlobalSurface>::default();
-    let mut builtin_global_names = FxHashSet::default();
-
-    if matches!(mode, BuiltinSurfaceMode::NodeCompat) {
-        builtin_global_names.insert("globalThis".to_string());
-        globals
-            .entry("globalThis".to_string())
-            .or_insert_with(|| BuiltinGlobalSurface {
-                kind: BuiltinGlobalKind::Value,
-                backing_type_name: None,
-                static_methods: FxHashMap::default(),
-                static_properties: FxHashMap::default(),
-        });
-    }
-
-    apply_builtin_registry_overlays(mode, &mut classes);
-    apply_builtin_registry_global_overlays(mode, &mut globals, &mut builtin_global_names);
-
-    let builtin_namespace_names = globals
-        .iter()
-        .filter_map(|(name, surface)| {
-            (surface.kind == BuiltinGlobalKind::Namespace).then(|| name.clone())
-        })
-        .collect();
-
-    BuiltinSurfaceManifest {
-        mode,
-        globals,
-        types: classes,
-        builtin_global_names,
-        builtin_namespace_names,
     }
 }
 
@@ -339,7 +369,7 @@ fn builtin_global_kind_for_name(
     }
 }
 
-fn builtin_root_visible_in_mode(name: &str, mode: BuiltinSurfaceMode) -> bool {
+pub(crate) fn builtin_root_visible_in_mode(name: &str, mode: BuiltinSurfaceMode) -> bool {
     if matches!(mode, BuiltinSurfaceMode::NodeCompat) {
         return true;
     }
@@ -390,7 +420,7 @@ fn builtin_root_visible_in_mode(name: &str, mode: BuiltinSurfaceMode) -> bool {
     )
 }
 
-fn builtin_static_member_visible_in_mode(
+pub(crate) fn builtin_static_member_visible_in_mode(
     type_name: &str,
     member_name: &str,
     mode: BuiltinSurfaceMode,
@@ -399,122 +429,13 @@ fn builtin_static_member_visible_in_mode(
     true
 }
 
-fn apply_builtin_registry_global_overlays(
-    mode: BuiltinSurfaceMode,
-    globals: &mut FxHashMap<String, BuiltinGlobalSurface>,
-    builtin_global_names: &mut FxHashSet<String>,
-) {
-    for (global_name, descriptor) in BuiltinRegistry::shared().global_descriptors() {
-        if !builtin_root_visible_in_mode(global_name, mode) {
-            continue;
-        }
-        builtin_global_names.insert(global_name.to_string());
-        let mut registry_static_methods = FxHashMap::default();
-        let mut registry_static_properties = FxHashMap::default();
-        let kind = match descriptor.symbol_type {
-            crate::compiler::SymbolType::Function => BuiltinGlobalKind::Value,
-            _ => match global_name {
-                "JSON" | "Math" | "Reflect" | "Atomics" | "Intl" | "Temporal" => {
-                    BuiltinGlobalKind::Namespace
-                }
-                _ => BuiltinGlobalKind::ClassValue,
-            },
-        };
-        if let Some(type_descriptor) =
-            BuiltinRegistry::shared().type_descriptor(descriptor.backing_type_name)
-        {
-            for (method_name, binding) in &type_descriptor.static_methods {
-                if !builtin_static_member_visible_in_mode(global_name, method_name, mode) {
-                    continue;
-                }
-                registry_static_methods
-                    .insert((*method_name).to_string(), member_binding_to_dispatch(binding));
-            }
-            for (property_name, binding) in &type_descriptor.static_properties {
-                if !builtin_static_member_visible_in_mode(global_name, property_name, mode) {
-                    continue;
-                }
-                registry_static_properties.insert(
-                    (*property_name).to_string(),
-                    member_binding_to_dispatch(binding),
-                );
-            }
-        }
-        let entry = globals
-            .entry(global_name.to_string())
-            .or_insert_with(|| BuiltinGlobalSurface {
-                kind,
-                backing_type_name: Some(descriptor.backing_type_name.to_string()),
-                static_methods: FxHashMap::default(),
-                static_properties: FxHashMap::default(),
-            });
-        if entry.backing_type_name.is_none() {
-            entry.backing_type_name = Some(descriptor.backing_type_name.to_string());
-        }
-        entry.kind = kind;
-        for (method_name, binding) in registry_static_methods {
-            entry.static_methods.insert(method_name, binding);
-        }
-        for (property_name, binding) in registry_static_properties {
-            entry.static_properties.insert(property_name, binding);
-        }
-    }
-}
-
-fn apply_builtin_registry_overlays(
-    mode: BuiltinSurfaceMode,
-    classes: &mut FxHashMap<String, BuiltinTypeSurface>,
-) {
-    for (type_name, descriptor) in BuiltinRegistry::shared().type_descriptors() {
-        if !builtin_root_visible_in_mode(type_name, mode) {
-            continue;
-        }
-        let surface = classes.entry(type_name.to_string()).or_default();
-        surface.builtin_primitive |= descriptor.builtin_primitive;
-        surface.wrapper_method_surface |= descriptor.wrapper_method_surface;
-        if let Some(constructor) = descriptor.constructor {
-            surface.constructor_binding = Some(member_binding_to_dispatch(&constructor));
-        }
-        for (method_name, binding) in &descriptor.instance_methods {
-            surface.instance_methods.insert(
-                (*method_name).to_string(),
-                member_binding_to_dispatch(binding),
-            );
-        }
-        for (method_name, binding) in &descriptor.static_methods {
-            if !builtin_static_member_visible_in_mode(type_name, method_name, mode) {
-                continue;
-            }
-            surface.static_methods.insert(
-                (*method_name).to_string(),
-                member_binding_to_dispatch(binding),
-            );
-        }
-        for (property_name, binding) in &descriptor.instance_properties {
-            surface.instance_properties.insert(
-                (*property_name).to_string(),
-                member_binding_to_dispatch(binding),
-            );
-        }
-        for (property_name, binding) in &descriptor.static_properties {
-            if !builtin_static_member_visible_in_mode(type_name, property_name, mode) {
-                continue;
-            }
-            surface.static_properties.insert(
-                (*property_name).to_string(),
-                member_binding_to_dispatch(binding),
-            );
-        }
-    }
-}
-
-fn member_binding_to_dispatch(binding: &BuiltinSurfaceMemberDescriptor) -> BuiltinDispatchBinding {
+fn member_binding_to_dispatch(binding: BuiltinSurfaceMemberDescriptor) -> BuiltinDispatchBinding {
     match binding {
         BuiltinSurfaceMemberDescriptor::SurfaceOnly => BuiltinDispatchBinding::SurfaceOnly,
-        BuiltinSurfaceMemberDescriptor::Opcode(kind) => BuiltinDispatchBinding::Opcode(*kind),
+        BuiltinSurfaceMemberDescriptor::Opcode(kind) => BuiltinDispatchBinding::Opcode(kind),
         BuiltinSurfaceMemberDescriptor::Bound(binding) => BuiltinDispatchBinding::Builtin {
-            op: binding.op,
-            return_type_name: binding.return_type_name.map(str::to_string),
+            op: binding.op_id(),
+            return_type_name: binding.return_type_name(),
         },
     }
 }

@@ -86,6 +86,11 @@ pub enum SerializedHeapEntry {
         receiver: SerializedValue,
         native_id: u16,
     },
+    BoundBuiltinMethod {
+        object_id: ObjectId,
+        receiver: SerializedValue,
+        op_id: crate::compiler::builtins::BuiltinOpId,
+    },
     RefCell {
         object_id: ObjectId,
         value: SerializedValue,
@@ -113,6 +118,7 @@ impl SerializedHeapEntry {
             | Self::Closure { object_id, .. }
             | Self::BoundMethod { object_id, .. }
             | Self::BoundNativeMethod { object_id, .. }
+            | Self::BoundBuiltinMethod { object_id, .. }
             | Self::RefCell { object_id, .. }
             | Self::Channel { object_id, .. }
             | Self::Proxy { object_id, .. } => *object_id,
@@ -269,6 +275,16 @@ impl SerializedHeapEntry {
                 receiver.encode(writer)?;
                 writer.write_all(&native_id.to_le_bytes())?;
             }
+            Self::BoundBuiltinMethod {
+                object_id,
+                receiver,
+                op_id,
+            } => {
+                writer.write_all(&[10])?;
+                writer.write_all(&object_id.as_u64().to_le_bytes())?;
+                receiver.encode(writer)?;
+                writer.write_all(&op_id.to_le_bytes())?;
+            }
             Self::RefCell { object_id, value } => {
                 writer.write_all(&[7])?;
                 writer.write_all(&object_id.as_u64().to_le_bytes())?;
@@ -424,6 +440,21 @@ impl SerializedHeapEntry {
                     object_id,
                     receiver,
                     native_id,
+                }
+            }
+            10 => {
+                reader.read_exact(&mut u64_buf)?;
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
+                let receiver = SerializedValue::decode(reader, needs_byte_swap)?;
+                reader.read_exact(&mut u16_buf)?;
+                let op_id = byteswap::swap_u16(u16::from_le_bytes(u16_buf), needs_byte_swap);
+                Self::BoundBuiltinMethod {
+                    object_id,
+                    receiver,
+                    op_id,
                 }
             }
             7 => {

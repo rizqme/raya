@@ -72,7 +72,7 @@ pub enum KernelOp {
     /// Raw VM/runtime native used only for low-level non-dispatch intrinsics.
     VmNative(u16),
     PropertyOpcode(crate::compiler::type_registry::OpcodeKind),
-    Builtin(crate::compiler::builtins::BuiltinOp),
+    Builtin(crate::compiler::builtins::BuiltinOpId),
     RegisteredNative(u16),
 }
 
@@ -97,16 +97,15 @@ pub fn encode_kernel_op_id(op: KernelOp) -> KernelOpId {
             crate::compiler::type_registry::OpcodeKind::StringLen => KERNEL_PROPERTY_BASE,
             crate::compiler::type_registry::OpcodeKind::ArrayLen => KERNEL_PROPERTY_BASE + 1,
         },
-        KernelOp::Builtin(kind) => {
-            KERNEL_BUILTIN_BASE + crate::compiler::builtins::encode_builtin_op_id(kind)
-        }
+        KernelOp::Builtin(op_id) => KERNEL_BUILTIN_BASE + op_id,
     }
 }
 
 pub fn decode_kernel_op_id(id: KernelOpId) -> Option<KernelOp> {
     if id >= KERNEL_BUILTIN_BASE {
-        return crate::compiler::builtins::decode_builtin_op_id(id - KERNEL_BUILTIN_BASE)
-            .map(KernelOp::Builtin);
+        let builtin_id = id - KERNEL_BUILTIN_BASE;
+        return crate::compiler::builtins::decode_builtin_op_id(builtin_id)
+            .map(|_| KernelOp::Builtin(builtin_id));
     }
     if id >= KERNEL_PROPERTY_BASE {
         return Some(KernelOp::PropertyOpcode(match id - KERNEL_PROPERTY_BASE {
@@ -789,7 +788,6 @@ impl std::fmt::Display for UnaryOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::builtins::BuiltinOp;
     use crate::vm::builtin;
 
     #[test]
@@ -858,7 +856,12 @@ mod tests {
 
     #[test]
     fn test_kernel_builtin_native_roundtrip_for_high_native_ids() {
-        let op = KernelOp::Builtin(BuiltinOp::Native(builtin::array_buffer::SLICE));
+        let op = KernelOp::Builtin(
+            crate::compiler::builtins::builtin_op_id_from_native_id(
+                builtin::array_buffer::SLICE,
+            )
+            .expect("array_buffer::slice builtin op id"),
+        );
         let encoded = encode_kernel_op_id(op);
         let decoded = decode_kernel_op_id(encoded);
         assert_eq!(decoded, Some(op));

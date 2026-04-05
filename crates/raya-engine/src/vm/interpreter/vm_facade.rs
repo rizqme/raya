@@ -120,6 +120,14 @@ fn serialize_heap(
                             .map_err(|e| VmError::IoError(e.to_string()))?,
                         native_id: *native_id,
                     },
+                    CallableKind::BoundBuiltin { op_id, receiver } => {
+                        SerializedHeapEntry::BoundBuiltinMethod {
+                            object_id,
+                            receiver: SerializedValue::from_live(*receiver, pointer_map)
+                                .map_err(|e| VmError::IoError(e.to_string()))?,
+                            op_id: *op_id,
+                        }
+                    }
                     CallableKind::Bound { .. } => {
                         // BoundFunction not yet serialized; skip
                         continue;
@@ -308,6 +316,11 @@ fn restore_heap_snapshot(
                 let ptr = gc.allocate(callable);
                 unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
             }
+            SerializedHeapEntry::BoundBuiltinMethod { op_id, .. } => {
+                let callable = Object::new_bound_builtin(Value::null(), *op_id);
+                let ptr = gc.allocate(callable);
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
             SerializedHeapEntry::RefCell { .. } => {
                 let ptr = gc.allocate(RefCell::new(Value::null()));
                 unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
@@ -423,6 +436,23 @@ fn restore_heap_snapshot(
                     .as_mut()
                     .expect("callable data for bound native");
                 if let CallableKind::BoundNative {
+                    receiver: ref mut recv,
+                    ..
+                } = callable.kind
+                {
+                    *recv = receiver
+                        .to_live(&values)
+                        .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+                }
+            }
+            SerializedHeapEntry::BoundBuiltinMethod { receiver, .. } => {
+                let ptr = unsafe { value.as_ptr::<Object>() }.unwrap();
+                let obj = unsafe { &mut *ptr.as_ptr() };
+                let callable = obj
+                    .callable
+                    .as_mut()
+                    .expect("callable data for bound builtin");
+                if let CallableKind::BoundBuiltin {
                     receiver: ref mut recv,
                     ..
                 } = callable.kind

@@ -10,7 +10,7 @@ use crate::vm::{builtin, builtins};
 pub type BuiltinOpId = u16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BuiltinOp {
+pub(crate) enum BuiltinOp {
     Native(u16),
     Metaobject(MetaobjectOpKind),
     Iterator(IteratorOpKind),
@@ -53,8 +53,8 @@ pub enum BuiltinExecutionKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BuiltinBindingDescriptor {
-    pub op: BuiltinOp,
-    pub return_type_name: Option<&'static str>,
+    op: BuiltinOp,
+    return_type_name: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -103,11 +103,12 @@ static BUILTIN_NATIVE_OP_TABLE: OnceLock<BuiltinNativeOpTable> = OnceLock::new()
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BuiltinDescriptor {
-    pub op: BuiltinOp,
+    pub id: BuiltinOpId,
     pub name: &'static str,
     pub surface: BuiltinSurfaceKind,
     pub receiver: BuiltinReceiverModel,
     pub execution: BuiltinExecutionKind,
+    pub native_alias_id: Option<u16>,
 }
 
 const METAOBJECT_COUNT: BuiltinOpId = 13;
@@ -180,6 +181,24 @@ impl BuiltinRegistry {
         self.globals
             .iter()
             .map(|(name, descriptor)| (*name, descriptor))
+    }
+}
+
+impl BuiltinBindingDescriptor {
+    pub fn op_id(&self) -> BuiltinOpId {
+        encode_builtin_op_id(self.op)
+    }
+
+    pub fn return_type_name(&self) -> Option<&'static str> {
+        self.return_type_name
+    }
+
+    pub(crate) fn internal_op(&self) -> BuiltinOp {
+        self.op
+    }
+
+    pub(crate) fn native_alias_id(&self) -> Option<u16> {
+        native_id_for_builtin_op(self.op)
     }
 }
 
@@ -2221,22 +2240,20 @@ fn canonical_runtime_type_name(type_name: &str) -> &str {
     }
 }
 
-pub fn builtin_descriptor(op: BuiltinOp) -> BuiltinDescriptor {
-    match op {
-        BuiltinOp::Native(native_id) => BuiltinDescriptor {
-            op,
-            name: if native_id == 0 {
+fn builtin_descriptor_for_op(op: BuiltinOp) -> BuiltinDescriptor {
+    let (name, surface, receiver, execution) = match op {
+        BuiltinOp::Native(native_id) => (
+            if native_id == 0 {
                 "native.0"
             } else {
                 "native.runtime"
             },
-            surface: BuiltinSurfaceKind::NamespaceCall,
-            receiver: BuiltinReceiverModel::None,
-            execution: BuiltinExecutionKind::RuntimeBuiltin,
-        },
-        BuiltinOp::Metaobject(kind) => BuiltinDescriptor {
-            op,
-            name: match kind {
+            BuiltinSurfaceKind::NamespaceCall,
+            BuiltinReceiverModel::None,
+            BuiltinExecutionKind::RuntimeBuiltin,
+        ),
+        BuiltinOp::Metaobject(kind) => (
+            match kind {
                 MetaobjectOpKind::DefineProperty => "metaobject.defineProperty",
                 MetaobjectOpKind::GetOwnPropertyDescriptor => "metaobject.getOwnPropertyDescriptor",
                 MetaobjectOpKind::DefineProperties => "metaobject.defineProperties",
@@ -2251,13 +2268,12 @@ pub fn builtin_descriptor(op: BuiltinOp) -> BuiltinDescriptor {
                 MetaobjectOpKind::ReflectOwnKeys => "metaobject.reflectOwnKeys",
                 MetaobjectOpKind::ReflectConstruct => "metaobject.reflectConstruct",
             },
-            surface: BuiltinSurfaceKind::NamespaceCall,
-            receiver: BuiltinReceiverModel::Object,
-            execution: BuiltinExecutionKind::RuntimeBuiltin,
-        },
-        BuiltinOp::Iterator(kind) => BuiltinDescriptor {
-            op,
-            name: match kind {
+            BuiltinSurfaceKind::NamespaceCall,
+            BuiltinReceiverModel::Object,
+            BuiltinExecutionKind::RuntimeBuiltin,
+        ),
+        BuiltinOp::Iterator(kind) => (
+            match kind {
                 IteratorOpKind::GetIterator => "iterator.get",
                 IteratorOpKind::GetAsyncIterator => "iterator.getAsync",
                 IteratorOpKind::Step => "iterator.step",
@@ -2271,13 +2287,12 @@ pub fn builtin_descriptor(op: BuiltinOp) -> BuiltinDescriptor {
                 IteratorOpKind::CloseCompletion => "iterator.closeCompletion",
                 IteratorOpKind::AppendToArray => "iterator.appendToArray",
             },
-            surface: BuiltinSurfaceKind::NamespaceCall,
-            receiver: BuiltinReceiverModel::Value,
-            execution: BuiltinExecutionKind::RuntimeBuiltin,
-        },
-        BuiltinOp::HostHandle(kind) => BuiltinDescriptor {
-            op,
-            name: match kind {
+            BuiltinSurfaceKind::NamespaceCall,
+            BuiltinReceiverModel::Value,
+            BuiltinExecutionKind::RuntimeBuiltin,
+        ),
+        BuiltinOp::HostHandle(kind) => (
+            match kind {
                 HostHandleOpKind::ChannelConstructor => "channel.constructor",
                 HostHandleOpKind::ChannelSend => "channel.send",
                 HostHandleOpKind::ChannelReceive => "channel.receive",
@@ -2296,13 +2311,13 @@ pub fn builtin_descriptor(op: BuiltinOp) -> BuiltinDescriptor {
                 HostHandleOpKind::TaskIsDone => "promise.isDone",
                 HostHandleOpKind::TaskIsCancelled => "promise.isCancelled",
             },
-            surface: match kind {
+            match kind {
                 HostHandleOpKind::ChannelConstructor | HostHandleOpKind::MutexConstructor => {
                     BuiltinSurfaceKind::Constructor
                 }
                 _ => BuiltinSurfaceKind::InstanceMethod,
             },
-            receiver: match kind {
+            match kind {
                 HostHandleOpKind::ChannelConstructor | HostHandleOpKind::MutexConstructor => {
                     BuiltinReceiverModel::None
                 }
@@ -2322,11 +2337,10 @@ pub fn builtin_descriptor(op: BuiltinOp) -> BuiltinDescriptor {
                 | HostHandleOpKind::TaskIsDone
                 | HostHandleOpKind::TaskIsCancelled => BuiltinReceiverModel::TaskHandle,
             },
-            execution: BuiltinExecutionKind::RuntimeBuiltin,
-        },
-        BuiltinOp::Js(kind) => BuiltinDescriptor {
-            op,
-            name: match kind {
+            BuiltinExecutionKind::RuntimeBuiltin,
+        ),
+        BuiltinOp::Js(kind) => (
+            match kind {
                 JsOpKind::GetNamed => "js.getNamed",
                 JsOpKind::GetKeyed => "js.getKeyed",
                 JsOpKind::SetNamed { strict: false } => "js.setNamed",
@@ -2360,8 +2374,8 @@ pub fn builtin_descriptor(op: BuiltinOp) -> BuiltinDescriptor {
                 JsOpKind::EvalGetCompletion => "js.evalGetCompletion",
                 JsOpKind::EvalSetCompletion => "js.evalSetCompletion",
             },
-            surface: BuiltinSurfaceKind::NamespaceCall,
-            receiver: match kind {
+            BuiltinSurfaceKind::NamespaceCall,
+            match kind {
                 JsOpKind::GetNamed
                 | JsOpKind::GetKeyed
                 | JsOpKind::SetNamed { .. }
@@ -2372,9 +2386,24 @@ pub fn builtin_descriptor(op: BuiltinOp) -> BuiltinDescriptor {
                 JsOpKind::CallValue | JsOpKind::ConstructValue => BuiltinReceiverModel::Value,
                 _ => BuiltinReceiverModel::None,
             },
-            execution: BuiltinExecutionKind::RuntimeBuiltin,
-        },
+            BuiltinExecutionKind::RuntimeBuiltin,
+        ),
+    };
+
+    BuiltinDescriptor {
+        id: encode_builtin_op_id(op),
+        name,
+        surface,
+        receiver,
+        execution,
+        native_alias_id: native_id_for_builtin_op(op),
     }
+}
+
+pub fn builtin_descriptor(op_id: BuiltinOpId) -> BuiltinDescriptor {
+    let op = decode_builtin_op_id(op_id)
+        .unwrap_or_else(|| panic!("unknown builtin op id: {op_id:#06x}"));
+    builtin_descriptor_for_op(op)
 }
 
 fn collect_builtin_native_ids_from_member(
@@ -2382,7 +2411,7 @@ fn collect_builtin_native_ids_from_member(
     ids: &mut Vec<u16>,
 ) {
     if let BuiltinSurfaceMemberDescriptor::Bound(binding) = member {
-        if let BuiltinOp::Native(native_id) = binding.op {
+        if let BuiltinOp::Native(native_id) = binding.internal_op() {
             ids.push(native_id);
         }
     }
@@ -2395,7 +2424,7 @@ fn builtin_native_op_table() -> &'static BuiltinNativeOpTable {
 
         for (_, descriptor) in registry.global_descriptors() {
             if let Some(binding) = descriptor.binding {
-                if let BuiltinOp::Native(native_id) = binding.op {
+                if let BuiltinOp::Native(native_id) = binding.internal_op() {
                     ordered_ids.push(native_id);
                 }
             }
@@ -2447,7 +2476,7 @@ fn builtin_native_op_table() -> &'static BuiltinNativeOpTable {
     })
 }
 
-pub fn encode_builtin_op_id(op: BuiltinOp) -> BuiltinOpId {
+pub(crate) fn encode_builtin_op_id(op: BuiltinOp) -> BuiltinOpId {
     match op {
         BuiltinOp::Native(native_id) => {
             let compact_index = builtin_native_op_table()
@@ -2546,7 +2575,7 @@ pub fn encode_builtin_op_id(op: BuiltinOp) -> BuiltinOpId {
     }
 }
 
-pub fn decode_builtin_op_id(id: BuiltinOpId) -> Option<BuiltinOp> {
+pub(crate) fn decode_builtin_op_id(id: BuiltinOpId) -> Option<BuiltinOp> {
     if id >= NATIVE_BASE {
         let compact_index = usize::from(id - NATIVE_BASE);
         return builtin_native_op_table()
@@ -2647,7 +2676,57 @@ pub fn decode_builtin_op_id(id: BuiltinOpId) -> Option<BuiltinOp> {
     }))
 }
 
-pub fn builtin_op_from_native_id(native_id: u16) -> Option<BuiltinOp> {
+pub fn builtin_op_id_from_native_id(native_id: u16) -> Option<BuiltinOpId> {
+    builtin_op_from_native_id(native_id).map(encode_builtin_op_id)
+}
+
+pub fn builtin_metaobject_kind(op_id: BuiltinOpId) -> Option<MetaobjectOpKind> {
+    match decode_builtin_op_id(op_id)? {
+        BuiltinOp::Metaobject(kind) => Some(kind),
+        _ => None,
+    }
+}
+
+pub fn builtin_host_handle_kind(op_id: BuiltinOpId) -> Option<HostHandleOpKind> {
+    match decode_builtin_op_id(op_id)? {
+        BuiltinOp::HostHandle(kind) => Some(kind),
+        _ => None,
+    }
+}
+
+pub fn builtin_op_id_from_metaobject(kind: MetaobjectOpKind) -> BuiltinOpId {
+    encode_builtin_op_id(BuiltinOp::Metaobject(kind))
+}
+
+pub fn builtin_op_id_from_iterator(kind: IteratorOpKind) -> BuiltinOpId {
+    encode_builtin_op_id(BuiltinOp::Iterator(kind))
+}
+
+pub fn builtin_op_id_from_host_handle(kind: HostHandleOpKind) -> BuiltinOpId {
+    encode_builtin_op_id(BuiltinOp::HostHandle(kind))
+}
+
+pub fn builtin_op_id_from_js(kind: JsOpKind) -> BuiltinOpId {
+    encode_builtin_op_id(BuiltinOp::Js(kind))
+}
+
+pub fn builtin_native_alias_id(op_id: BuiltinOpId) -> Option<u16> {
+    decode_builtin_op_id(op_id).and_then(native_id_for_builtin_op)
+}
+
+pub(crate) fn builtin_string_regexp_override_op_id(method_name: &str) -> Option<BuiltinOpId> {
+    use crate::vm::builtin::string as bs;
+
+    let native_id = match method_name {
+        "replace" => bs::REPLACE_REGEXP,
+        "split" => bs::SPLIT_REGEXP,
+        "replaceWith" => bs::REPLACE_WITH_REGEXP,
+        _ => return None,
+    };
+    Some(encode_builtin_op_id(BuiltinOp::Native(native_id)))
+}
+
+pub(crate) fn builtin_op_from_native_id(native_id: u16) -> Option<BuiltinOp> {
     Some(match native_id {
         crate::compiler::native_id::OBJECT_DEFINE_PROPERTY => {
             BuiltinOp::Metaobject(MetaobjectOpKind::DefineProperty)
@@ -2757,11 +2836,14 @@ pub fn builtin_op_from_native_id(native_id: u16) -> Option<BuiltinOp> {
         crate::compiler::native_id::TASK_IS_CANCELLED => {
             BuiltinOp::HostHandle(HostHandleOpKind::TaskIsCancelled)
         }
+        _ if builtin_native_op_table().indices.contains_key(&native_id) => {
+            BuiltinOp::Native(native_id)
+        }
         _ => return None,
     })
 }
 
-pub fn native_id_for_builtin_op(op: BuiltinOp) -> Option<u16> {
+pub(crate) fn native_id_for_builtin_op(op: BuiltinOp) -> Option<u16> {
     Some(match op {
         BuiltinOp::Native(native_id) => native_id,
         BuiltinOp::Metaobject(kind) => match kind {

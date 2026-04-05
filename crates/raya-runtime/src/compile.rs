@@ -3227,8 +3227,8 @@ mod tests {
         }));
         assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
             dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::Constructor
-                && dispatch.builtin_op
-                    == Some(raya_engine::compiler::builtins::BuiltinOp::HostHandle(
+                && dispatch.effective_builtin_op_id()
+                    == Some(raya_engine::compiler::builtins::builtin_op_id_from_host_handle(
                         raya_engine::semantics::HostHandleOpKind::MutexConstructor,
                     ))
         }));
@@ -3247,8 +3247,8 @@ mod tests {
 
         assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
             dispatch.member_name.as_deref() == Some("lock")
-                && dispatch.builtin_op
-                    == Some(raya_engine::compiler::builtins::BuiltinOp::HostHandle(
+                && dispatch.effective_builtin_op_id()
+                    == Some(raya_engine::compiler::builtins::builtin_op_id_from_host_handle(
                         raya_engine::semantics::HostHandleOpKind::MutexLock,
                     ))
         }));
@@ -3267,8 +3267,8 @@ mod tests {
 
         assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
             dispatch.member_name.as_deref() == Some("lock")
-                && dispatch.builtin_op
-                    == Some(raya_engine::compiler::builtins::BuiltinOp::HostHandle(
+                && dispatch.effective_builtin_op_id()
+                    == Some(raya_engine::compiler::builtins::builtin_op_id_from_host_handle(
                         raya_engine::semantics::HostHandleOpKind::MutexLock,
                     ))
         }));
@@ -3287,14 +3287,10 @@ mod tests {
 
         assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
             dispatch.member_name.as_deref() == Some("tryLock")
-                && matches!(
-                    dispatch.registry_dispatch,
-                    Some(raya_engine::compiler::type_registry::DispatchAction::Builtin(
-                        raya_engine::compiler::builtins::BuiltinOp::HostHandle(
-                            raya_engine::semantics::HostHandleOpKind::MutexTryLock
-                        )
+                && dispatch.effective_builtin_op_id()
+                    == Some(raya_engine::compiler::builtins::builtin_op_id_from_host_handle(
+                        raya_engine::semantics::HostHandleOpKind::MutexTryLock,
                     ))
-                )
         }));
     }
 
@@ -3311,14 +3307,18 @@ mod tests {
         )
         .expect("semantic plan should build");
 
-        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
-            dispatch.member_name.as_deref() == Some("replaceWith")
-                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
-                && dispatch.builtin_op
-                    == Some(raya_engine::compiler::builtins::BuiltinOp::Native(
-                        raya_engine::vm::builtin::string::REPLACE_WITH_REGEXP,
-                    ))
-        }));
+        assert!(
+            plan.hir.builtin_dispatches.iter().any(|dispatch| {
+                dispatch.member_name.as_deref() == Some("replaceWith")
+                    && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
+                    && dispatch.effective_builtin_op_id()
+                        == raya_engine::compiler::builtins::builtin_op_id_from_native_id(
+                            raya_engine::vm::builtin::string::REPLACE_WITH_REGEXP,
+                        )
+            }),
+            "{:#?}",
+            plan.hir.builtin_dispatches
+        );
     }
 
     #[test]
@@ -3334,14 +3334,18 @@ mod tests {
         assert!(plan.hir.constructor_dispatches.iter().any(|dispatch| {
             dispatch.kind == raya_engine::ConstructorDispatchKind::BuiltinNativeConstructor
         }));
-        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
-            dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::Constructor
-                && dispatch.export_name.as_deref() == Some("RegExp")
-                && dispatch.builtin_op
-                    == Some(raya_engine::compiler::builtins::BuiltinOp::Native(
-                        raya_engine::vm::builtin::regexp::NEW,
-                    ))
-        }));
+        assert!(
+            plan.hir.builtin_dispatches.iter().any(|dispatch| {
+                dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::Constructor
+                    && dispatch.export_name.as_deref() == Some("RegExp")
+                    && dispatch.effective_builtin_op_id()
+                        == raya_engine::compiler::builtins::builtin_op_id_from_native_id(
+                            raya_engine::vm::builtin::regexp::NEW,
+                        )
+            }),
+            "{:#?}",
+            plan.hir.builtin_dispatches
+        );
     }
 
     #[test]
@@ -3420,22 +3424,30 @@ mod tests {
         )
         .expect("semantic plan should build");
 
-        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
-            dispatch.member_name.as_deref() == Some("setTime")
-                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
-                && dispatch.builtin_op
-                    == Some(raya_engine::compiler::builtins::BuiltinOp::Native(
-                        raya_engine::vm::builtin::date::SET_TIME,
-                    ))
-        }));
-        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
-            dispatch.member_name.as_deref() == Some("getHours")
-                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
-                && dispatch.builtin_op
-                    == Some(raya_engine::compiler::builtins::BuiltinOp::Native(
-                        raya_engine::vm::builtin::date::GET_HOURS,
-                    ))
-        }));
+        assert!(
+            plan.hir.builtin_dispatches.iter().any(|dispatch| {
+                dispatch.member_name.as_deref() == Some("setTime")
+                    && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
+                    && dispatch.effective_builtin_op_id()
+                        == raya_engine::compiler::builtins::builtin_op_id_from_native_id(
+                            raya_engine::vm::builtin::date::SET_TIME,
+                        )
+            }),
+            "{:#?}",
+            plan.hir.builtin_dispatches
+        );
+        assert!(
+            plan.hir.builtin_dispatches.iter().any(|dispatch| {
+                dispatch.member_name.as_deref() == Some("getHours")
+                    && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
+                    && dispatch.effective_builtin_op_id()
+                        == raya_engine::compiler::builtins::builtin_op_id_from_native_id(
+                            raya_engine::vm::builtin::date::GET_HOURS,
+                        )
+            }),
+            "{:#?}",
+            plan.hir.builtin_dispatches
+        );
     }
 
     #[test]
@@ -3480,14 +3492,10 @@ mod tests {
 
         assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
             dispatch.member_name.as_deref() == Some("trySend")
-                && matches!(
-                    dispatch.registry_dispatch,
-                    Some(raya_engine::compiler::type_registry::DispatchAction::Builtin(
-                        raya_engine::compiler::builtins::BuiltinOp::HostHandle(
-                            raya_engine::semantics::HostHandleOpKind::ChannelTrySend
-                        )
+                && dispatch.effective_builtin_op_id()
+                    == Some(raya_engine::compiler::builtins::builtin_op_id_from_host_handle(
+                        raya_engine::semantics::HostHandleOpKind::ChannelTrySend,
                     ))
-                )
         }));
     }
 

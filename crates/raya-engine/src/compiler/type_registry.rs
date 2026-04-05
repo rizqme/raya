@@ -6,7 +6,9 @@
 //! derived surface manifest. `TypeRegistry` is only the lookup/index layer used
 //! by lowering, monomorphization, and runtime helpers.
 
-use crate::compiler::builtins::{builtin_op_from_native_id, native_id_for_builtin_op, BuiltinOp};
+use crate::compiler::builtins::{
+    builtin_native_alias_id, builtin_op_id_from_native_id, BuiltinOpId, BuiltinRegistry,
+};
 use crate::compiler::module::{
     builtin_surface_manifest_for_mode, BuiltinDispatchBinding, BuiltinSurfaceManifest,
     BuiltinSurfaceMode,
@@ -29,7 +31,7 @@ pub enum DispatchAction {
     /// Emit a specialized opcode directly (e.g., StringLen, ArrayLen)
     Opcode(OpcodeKind),
     /// Emit a typed builtin runtime op.
-    Builtin(BuiltinOp),
+    Builtin(BuiltinOpId),
     /// Builtin primitive instance field declared in source.
     /// Carries the resolved field type and builtin field slot when they can be determined.
     DeclaredField {
@@ -64,7 +66,7 @@ pub struct TypeRegistry {
     /// Array property dispatch
     array_properties: FxHashMap<String, DispatchAction>,
     /// Constructor dispatch ops: type_name → builtin op
-    constructors: FxHashMap<String, BuiltinOp>,
+    constructors: FxHashMap<String, BuiltinOpId>,
     /// Set of type names that are `//@@builtin_primitive`
     builtin_primitives: FxHashSet<String>,
     /// TypeId → type name (reverse lookup)
@@ -77,9 +79,7 @@ impl TypeRegistry {
     fn runtime_builtin_method_action(&self, type_id: u32, name: &str) -> Option<DispatchAction> {
         let type_name = self.type_name(type_id)?;
         let native_id = crate::vm::builtin::lookup_builtin_method(type_name, name)?;
-        Some(DispatchAction::Builtin(
-            builtin_op_from_native_id(native_id).unwrap_or(BuiltinOp::Native(native_id)),
-        ))
+        builtin_op_id_from_native_id(native_id).map(DispatchAction::Builtin)
     }
 
     /// Build the registry from the builtin mode and TypeContext.
@@ -105,12 +105,15 @@ impl TypeRegistry {
                 registry.type_names.insert(id.as_u32(), name.to_string());
             }
         }
-        for type_name in manifest.types.keys() {
+        for (type_name, _) in BuiltinRegistry::shared().type_descriptors() {
+            if manifest.type_surface(type_name).is_none() {
+                continue;
+            }
             for type_id in dispatch_type_ids_for_name(type_name, type_ctx) {
                 registry
                     .type_names
                     .entry(type_id)
-                    .or_insert_with(|| type_name.clone());
+                    .or_insert_with(|| type_name.to_string());
             }
         }
 
@@ -149,7 +152,10 @@ impl TypeRegistry {
         type_ctx: &TypeContext,
         manifest: &BuiltinSurfaceManifest,
     ) {
-        for global_surface in manifest.globals.values() {
+        for (global_name, _) in BuiltinRegistry::shared().global_descriptors() {
+            let Some(global_surface) = manifest.global_surface(global_name) else {
+                continue;
+            };
             for binding in global_surface
                 .static_methods
                 .values()
@@ -159,17 +165,16 @@ impl TypeRegistry {
             }
         }
 
-        for (type_name, surface) in &manifest.types {
+        for (type_name, _) in BuiltinRegistry::shared().type_descriptors() {
+            let Some(surface) = manifest.type_surface(type_name) else {
+                continue;
+            };
             if surface.builtin_primitive {
-                self.builtin_primitives.insert(type_name.clone());
+                self.builtin_primitives.insert(type_name.to_string());
             }
 
-            if let Some(op) = surface
-                .constructor_binding
-                .as_ref()
-                .and_then(BuiltinDispatchBinding::builtin_op)
-            {
-                self.constructors.insert(type_name.clone(), op);
+            if let Some(op) = surface.constructor_binding.and_then(|binding| binding.builtin_op()) {
+                self.constructors.insert(type_name.to_string(), op);
             }
 
             let is_array = type_name == TypeContext::ARRAY_TYPE_NAME;
@@ -295,7 +300,7 @@ impl TypeRegistry {
     }
 
     /// Get the constructor builtin op for a type (e.g., Array, RegExp).
-    pub fn constructor_builtin_op(&self, type_name: &str) -> Option<BuiltinOp> {
+    pub fn constructor_builtin_op_id(&self, type_name: &str) -> Option<BuiltinOpId> {
         self.constructors.get(type_name).copied()
     }
 
@@ -303,7 +308,7 @@ impl TypeRegistry {
     pub fn constructor_native_id(&self, type_name: &str) -> Option<u16> {
         self.constructors
             .get(type_name)
-            .and_then(|op| native_id_for_builtin_op(*op))
+            .and_then(|op_id| builtin_native_alias_id(*op_id))
     }
 
     /// Returns true when a type name is handled by the builtin dispatch registry,
@@ -342,7 +347,7 @@ impl TypeRegistry {
     ) -> Option<u16> {
         let type_id = canonical_dispatch_type_id(type_name)?;
         match self.lookup_method(type_id, method_name) {
-            Some(DispatchAction::Builtin(op)) => native_id_for_builtin_op(op),
+            Some(DispatchAction::Builtin(op_id)) => builtin_native_alias_id(op_id),
             _ => None,
         }
     }
@@ -1164,18 +1169,22 @@ class Array<T> {
 
         // Verify constructors exposed through the Rust-owned builtin registry.
         assert_eq!(
-            registry.constructor_builtin_op("RegExp"),
-            Some(BuiltinOp::Native(crate::vm::builtin::regexp::NEW))
+            registry.constructor_builtin_op_id("RegExp"),
+            crate::compiler::builtins::builtin_op_id_from_native_id(
+                crate::vm::builtin::regexp::NEW
+            )
         );
         assert_eq!(
             registry.constructor_native_id("RegExp"),
             Some(crate::vm::builtin::regexp::NEW)
         );
-        assert!(registry.constructor_builtin_op("string").is_none());
+        assert!(registry.constructor_builtin_op_id("string").is_none());
         assert!(registry.constructor_native_id("string").is_none());
         assert_eq!(
-            registry.constructor_builtin_op("Buffer"),
-            Some(BuiltinOp::Native(crate::vm::builtin::buffer::NEW))
+            registry.constructor_builtin_op_id("Buffer"),
+            crate::compiler::builtins::builtin_op_id_from_native_id(
+                crate::vm::builtin::buffer::NEW
+            )
         );
         assert_eq!(
             registry.constructor_native_id("Buffer"),

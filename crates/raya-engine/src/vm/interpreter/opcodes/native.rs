@@ -153,6 +153,438 @@ fn builtin_native_alias_id_from_op(op: BuiltinOp) -> Option<u16> {
     }
 }
 
+pub(crate) fn dispatch_native_kernel_call(
+    this: &mut Interpreter<'_>,
+    stack: &mut Stack,
+    module: &Module,
+    task: &Arc<Task>,
+    native_id: u16,
+    native_argc: u8,
+) -> OpcodeResult {
+    let boxed_date_receiver = if crate::vm::builtin::is_date_setter(native_id) {
+        stack
+            .depth()
+            .checked_sub(native_argc as usize)
+            .and_then(|pos| stack.peek_at(pos).ok())
+            .filter(|receiver| this.boxed_primitive_internal_value(*receiver, "Date").is_some())
+    } else {
+        None
+    };
+    let fake_code = [
+        (native_id & 0x00FF) as u8,
+        ((native_id >> 8) & 0x00FF) as u8,
+        native_argc,
+    ];
+    let mut nested_ip = 0usize;
+    let result = this.exec_native_ops(stack, &mut nested_ip, &fake_code, module, task, Opcode::Nop);
+    if matches!(result, OpcodeResult::Continue) {
+        if let Some(receiver) = boxed_date_receiver {
+            this.sync_boxed_date_setter_result(stack, receiver, native_id);
+        }
+    }
+    result
+}
+
+pub(crate) fn dispatch_type_kernel_call(
+    this: &mut Interpreter<'_>,
+    stack: &mut Stack,
+    module: &Module,
+    task: &Arc<Task>,
+    opcode: Opcode,
+) -> OpcodeResult {
+    let mut nested_ip = 0usize;
+    this.exec_type_ops(stack, &mut nested_ip, &[], module, task, opcode)
+}
+
+pub(crate) fn pop_kernel_args(stack: &mut Stack, arg_count: u8) -> Result<Vec<Value>, VmError> {
+    let mut args = Vec::with_capacity(arg_count as usize);
+    for _ in 0..arg_count {
+        args.push(stack.pop()?);
+    }
+    args.reverse();
+    Ok(args)
+}
+
+pub(crate) fn dispatch_builtin_kernel_call_impl(
+    this: &mut Interpreter<'_>,
+    stack: &mut Stack,
+    module: &Module,
+    task: &Arc<Task>,
+    op_id: crate::compiler::builtins::BuiltinOpId,
+    arg_count: u8,
+) -> OpcodeResult {
+    match crate::compiler::builtins::decode_builtin_op_id(op_id).expect("valid builtin op id") {
+        crate::compiler::builtins::BuiltinOp::Native(native_id) => {
+            dispatch_native_kernel_call(this, stack, module, task, native_id, arg_count)
+        }
+        crate::compiler::builtins::BuiltinOp::Metaobject(_)
+        | crate::compiler::builtins::BuiltinOp::Iterator(_) => {
+            let native_id = crate::compiler::builtins::builtin_native_alias_id(op_id)
+                .expect("metaobject and iterator builtins must have native aliases");
+            dispatch_native_kernel_call(this, stack, module, task, native_id, arg_count)
+        }
+        crate::compiler::builtins::BuiltinOp::Js(kind) => match kind {
+            crate::semantics::JsOpKind::GetNamed | crate::semantics::JsOpKind::GetKeyed => {
+                dispatch_type_kernel_call(this, stack, module, task, Opcode::DynGetKeyed)
+            }
+            crate::semantics::JsOpKind::SetNamed { strict }
+            | crate::semantics::JsOpKind::SetKeyed { strict } => {
+                let native_id = if strict {
+                    crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT
+                } else {
+                    crate::compiler::native_id::OBJECT_SET_PROPERTY
+                };
+                dispatch_native_kernel_call(this, stack, module, task, native_id, arg_count)
+            }
+            crate::semantics::JsOpKind::BindMethod => {
+                let key = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let receiver = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                if let Err(e) = stack.push(receiver) {
+                    return OpcodeResult::Error(e);
+                }
+                if let Err(e) = stack.push(key) {
+                    return OpcodeResult::Error(e);
+                }
+                match dispatch_type_kernel_call(this, stack, module, task, Opcode::DynGetKeyed) {
+                    OpcodeResult::Continue => {}
+                    other => return other,
+                }
+                let closure = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                if let Err(e) = stack.push(closure) {
+                    return OpcodeResult::Error(e);
+                }
+                if let Err(e) = stack.push(receiver) {
+                    return OpcodeResult::Error(e);
+                }
+                dispatch_native_kernel_call(
+                    this,
+                    stack,
+                    module,
+                    task,
+                    crate::compiler::native_id::FUNCTION_BIND_HELPER,
+                    2,
+                )
+            }
+            crate::semantics::JsOpKind::ResolveIdentifier { non_throwing } => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_resolve_identifier(stack, module, task, &args, non_throwing)
+            }
+            crate::semantics::JsOpKind::HasIdentifier => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_has_identifier(stack, module, task, &args)
+            }
+            crate::semantics::JsOpKind::AssignIdentifier { .. } => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_assign_identifier(stack, module, task, &args)
+            }
+            crate::semantics::JsOpKind::DeleteIdentifier => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_delete_identifier(stack, module, task, &args)
+            }
+            crate::semantics::JsOpKind::DeclareVar => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_declare_var(stack, module, task, &args)
+            }
+            crate::semantics::JsOpKind::DeclareFunction => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_declare_function(stack, module, task, &args)
+            }
+            crate::semantics::JsOpKind::DeclareLexical => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_declare_lexical(stack, task, &args)
+            }
+            crate::semantics::JsOpKind::CallValue => dispatch_native_kernel_call(
+                this,
+                stack,
+                module,
+                task,
+                crate::compiler::native_id::FUNCTION_CALL_HELPER,
+                arg_count,
+            ),
+            crate::semantics::JsOpKind::CallMemberNamed
+            | crate::semantics::JsOpKind::CallMemberKeyed => {
+                let args_array = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let key = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let receiver = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                if let Err(e) = stack.push(receiver) {
+                    return OpcodeResult::Error(e);
+                };
+                if let Err(e) = stack.push(key) {
+                    return OpcodeResult::Error(e);
+                }
+                match dispatch_type_kernel_call(this, stack, module, task, Opcode::DynGetKeyed) {
+                    OpcodeResult::Continue => {}
+                    other => return other,
+                }
+                let closure = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                if let Err(e) = stack.push(closure) {
+                    return OpcodeResult::Error(e);
+                }
+                if let Err(e) = stack.push(receiver) {
+                    return OpcodeResult::Error(e);
+                }
+                if let Err(e) = stack.push(args_array) {
+                    return OpcodeResult::Error(e);
+                }
+                dispatch_native_kernel_call(
+                    this,
+                    stack,
+                    module,
+                    task,
+                    crate::compiler::native_id::FUNCTION_APPLY_HELPER,
+                    3,
+                )
+            }
+            crate::semantics::JsOpKind::ConstructValue => dispatch_native_kernel_call(
+                this,
+                stack,
+                module,
+                task,
+                crate::compiler::native_id::OBJECT_CONSTRUCT_APPLY_HELPER,
+                arg_count,
+            ),
+            crate::semantics::JsOpKind::EnterActivationEnv => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_enter_activation_env(stack, task, &args)
+            }
+            crate::semantics::JsOpKind::LeaveActivationEnv => {
+                this.exec_js_leave_activation_env(stack, task)
+            }
+            crate::semantics::JsOpKind::PushWithEnv => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_push_with_env(stack, module, task, &args)
+            }
+            crate::semantics::JsOpKind::PopWithEnv => this.exec_js_pop_with_env(stack, task),
+            crate::semantics::JsOpKind::PushDeclarativeEnv => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_push_declarative_env(stack, module, task, &args)
+            }
+            crate::semantics::JsOpKind::PopDeclarativeEnv => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_pop_declarative_env(stack, task, &args)
+            }
+            crate::semantics::JsOpKind::ReplaceDeclarativeEnv => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_replace_declarative_env(stack, module, task, &args)
+            }
+            crate::semantics::JsOpKind::DirectEval => dispatch_native_kernel_call(
+                this,
+                stack,
+                module,
+                task,
+                crate::compiler::native_id::FUNCTION_EVAL_HELPER,
+                arg_count,
+            ),
+            crate::semantics::JsOpKind::EvalGetCompletion => {
+                this.exec_js_eval_get_completion(stack, task)
+            }
+            crate::semantics::JsOpKind::EvalSetCompletion => {
+                let args = match pop_kernel_args(stack, arg_count) {
+                    Ok(args) => args,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                this.exec_js_eval_set_completion(stack, task, &args)
+            }
+        },
+        crate::compiler::builtins::BuiltinOp::HostHandle(kind) => {
+            if let Some(native_id) = crate::compiler::builtins::builtin_native_alias_id(op_id) {
+                return dispatch_native_kernel_call(this, stack, module, task, native_id, arg_count);
+            }
+            match kind {
+                crate::semantics::HostHandleOpKind::ChannelConstructor => {
+                    this.safepoint.poll();
+                    let capacity_val = match stack.pop() {
+                        Ok(v) => v,
+                        Err(e) => return OpcodeResult::Error(e),
+                    };
+                    let capacity = capacity_val.as_i32().unwrap_or(0) as usize;
+                    let channel = ChannelObject::new(capacity);
+                    let handle = this.allocate_pinned_handle(channel);
+                    if let Err(e) = stack.push(Value::u64(handle)) {
+                        return OpcodeResult::Error(e);
+                    }
+                    OpcodeResult::Continue
+                }
+                crate::semantics::HostHandleOpKind::MutexConstructor => {
+                    let (mutex_id, _) = this.mutex_registry.create_mutex();
+                    if let Err(e) = stack.push(Value::i64(mutex_id.as_u64() as i64)) {
+                        return OpcodeResult::Error(e);
+                    }
+                    OpcodeResult::Continue
+                }
+                crate::semantics::HostHandleOpKind::MutexLock => {
+                    let mutex_id_val = match stack.pop() {
+                        Ok(v) => v,
+                        Err(e) => return OpcodeResult::Error(e),
+                    };
+                    let mutex_id = MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
+                    if let Some(mutex) = this.mutex_registry.get(mutex_id) {
+                        match mutex.try_lock(task.id()) {
+                            Ok(()) => {
+                                task.add_held_mutex(mutex_id);
+                                stack
+                                    .push(Value::null())
+                                    .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                            }
+                            Err(_) => {
+                                task.set_resume_value(Value::null());
+                                OpcodeResult::Suspend(
+                                    crate::vm::scheduler::SuspendReason::MutexAcquire {
+                                        mutex_id,
+                                        resume_policy:
+                                            crate::vm::scheduler::ResumePolicy::ReturnNull,
+                                    },
+                                )
+                            }
+                        }
+                    } else {
+                        OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Mutex {:?} not found",
+                            mutex_id
+                        )))
+                    }
+                }
+                crate::semantics::HostHandleOpKind::MutexUnlock => {
+                    let mutex_id_val = match stack.pop() {
+                        Ok(v) => v,
+                        Err(e) => return OpcodeResult::Error(e),
+                    };
+                    let mutex_id = MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
+                    if let Some(mutex) = this.mutex_registry.get(mutex_id) {
+                        match mutex.unlock(task.id()) {
+                            Ok(next_waiter) => {
+                                task.remove_held_mutex(mutex_id);
+
+                                if let Some(waiter_id) = next_waiter {
+                                    let tasks = this.tasks.read();
+                                    if let Some(waiter_task) = tasks.get(&waiter_id) {
+                                        if waiter_task.try_resume() {
+                                            waiter_task.add_held_mutex(mutex_id);
+                                            if matches!(
+                                                waiter_task.suspend_reason(),
+                                                Some(crate::vm::scheduler::SuspendReason::MutexAcquire {
+                                                    resume_policy: crate::vm::scheduler::ResumePolicy::ReturnNull,
+                                                    ..
+                                                })
+                                            ) {
+                                                waiter_task.set_resume_value(Value::null());
+                                            }
+                                            waiter_task.clear_suspend_reason();
+                                            this.injector.push(waiter_task.clone());
+                                        }
+                                    }
+                                }
+
+                                stack
+                                    .push(Value::null())
+                                    .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                            }
+                            Err(e) => OpcodeResult::Error(VmError::RuntimeError(format!("{}", e))),
+                        }
+                    } else {
+                        OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Mutex {:?} not found",
+                            mutex_id
+                        )))
+                    }
+                }
+                crate::semantics::HostHandleOpKind::TaskCancel => {
+                    let task_id_val = match stack.pop() {
+                        Ok(v) => v,
+                        Err(e) => return OpcodeResult::Error(e),
+                    };
+                    let handle = match this.promise_handle_from_value(task_id_val) {
+                        Some(handle) => handle,
+                        None => {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "TaskCancel: expected task-backed promise handle".to_string(),
+                            ));
+                        }
+                    };
+                    let target_id = handle.task_id();
+                    if let Some(target_task) = this.tasks.read().get(&target_id).cloned() {
+                        this.cancel_task_and_await_chain(target_task);
+                    }
+                    stack
+                        .push(Value::undefined())
+                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                }
+                crate::semantics::HostHandleOpKind::ChannelSend
+                | crate::semantics::HostHandleOpKind::ChannelReceive
+                | crate::semantics::HostHandleOpKind::ChannelTrySend
+                | crate::semantics::HostHandleOpKind::ChannelTryReceive
+                | crate::semantics::HostHandleOpKind::ChannelClose
+                | crate::semantics::HostHandleOpKind::ChannelIsClosed
+                | crate::semantics::HostHandleOpKind::ChannelLength
+                | crate::semantics::HostHandleOpKind::ChannelCapacity
+                | crate::semantics::HostHandleOpKind::MutexTryLock
+                | crate::semantics::HostHandleOpKind::MutexIsLocked
+                | crate::semantics::HostHandleOpKind::TaskIsDone
+                | crate::semantics::HostHandleOpKind::TaskIsCancelled => {
+                    unreachable!("native-alias host handle builtin should have been handled above")
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct JsPropertyDescriptorRecord {
     has_value: bool,
@@ -696,6 +1128,35 @@ impl<'a> Interpreter<'a> {
 
     pub(in crate::vm::interpreter) fn alloc_unbound_native_value(&self, native_id: u16) -> Value {
         self.alloc_bound_native_value(Value::undefined(), native_id)
+    }
+
+    pub(in crate::vm::interpreter) fn alloc_bound_builtin_value(
+        &self,
+        receiver: Value,
+        op_id: crate::compiler::builtins::BuiltinOpId,
+    ) -> Value {
+        let method = Object::new_bound_builtin(receiver, op_id);
+        let method_ptr = self.gc.lock().allocate(method);
+        unsafe { Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("bound builtin ptr")) }
+    }
+
+    pub(in crate::vm::interpreter) fn alloc_unbound_builtin_value(
+        &self,
+        op_id: crate::compiler::builtins::BuiltinOpId,
+    ) -> Value {
+        self.alloc_bound_builtin_value(Value::undefined(), op_id)
+    }
+
+    pub(in crate::vm::interpreter) fn alloc_bound_builtin_or_native_value(
+        &self,
+        receiver: Value,
+        native_id: u16,
+    ) -> Value {
+        if let Some(op_id) = crate::compiler::builtins::builtin_op_id_from_native_id(native_id) {
+            self.alloc_bound_builtin_value(receiver, op_id)
+        } else {
+            self.alloc_bound_native_value(receiver, native_id)
+        }
     }
 
     fn alloc_array_value_from_values(&self, values: &[Value]) -> Value {
@@ -7478,6 +7939,24 @@ impl<'a> Interpreter<'a> {
                     };
                     return Some((visible_name, arity));
                 }
+                CallableKind::BoundBuiltin { op_id, .. } => {
+                    if let Some(native_id) =
+                        crate::compiler::builtins::builtin_native_alias_id(*op_id)
+                    {
+                        let raw_name = crate::compiler::native_id::native_name(native_id);
+                        let visible_name =
+                            raw_name.rsplit('.').next().unwrap_or(raw_name).to_string();
+                        return Some((visible_name, 0));
+                    }
+                    let descriptor = crate::compiler::builtins::builtin_descriptor(*op_id);
+                    let visible_name = descriptor
+                        .name
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(descriptor.name)
+                        .to_string();
+                    return Some((visible_name, 0));
+                }
                 CallableKind::Bound {
                     visible_name,
                     visible_length,
@@ -7823,6 +8302,7 @@ impl<'a> Interpreter<'a> {
             }
             CallableKind::BoundMethod { .. }
             | CallableKind::BoundNative { .. }
+            | CallableKind::BoundBuiltin { .. }
             | CallableKind::Bound { .. } => false,
         }
     }
@@ -8036,6 +8516,9 @@ impl<'a> Interpreter<'a> {
                 CallableKind::BoundNative { native_id, .. } => {
                     return Some(*native_id);
                 }
+                CallableKind::BoundBuiltin { op_id, .. } => {
+                    return crate::compiler::builtins::builtin_native_alias_id(*op_id);
+                }
                 CallableKind::Bound { target, .. } => {
                     return self.callable_native_alias_id(*target);
                 }
@@ -8067,6 +8550,10 @@ impl<'a> Interpreter<'a> {
                     }
                     CallableKind::BoundNative { native_id, .. } => {
                         return self.native_callable_uses_receiver(*native_id);
+                    }
+                    CallableKind::BoundBuiltin { op_id, .. } => {
+                        return crate::compiler::builtins::builtin_native_alias_id(*op_id)
+                            .is_some_and(|native_id| self.native_callable_uses_receiver(native_id));
                     }
                     CallableKind::Bound { target, .. } => {
                         return self.callable_uses_js_this_slot(*target);
@@ -9408,10 +9895,7 @@ impl<'a> Interpreter<'a> {
             let BuiltinSurfaceMemberDescriptor::Bound(binding) = binding else {
                 continue;
             };
-            let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
-                continue;
-            };
-            let value = self.alloc_unbound_native_value(native_id);
+            let value = self.alloc_unbound_builtin_value(binding.op_id());
             self.define_data_property_on_target(target, name, value, true, false, true)?;
         }
 
@@ -9419,10 +9903,7 @@ impl<'a> Interpreter<'a> {
             let BuiltinSurfaceMemberDescriptor::Bound(binding) = binding else {
                 continue;
             };
-            let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
-                continue;
-            };
-            let getter = self.alloc_unbound_native_value(native_id);
+            let getter = self.alloc_unbound_builtin_value(binding.op_id());
             self.define_accessor_property_on_target(
                 target,
                 name,
@@ -9505,13 +9986,7 @@ impl<'a> Interpreter<'a> {
         let Some(binding) = descriptor.binding else {
             return Ok(None);
         };
-        let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
-            return Err(VmError::RuntimeError(format!(
-                "builtin global '{}' does not map to a callable native",
-                name
-            )));
-        };
-        let value = self.alloc_unbound_native_value(native_id);
+        let value = self.alloc_unbound_builtin_value(binding.op_id());
         self.store_builtin_global_value(name, value);
         Ok(Some(value))
     }
@@ -9945,10 +10420,7 @@ impl<'a> Interpreter<'a> {
             let BuiltinSurfaceMemberDescriptor::Bound(binding) = binding else {
                 continue;
             };
-            let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
-                continue;
-            };
-            let value = self.alloc_unbound_native_value(native_id);
+            let value = self.alloc_unbound_builtin_value(binding.op_id());
             self.define_data_property_on_target(prototype_val, name, value, true, false, true)?;
             method_values.push(((*name).to_string(), value));
         }
@@ -9957,10 +10429,7 @@ impl<'a> Interpreter<'a> {
             let BuiltinSurfaceMemberDescriptor::Bound(binding) = binding else {
                 continue;
             };
-            let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
-                continue;
-            };
-            let getter = self.alloc_unbound_native_value(native_id);
+            let getter = self.alloc_unbound_builtin_value(binding.op_id());
             self.define_accessor_property_on_target(
                 prototype_val,
                 name,
@@ -14892,9 +15361,7 @@ impl<'a> Interpreter<'a> {
             target,
             key,
         )?;
-        let method = Object::new_bound_native(target, native_id);
-        let method_ptr = self.gc.lock().allocate(method);
-        Some(unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) })
+        Some(self.alloc_bound_builtin_or_native_value(target, native_id))
     }
 
     fn exotic_adapter_kind(&self, target: Value) -> Option<JsExoticAdapterKind> {
@@ -19169,6 +19636,24 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    pub(crate) fn dispatch_kernel_call(
+        &mut self,
+        stack: &mut Stack,
+        module: &Module,
+        task: &Arc<Task>,
+        kernel_op: crate::compiler::ir::KernelOp,
+        arg_count: u8,
+    ) -> OpcodeResult {
+        let kernel_op_id = crate::compiler::ir::encode_kernel_op_id(kernel_op);
+        let code = [
+            (kernel_op_id & 0x00FF) as u8,
+            ((kernel_op_id >> 8) & 0x00FF) as u8,
+            arg_count,
+        ];
+        let mut ip = 0usize;
+        self.exec_native_ops(stack, &mut ip, &code, module, task, Opcode::KernelCall)
+    }
+
     pub(crate) fn exec_native_ops(
         &mut self,
         stack: &mut Stack,
@@ -19193,74 +19678,9 @@ impl<'a> Interpreter<'a> {
                         "Unknown KernelCall op id {kernel_op_id:#06x}"
                     )));
                 };
-                fn dispatch_native_kernel(
-                    this: &mut Interpreter<'_>,
-                    stack: &mut Stack,
-                    module: &Module,
-                    task: &Arc<Task>,
-                    native_id: u16,
-                    native_argc: u8,
-                ) -> OpcodeResult {
-                    let boxed_date_receiver = if crate::vm::builtin::is_date_setter(native_id) {
-                        stack
-                            .depth()
-                            .checked_sub(native_argc as usize)
-                            .and_then(|pos| stack.peek_at(pos).ok())
-                            .filter(|receiver| {
-                                this.boxed_primitive_internal_value(*receiver, "Date")
-                                    .is_some()
-                            })
-                    } else {
-                        None
-                    };
-                    let fake_code = [
-                        (native_id & 0x00FF) as u8,
-                        ((native_id >> 8) & 0x00FF) as u8,
-                        native_argc,
-                    ];
-                    let mut nested_ip = 0usize;
-                    let result = this.exec_native_ops(
-                        stack,
-                        &mut nested_ip,
-                        &fake_code,
-                        module,
-                        task,
-                        Opcode::Nop,
-                    );
-                    if matches!(result, OpcodeResult::Continue) {
-                        if let Some(receiver) = boxed_date_receiver {
-                            this.sync_boxed_date_setter_result(stack, receiver, native_id);
-                        }
-                    }
-                    result
-                }
-
-                fn dispatch_type_kernel(
-                    this: &mut Interpreter<'_>,
-                    stack: &mut Stack,
-                    module: &Module,
-                    task: &Arc<Task>,
-                    opcode: Opcode,
-                ) -> OpcodeResult {
-                    let mut nested_ip = 0usize;
-                    this.exec_type_ops(stack, &mut nested_ip, &[], module, task, opcode)
-                }
-
-                fn pop_kernel_args(
-                    stack: &mut Stack,
-                    arg_count: u8,
-                ) -> Result<Vec<Value>, VmError> {
-                    let mut args = Vec::with_capacity(arg_count as usize);
-                    for _ in 0..arg_count {
-                        args.push(stack.pop()?);
-                    }
-                    args.reverse();
-                    Ok(args)
-                }
-
                 match kernel_op {
                     crate::compiler::ir::KernelOp::VmNative(native_id) => {
-                        dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
+                        dispatch_native_kernel_call(self, stack, module, task, native_id, arg_count)
                     }
                     crate::compiler::ir::KernelOp::RegisteredNative(local_idx) => {
                         use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
@@ -19323,576 +19743,16 @@ impl<'a> Interpreter<'a> {
                             self.exec_array_ops(stack, &mut nested_ip, &[], Opcode::ArrayLen)
                         }
                     },
-                    crate::compiler::ir::KernelOp::Builtin(kind) => match kind {
-                        crate::compiler::builtins::BuiltinOp::Native(native_id) => {
-                        dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
-                        }
-                        crate::compiler::builtins::BuiltinOp::Metaobject(kind) => {
-                        let native_id = match kind {
-                            crate::semantics::MetaobjectOpKind::DefineProperty => {
-                                crate::compiler::native_id::OBJECT_DEFINE_PROPERTY
-                            }
-                            crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor => {
-                                crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
-                            }
-                            crate::semantics::MetaobjectOpKind::DefineProperties => {
-                                crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES
-                            }
-                            crate::semantics::MetaobjectOpKind::DeleteProperty => {
-                                crate::compiler::native_id::OBJECT_DELETE_PROPERTY
-                            }
-                            crate::semantics::MetaobjectOpKind::GetPrototypeOf => {
-                                crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF
-                            }
-                            crate::semantics::MetaobjectOpKind::SetPrototypeOf => {
-                                crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF
-                            }
-                            crate::semantics::MetaobjectOpKind::PreventExtensions => {
-                                crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS
-                            }
-                            crate::semantics::MetaobjectOpKind::IsExtensible => {
-                                crate::compiler::native_id::OBJECT_IS_EXTENSIBLE
-                            }
-                            crate::semantics::MetaobjectOpKind::ReflectGet => {
-                                crate::compiler::native_id::REFLECT_GET
-                            }
-                            crate::semantics::MetaobjectOpKind::ReflectSet => {
-                                crate::compiler::native_id::REFLECT_SET
-                            }
-                            crate::semantics::MetaobjectOpKind::ReflectHas => {
-                                crate::compiler::native_id::REFLECT_HAS
-                            }
-                            crate::semantics::MetaobjectOpKind::ReflectOwnKeys => {
-                                crate::compiler::native_id::REFLECT_OWN_KEYS
-                            }
-                            crate::semantics::MetaobjectOpKind::ReflectConstruct => {
-                                crate::compiler::native_id::REFLECT_CONSTRUCT
-                            }
-                        };
-                        dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
-                        }
-                        crate::compiler::builtins::BuiltinOp::Iterator(kind) => {
-                        let native_id = match kind {
-                            crate::semantics::IteratorOpKind::GetIterator => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_GET
-                            }
-                            crate::semantics::IteratorOpKind::GetAsyncIterator => {
-                                crate::compiler::native_id::OBJECT_ASYNC_ITERATOR_GET
-                            }
-                            crate::semantics::IteratorOpKind::Step => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_STEP
-                            }
-                            crate::semantics::IteratorOpKind::Done => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_DONE
-                            }
-                            crate::semantics::IteratorOpKind::Value => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_VALUE
-                            }
-                            crate::semantics::IteratorOpKind::ResumeNext => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_RESUME_NEXT
-                            }
-                            crate::semantics::IteratorOpKind::ResumeReturn => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_RESUME_RETURN
-                            }
-                            crate::semantics::IteratorOpKind::ResumeThrow => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_RESUME_THROW
-                            }
-                            crate::semantics::IteratorOpKind::Close => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_CLOSE
-                            }
-                            crate::semantics::IteratorOpKind::CloseOnThrow => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_ON_THROW
-                            }
-                            crate::semantics::IteratorOpKind::CloseCompletion => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_CLOSE_COMPLETION
-                            }
-                            crate::semantics::IteratorOpKind::AppendToArray => {
-                                crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY
-                            }
-                        };
-                        dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
-                        }
-                        crate::compiler::builtins::BuiltinOp::Js(kind) => match kind {
-                        crate::semantics::JsOpKind::GetNamed
-                        | crate::semantics::JsOpKind::GetKeyed => {
-                            dispatch_type_kernel(self, stack, module, task, Opcode::DynGetKeyed)
-                        }
-                        crate::semantics::JsOpKind::SetNamed { strict }
-                        | crate::semantics::JsOpKind::SetKeyed { strict } => {
-                            let native_id = if strict {
-                                crate::compiler::native_id::OBJECT_SET_PROPERTY_STRICT
-                            } else {
-                                crate::compiler::native_id::OBJECT_SET_PROPERTY
-                            };
-                            dispatch_native_kernel(self, stack, module, task, native_id, arg_count)
-                        }
-                        crate::semantics::JsOpKind::BindMethod => {
-                            let key = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            let receiver = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            if let Err(e) = stack.push(receiver) {
-                                return OpcodeResult::Error(e);
-                            }
-                            if let Err(e) = stack.push(key) {
-                                return OpcodeResult::Error(e);
-                            }
-                            match dispatch_type_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                Opcode::DynGetKeyed,
-                            ) {
-                                OpcodeResult::Continue => {}
-                                other => return other,
-                            }
-                            let closure = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            if let Err(e) = stack.push(closure) {
-                                return OpcodeResult::Error(e);
-                            }
-                            if let Err(e) = stack.push(receiver) {
-                                return OpcodeResult::Error(e);
-                            }
-                            dispatch_native_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                crate::compiler::native_id::FUNCTION_BIND_HELPER,
-                                2,
-                            )
-                        }
-                        crate::semantics::JsOpKind::ResolveIdentifier { non_throwing } => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_resolve_identifier(
-                                stack,
-                                module,
-                                task,
-                                &args,
-                                non_throwing,
-                            )
-                        }
-                        crate::semantics::JsOpKind::HasIdentifier => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_has_identifier(stack, module, task, &args)
-                        }
-                        crate::semantics::JsOpKind::AssignIdentifier { .. } => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_assign_identifier(stack, module, task, &args)
-                        }
-                        crate::semantics::JsOpKind::DeleteIdentifier => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_delete_identifier(stack, module, task, &args)
-                        }
-                        crate::semantics::JsOpKind::DeclareVar => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_declare_var(stack, module, task, &args)
-                        }
-                        crate::semantics::JsOpKind::DeclareFunction => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_declare_function(stack, module, task, &args)
-                        }
-                        crate::semantics::JsOpKind::DeclareLexical => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_declare_lexical(stack, task, &args)
-                        }
-                        crate::semantics::JsOpKind::CallValue => dispatch_native_kernel(
+                    crate::compiler::ir::KernelOp::Builtin(op_id) => {
+                        crate::vm::builtins::dispatch_builtin_kernel_call(
                             self,
                             stack,
                             module,
                             task,
-                            crate::compiler::native_id::FUNCTION_CALL_HELPER,
+                            op_id,
                             arg_count,
-                        ),
-                        crate::semantics::JsOpKind::CallMemberNamed
-                        | crate::semantics::JsOpKind::CallMemberKeyed => {
-                            let args_array = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            let key = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            let receiver = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            if let Err(e) = stack.push(receiver) {
-                                return OpcodeResult::Error(e);
-                            };
-                            if let Err(e) = stack.push(key) {
-                                return OpcodeResult::Error(e);
-                            }
-                            match dispatch_type_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                Opcode::DynGetKeyed,
-                            ) {
-                                OpcodeResult::Continue => {}
-                                other => return other,
-                            }
-                            let closure = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            if let Err(e) = stack.push(closure) {
-                                return OpcodeResult::Error(e);
-                            }
-                            if let Err(e) = stack.push(receiver) {
-                                return OpcodeResult::Error(e);
-                            }
-                            if let Err(e) = stack.push(args_array) {
-                                return OpcodeResult::Error(e);
-                            }
-                            dispatch_native_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                crate::compiler::native_id::FUNCTION_APPLY_HELPER,
-                                3,
-                            )
-                        }
-                        crate::semantics::JsOpKind::ConstructValue => dispatch_native_kernel(
-                            self,
-                            stack,
-                            module,
-                            task,
-                            crate::compiler::native_id::OBJECT_CONSTRUCT_APPLY_HELPER,
-                            arg_count,
-                        ),
-                        crate::semantics::JsOpKind::EnterActivationEnv => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_enter_activation_env(stack, task, &args)
-                        }
-                        crate::semantics::JsOpKind::LeaveActivationEnv => {
-                            self.exec_js_leave_activation_env(stack, task)
-                        }
-                        crate::semantics::JsOpKind::PushWithEnv => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_push_with_env(stack, module, task, &args)
-                        }
-                        crate::semantics::JsOpKind::PopWithEnv => {
-                            self.exec_js_pop_with_env(stack, task)
-                        }
-                        crate::semantics::JsOpKind::PushDeclarativeEnv => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_push_declarative_env(stack, module, task, &args)
-                        }
-                        crate::semantics::JsOpKind::PopDeclarativeEnv => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_pop_declarative_env(stack, task, &args)
-                        }
-                        crate::semantics::JsOpKind::ReplaceDeclarativeEnv => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_replace_declarative_env(stack, module, task, &args)
-                        }
-                        crate::semantics::JsOpKind::DirectEval => dispatch_native_kernel(
-                            self,
-                            stack,
-                            module,
-                            task,
-                            crate::compiler::native_id::FUNCTION_EVAL_HELPER,
-                            arg_count,
-                        ),
-                        crate::semantics::JsOpKind::EvalGetCompletion => {
-                            self.exec_js_eval_get_completion(stack, task)
-                        }
-                        crate::semantics::JsOpKind::EvalSetCompletion => {
-                            let args = match pop_kernel_args(stack, arg_count) {
-                                Ok(args) => args,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                            self.exec_js_eval_set_completion(stack, task, &args)
-                        }
-                        },
-                        crate::compiler::builtins::BuiltinOp::HostHandle(kind) => match kind {
-                        crate::semantics::HostHandleOpKind::ChannelConstructor => {
-                            self.safepoint.poll();
-                            let capacity_val = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            let capacity = capacity_val.as_i32().unwrap_or(0) as usize;
-                            let channel = ChannelObject::new(capacity);
-                            let handle = self.allocate_pinned_handle(channel);
-                            if let Err(e) = stack.push(Value::u64(handle)) {
-                                return OpcodeResult::Error(e);
-                            }
-                            OpcodeResult::Continue
-                        }
-                        crate::semantics::HostHandleOpKind::ChannelSend => dispatch_native_kernel(
-                            self,
-                            stack,
-                            module,
-                            task,
-                            crate::compiler::native_id::CHANNEL_SEND,
-                            arg_count,
-                        ),
-                        crate::semantics::HostHandleOpKind::ChannelReceive => {
-                            dispatch_native_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                crate::compiler::native_id::CHANNEL_RECEIVE,
-                                arg_count,
-                            )
-                        }
-                        crate::semantics::HostHandleOpKind::ChannelTrySend => {
-                            dispatch_native_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                crate::compiler::native_id::CHANNEL_TRY_SEND,
-                                arg_count,
-                            )
-                        }
-                        crate::semantics::HostHandleOpKind::ChannelTryReceive => {
-                            dispatch_native_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                crate::compiler::native_id::CHANNEL_TRY_RECEIVE,
-                                arg_count,
-                            )
-                        }
-                        crate::semantics::HostHandleOpKind::ChannelClose => dispatch_native_kernel(
-                            self,
-                            stack,
-                            module,
-                            task,
-                            crate::compiler::native_id::CHANNEL_CLOSE,
-                            arg_count,
-                        ),
-                        crate::semantics::HostHandleOpKind::ChannelIsClosed => {
-                            dispatch_native_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                crate::compiler::native_id::CHANNEL_IS_CLOSED,
-                                arg_count,
-                            )
-                        }
-                        crate::semantics::HostHandleOpKind::ChannelLength => dispatch_native_kernel(
-                            self,
-                            stack,
-                            module,
-                            task,
-                            crate::compiler::native_id::CHANNEL_LENGTH,
-                            arg_count,
-                        ),
-                        crate::semantics::HostHandleOpKind::ChannelCapacity => {
-                            dispatch_native_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                crate::compiler::native_id::CHANNEL_CAPACITY,
-                                arg_count,
-                            )
-                        }
-                        crate::semantics::HostHandleOpKind::MutexConstructor => {
-                            let (mutex_id, _) = self.mutex_registry.create_mutex();
-                            if let Err(e) = stack.push(Value::i64(mutex_id.as_u64() as i64)) {
-                                return OpcodeResult::Error(e);
-                            }
-                            OpcodeResult::Continue
-                        }
-                        crate::semantics::HostHandleOpKind::MutexLock => {
-                            let mutex_id_val = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            let mutex_id =
-                                MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
-                            if let Some(mutex) = self.mutex_registry.get(mutex_id) {
-                                match mutex.try_lock(task.id()) {
-                                    Ok(()) => {
-                                        task.add_held_mutex(mutex_id);
-                                        stack
-                                            .push(Value::null())
-                                            .map_or_else(OpcodeResult::Error, |_| {
-                                                OpcodeResult::Continue
-                                            })
-                                    }
-                                    Err(_) => {
-                                        task.set_resume_value(Value::null());
-                                        OpcodeResult::Suspend(
-                                            crate::vm::scheduler::SuspendReason::MutexAcquire {
-                                                mutex_id,
-                                                resume_policy:
-                                                    crate::vm::scheduler::ResumePolicy::ReturnNull,
-                                            },
-                                        )
-                                    }
-                                }
-                            } else {
-                                OpcodeResult::Error(VmError::RuntimeError(format!(
-                                    "Mutex {:?} not found",
-                                    mutex_id
-                                )))
-                            }
-                        }
-                        crate::semantics::HostHandleOpKind::MutexUnlock => {
-                            let mutex_id_val = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            let mutex_id =
-                                MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
-                            if let Some(mutex) = self.mutex_registry.get(mutex_id) {
-                                match mutex.unlock(task.id()) {
-                                    Ok(next_waiter) => {
-                                        task.remove_held_mutex(mutex_id);
-
-                                        if let Some(waiter_id) = next_waiter {
-                                            let tasks = self.tasks.read();
-                                            if let Some(waiter_task) = tasks.get(&waiter_id) {
-                                                if waiter_task.try_resume() {
-                                                    waiter_task.add_held_mutex(mutex_id);
-                                                    if matches!(
-                                                        waiter_task.suspend_reason(),
-                                                        Some(crate::vm::scheduler::SuspendReason::MutexAcquire {
-                                                            resume_policy: crate::vm::scheduler::ResumePolicy::ReturnNull,
-                                                            ..
-                                                        })
-                                                    ) {
-                                                        waiter_task.set_resume_value(Value::null());
-                                                    }
-                                                    waiter_task.clear_suspend_reason();
-                                                    self.injector.push(waiter_task.clone());
-                                                }
-                                            }
-                                        }
-
-                                        stack
-                                            .push(Value::null())
-                                            .map_or_else(OpcodeResult::Error, |_| {
-                                                OpcodeResult::Continue
-                                            })
-                                    }
-                                    Err(e) => {
-                                        OpcodeResult::Error(VmError::RuntimeError(format!("{}", e)))
-                                    }
-                                }
-                            } else {
-                                OpcodeResult::Error(VmError::RuntimeError(format!(
-                                    "Mutex {:?} not found",
-                                    mutex_id
-                                )))
-                            }
-                        }
-                        crate::semantics::HostHandleOpKind::MutexTryLock => dispatch_native_kernel(
-                            self,
-                            stack,
-                            module,
-                            task,
-                            crate::compiler::native_id::MUTEX_TRY_LOCK,
-                            arg_count,
-                        ),
-                        crate::semantics::HostHandleOpKind::MutexIsLocked => {
-                            dispatch_native_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                crate::compiler::native_id::MUTEX_IS_LOCKED,
-                                arg_count,
-                            )
-                        }
-                        crate::semantics::HostHandleOpKind::TaskCancel => {
-                            let task_id_val = match stack.pop() {
-                                Ok(v) => v,
-                                Err(e) => return OpcodeResult::Error(e),
-                            };
-                            let handle = match self.promise_handle_from_value(task_id_val) {
-                                Some(handle) => handle,
-                                None => {
-                                    return OpcodeResult::Error(VmError::TypeError(
-                                        "TaskCancel: expected task-backed promise handle"
-                                            .to_string(),
-                                    ));
-                                }
-                            };
-                            let target_id = handle.task_id();
-                            if let Some(target_task) = self.tasks.read().get(&target_id).cloned() {
-                                self.cancel_task_and_await_chain(target_task);
-                            }
-                            stack
-                                .push(Value::undefined())
-                                .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
-                        }
-                        crate::semantics::HostHandleOpKind::TaskIsDone => dispatch_native_kernel(
-                            self,
-                            stack,
-                            module,
-                            task,
-                            crate::compiler::native_id::TASK_IS_DONE,
-                            arg_count,
-                        ),
-                        crate::semantics::HostHandleOpKind::TaskIsCancelled => {
-                            dispatch_native_kernel(
-                                self,
-                                stack,
-                                module,
-                                task,
-                                crate::compiler::native_id::TASK_IS_CANCELLED,
-                                arg_count,
-                            )
-                        }
-                        },
-                    },
+                        )
+                    }
                 }
             }
             // Private raw vm-native entry used only by KernelCall::VmNative and
@@ -21361,6 +21221,11 @@ impl<'a> Interpreter<'a> {
                                                 task,
                                             );
                                         }
+                                        CallableKind::BoundBuiltin { op_id, .. } => {
+                                            return self.exec_bound_builtin_method_call(
+                                                stack, this_arg, *op_id, rest_args, module, task,
+                                            );
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -21415,6 +21280,11 @@ impl<'a> Interpreter<'a> {
                                             return self.exec_bound_native_method_call(
                                                 stack, this_arg, *native_id, apply_args, module,
                                                 task,
+                                            );
+                                        }
+                                        CallableKind::BoundBuiltin { op_id, .. } => {
+                                            return self.exec_bound_builtin_method_call(
+                                                stack, this_arg, *op_id, apply_args, module, task,
                                             );
                                         }
                                         _ => {}

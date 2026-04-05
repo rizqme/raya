@@ -258,7 +258,6 @@ pub use vm::{
 // ============================================================================
 
 pub use builtins::{
-    builtin_count, builtin_names, get_all_builtins, get_all_signatures, get_builtin,
-    get_builtin_bytecode, get_signatures, BuiltinModule, BuiltinSignatures, ClassSig, FunctionSig,
-    MethodSig, PropertySig,
+    builtin_count, builtin_names, get_all_signatures, get_signatures, BuiltinSignatures, ClassSig,
+    FunctionSig, MethodSig, PropertySig,
 };

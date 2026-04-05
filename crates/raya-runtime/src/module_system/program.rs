@@ -69,7 +69,7 @@ impl ProgramCompiler {
         let builtin_globals = crate::Runtime::builtin_global_exports_for_mode(self.builtin_mode)
             .map_err(|error| ModuleCompileError::TypeError {
                 path: entry_path.clone(),
-                message: format!("Failed to load builtin bytecode contracts: {}", error),
+                message: format!("Failed to load builtin globals: {}", error),
             })?;
 
         let mut compiler = BinaryModuleCompiler::new(project_root)
@@ -149,7 +149,7 @@ impl ProgramCompiler {
         let builtin_globals = crate::Runtime::builtin_global_exports_for_mode(self.builtin_mode)
             .map_err(|error| ModuleCompileError::TypeError {
                 path: entry_path.clone(),
-                message: format!("Failed to load builtin bytecode contracts: {}", error),
+                message: format!("Failed to load builtin globals: {}", error),
             })?;
 
         let mut compiler = BinaryModuleCompiler::new(project_root)

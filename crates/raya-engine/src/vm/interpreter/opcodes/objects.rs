@@ -27,6 +27,11 @@ pub(in crate::vm::interpreter) enum CallableInvocationPlan {
         native_id: u16,
         args: Vec<Value>,
     },
+    Builtin {
+        receiver: Value,
+        op_id: crate::compiler::builtins::BuiltinOpId,
+        args: Vec<Value>,
+    },
     Function {
         func_id: usize,
         module: Arc<Module>,
@@ -143,6 +148,18 @@ impl<'a> Interpreter<'a> {
                     args: args.to_vec(),
                 }))
             }
+            CallableKind::BoundBuiltin { op_id, receiver } => {
+                let receiver_value = if receiver.is_undefined() {
+                    explicit_this.unwrap_or(Value::undefined())
+                } else {
+                    *receiver
+                };
+                Ok(Some(CallableInvocationPlan::Builtin {
+                    receiver: receiver_value,
+                    op_id: *op_id,
+                    args: args.to_vec(),
+                }))
+            }
             CallableKind::Bound {
                 target,
                 this_arg,
@@ -231,9 +248,7 @@ impl<'a> Interpreter<'a> {
         };
 
         let bound_native = |this: &mut Self, native_id: u16| {
-            let method = Object::new_bound_native(receiver, native_id);
-            let method_ptr = this.gc.lock().allocate(method);
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) }
+            this.alloc_bound_builtin_or_native_value(receiver, native_id)
         };
 
         match js_classify(receiver) {
@@ -403,6 +418,15 @@ impl<'a> Interpreter<'a> {
                 } => {
                     return Ok(Some(self.exec_bound_native_method_call(
                         stack, receiver, native_id, args, module, task,
+                    )));
+                }
+                CallableInvocationPlan::Builtin {
+                    receiver,
+                    op_id,
+                    args,
+                } => {
+                    return Ok(Some(self.exec_bound_builtin_method_call(
+                        stack, receiver, op_id, args, module, task,
                     )));
                 }
                 CallableInvocationPlan::Function {

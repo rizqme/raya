@@ -24,6 +24,7 @@ use crate::parser::types::signature_hash;
 use crate::parser::types::{TypeContext, TypeId};
 use crate::parser::{Interner, Parser};
 
+use super::builtin_surface::builtin_root_visible_in_mode;
 use super::exports::{ExportedSymbol, ModuleExports};
 
 fn class_member_key_name(interner: &Interner, key: &ast::PropertyKey) -> Option<String> {
@@ -357,57 +358,6 @@ fn registry_global_type_signature(
         SymbolKind::Class => descriptor.backing_type_name.to_string(),
         _ => "unknown".to_string(),
     }
-}
-
-fn builtin_root_visible_in_mode(name: &str, mode: BuiltinSurfaceMode) -> bool {
-    if matches!(mode, BuiltinSurfaceMode::NodeCompat) {
-        return true;
-    }
-    !matches!(
-        name,
-        "ArrayBuffer"
-            | "DataView"
-            | "Uint8Array"
-            | "Uint8ClampedArray"
-            | "Int8Array"
-            | "Int16Array"
-            | "Int32Array"
-            | "Uint16Array"
-            | "Uint32Array"
-            | "Float32Array"
-            | "Float16Array"
-            | "Float64Array"
-            | "BigInt"
-            | "BigInt64Array"
-            | "BigUint64Array"
-            | "TypedArray"
-            | "SharedArrayBuffer"
-            | "Atomics"
-            | "parseInt"
-            | "parseFloat"
-            | "isNaN"
-            | "isFinite"
-            | "eval"
-            | "Function"
-            | "AsyncFunction"
-            | "Generator"
-            | "GeneratorFunction"
-            | "AsyncGenerator"
-            | "AsyncGeneratorFunction"
-            | "AsyncIterator"
-            | "Proxy"
-            | "Reflect"
-            | "WeakMap"
-            | "WeakSet"
-            | "WeakRef"
-            | "FinalizationRegistry"
-            | "DisposableStack"
-            | "AsyncDisposableStack"
-            | "Intl"
-            | "globalThis"
-            | "escape"
-            | "unescape"
-    )
 }
 
 fn detect_unsupported_dts_syntax(path: &Path, source: &str) -> Result<(), DeclarationError> {

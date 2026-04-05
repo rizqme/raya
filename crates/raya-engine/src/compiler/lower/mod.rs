@@ -6621,11 +6621,11 @@ impl<'a> Lowerer<'a> {
     }
 
     fn emit_vm_native_call(&mut self, dest: Option<Register>, native_id: u16, args: Vec<Register>) {
-        let op = crate::compiler::builtins::builtin_op_from_native_id(native_id)
+        let op = crate::compiler::builtins::builtin_op_id_from_native_id(native_id)
             .map(KernelOp::Builtin)
             .unwrap_or_else(|| {
                 if native_id >= 0x8000 {
-                    KernelOp::Builtin(crate::compiler::builtins::BuiltinOp::Native(native_id))
+                    panic!("unregistered builtin/native kernel op id: {native_id:#06x}");
                 } else {
                     KernelOp::VmNative(native_id)
                 }
@@ -6645,7 +6645,7 @@ impl<'a> Lowerer<'a> {
     ) {
         self.emit(IrInstr::KernelCall {
             dest,
-            op: KernelOp::Builtin(op.into()),
+            op: KernelOp::Builtin(crate::compiler::builtins::builtin_op_id_from_js(op)),
             args,
         });
     }

@@ -372,7 +372,8 @@ impl GarbageCollector {
                             crate::vm::object::CallableKind::BoundMethod { receiver, .. } => {
                                 self.mark_value(*receiver);
                             }
-                            crate::vm::object::CallableKind::BoundNative { receiver, .. } => {
+                            crate::vm::object::CallableKind::BoundNative { receiver, .. }
+                            | crate::vm::object::CallableKind::BoundBuiltin { receiver, .. } => {
                                 self.mark_value(*receiver);
                             }
                             crate::vm::object::CallableKind::Bound {

@@ -1186,21 +1186,29 @@ impl<'a> Interpreter<'a> {
             if header.type_id() == std::any::TypeId::of::<Object>() {
                 let co = unsafe { &*callable.as_ptr::<Object>().unwrap().as_ptr() };
                 if let Some(ref callable_data) = co.callable {
-                    if let CallableKind::BoundNative {
-                        native_id,
-                        receiver,
-                    } = &callable_data.kind
-                    {
-                        self.exec_bound_native_method_call(
+                    match &callable_data.kind {
+                        CallableKind::BoundNative {
+                            native_id,
+                            receiver,
+                        } => self.exec_bound_native_method_call(
                             &mut stack,
                             *receiver,
                             *native_id,
                             args.to_vec(),
                             caller_module,
                             &scratch_task,
-                        )
-                    } else {
-                        match self.callable_frame_for_value(
+                        ),
+                        CallableKind::BoundBuiltin { op_id, receiver } => {
+                            self.exec_bound_builtin_method_call(
+                                &mut stack,
+                                *receiver,
+                                *op_id,
+                                args.to_vec(),
+                                caller_module,
+                                &scratch_task,
+                            )
+                        }
+                        _ => match self.callable_frame_for_value(
                             callable,
                             &mut stack,
                             args,
@@ -1213,7 +1221,7 @@ impl<'a> Interpreter<'a> {
                             None => {
                                 return Err(VmError::TypeError("Value is not callable".to_string()))
                             }
-                        }
+                        },
                     }
                 } else {
                     match self.callable_frame_for_value(

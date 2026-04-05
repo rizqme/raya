@@ -15,6 +15,66 @@ use crate::vm::VmError;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    pub(in crate::vm::interpreter) fn exec_bound_builtin_method_call(
+        &mut self,
+        stack: &mut Stack,
+        receiver: Value,
+        op_id: crate::compiler::builtins::BuiltinOpId,
+        mut args: Vec<Value>,
+        module: &Module,
+        task: &Arc<Task>,
+    ) -> OpcodeResult {
+        let mut native_args = Vec::with_capacity(args.len() + 1);
+        if let Some(native_id) = crate::compiler::builtins::builtin_native_alias_id(op_id) {
+            if self.native_callable_uses_receiver(native_id) {
+                let receiver = match self.builtin_native_this_value(receiver, native_id) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                native_args.push(receiver);
+            }
+        }
+        native_args.append(&mut args);
+        for arg in &native_args {
+            if let Err(error) = stack.push(*arg) {
+                return OpcodeResult::Error(error);
+            }
+        }
+        let arg_count_u8 = match u8::try_from(native_args.len()) {
+            Ok(v) => v,
+            Err(_) => {
+                return OpcodeResult::Error(VmError::RuntimeError(
+                    "Too many arguments for bound builtin method call".to_string(),
+                ))
+            }
+        };
+        let kernel_op_id =
+            crate::compiler::ir::encode_kernel_op_id(crate::compiler::ir::KernelOp::Builtin(op_id));
+        let code = [
+            (kernel_op_id & 0x00FF) as u8,
+            ((kernel_op_id >> 8) & 0x00FF) as u8,
+            arg_count_u8,
+        ];
+        let mut native_ip = 0usize;
+        let result = self.exec_native_ops(
+            stack,
+            &mut native_ip,
+            &code,
+            module,
+            task,
+            Opcode::KernelCall,
+        );
+
+        if matches!(result, OpcodeResult::Continue)
+            && crate::compiler::builtins::builtin_native_alias_id(op_id).is_some_and(|native_id| {
+                self.sync_boxed_date_setter_result(stack, receiver, native_id);
+                false
+            })
+        {}
+
+        result
+    }
+
     pub(in crate::vm::interpreter) fn exec_bound_native_method_call(
         &mut self,
         stack: &mut Stack,
@@ -46,13 +106,9 @@ impl<'a> Interpreter<'a> {
                 ))
             }
         };
-        let kernel_op = if native_id >= 0x8000 {
-            crate::compiler::ir::KernelOp::Builtin(
-                crate::compiler::builtins::BuiltinOp::Native(native_id),
-            )
-        } else {
-            crate::compiler::ir::KernelOp::VmNative(native_id)
-        };
+        let kernel_op = crate::compiler::builtins::builtin_op_id_from_native_id(native_id)
+            .map(crate::compiler::ir::KernelOp::Builtin)
+            .unwrap_or(crate::compiler::ir::KernelOp::VmNative(native_id));
         let kernel_op_id = crate::compiler::ir::encode_kernel_op_id(kernel_op);
         let code = [
             (kernel_op_id & 0x00FF) as u8,

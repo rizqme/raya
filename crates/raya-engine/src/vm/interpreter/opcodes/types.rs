@@ -486,12 +486,7 @@ impl<'a> Interpreter<'a> {
             if let Some(native_id) =
                 builtin_handle_native_method_id(self.pinned_handles, target, candidate)
             {
-                let method = Object::new_bound_native(receiver, native_id);
-                let method_ptr = self.gc.lock().allocate(method);
-                let val = unsafe {
-                    Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap())
-                };
-                return Some(val);
+                return Some(self.alloc_bound_builtin_or_native_value(receiver, native_id));
             }
         }
         None
@@ -665,7 +660,10 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 if let Some(native_id) = fallback_native_id {
-                    return Ok(Some(self.alloc_unbound_native_value(native_id)));
+                    return Ok(Some(self.alloc_bound_builtin_or_native_value(
+                        Value::undefined(),
+                        native_id,
+                    )));
                 }
             }
         }
@@ -1415,14 +1413,7 @@ impl<'a> Interpreter<'a> {
                                 }
                                 None
                             }) {
-                                let method = Object::new_bound_native(obj_val, native_id);
-                                let method_ptr = self.gc.lock().allocate(method);
-                                unsafe {
-                                    Value::from_ptr(
-                                        NonNull::new(method_ptr.as_ptr())
-                                            .expect("bound native method ptr"),
-                                    )
-                                }
+                                self.alloc_bound_builtin_or_native_value(obj_val, native_id)
                             } else {
                                 Value::undefined()
                             }
@@ -1500,14 +1491,7 @@ impl<'a> Interpreter<'a> {
                                 }
                                 None
                             }) {
-                                let method = Object::new_bound_native(obj_val, native_id);
-                                let method_ptr = self.gc.lock().allocate(method);
-                                unsafe {
-                                    Value::from_ptr(
-                                        NonNull::new(method_ptr.as_ptr())
-                                            .expect("bound native method ptr"),
-                                    )
-                                }
+                                self.alloc_bound_builtin_or_native_value(obj_val, native_id)
                             } else {
                                 Value::undefined()
                             }
@@ -1564,15 +1548,9 @@ impl<'a> Interpreter<'a> {
                                             obj_val,
                                             key_str,
                                         ) {
-                                            let method =
-                                                Object::new_bound_native(obj_val, native_id);
-                                            let method_ptr = self.gc.lock().allocate(method);
-                                            unsafe {
-                                                Value::from_ptr(
-                                                    NonNull::new(method_ptr.as_ptr())
-                                                        .expect("bound native method ptr"),
-                                                )
-                                            }
+                                            self.alloc_bound_builtin_or_native_value(
+                                                obj_val, native_id,
+                                            )
                                         } else {
                                             Value::undefined()
                                         }

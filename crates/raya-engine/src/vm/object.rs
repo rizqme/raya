@@ -818,11 +818,12 @@ impl Object {
         }
     }
 
-    /// Get the receiver if this is a BoundMethod or BoundNative callable.
+    /// Get the receiver if this is a bound callable with an attached receiver.
     pub fn callable_receiver(&self) -> Option<Value> {
         match &self.callable.as_ref()?.kind {
             CallableKind::BoundMethod { receiver, .. }
-            | CallableKind::BoundNative { receiver, .. } => Some(*receiver),
+            | CallableKind::BoundNative { receiver, .. }
+            | CallableKind::BoundBuiltin { receiver, .. } => Some(*receiver),
             _ => None,
         }
     }
@@ -831,6 +832,14 @@ impl Object {
     pub fn callable_native_id(&self) -> Option<u16> {
         match &self.callable.as_ref()?.kind {
             CallableKind::BoundNative { native_id, .. } => Some(*native_id),
+            _ => None,
+        }
+    }
+
+    /// Get the builtin op id if this is a BoundBuiltin callable.
+    pub fn callable_builtin_op_id(&self) -> Option<crate::compiler::builtins::BuiltinOpId> {
+        match &self.callable.as_ref()?.kind {
+            CallableKind::BoundBuiltin { op_id, .. } => Some(*op_id),
             _ => None,
         }
     }
@@ -1036,6 +1045,25 @@ impl Object {
                 native_id,
                 receiver,
             },
+            captures: Vec::new(),
+            module: None,
+            direct_eval_env: None,
+            direct_eval_uses_script_global_bindings: false,
+            direct_eval_persist_caller_declarations: false,
+            home_object: None,
+            lexical_new_target: None,
+        }));
+        obj
+    }
+
+    /// Create a bound builtin method object.
+    pub fn new_bound_builtin(
+        receiver: Value,
+        op_id: crate::compiler::builtins::BuiltinOpId,
+    ) -> Self {
+        let mut obj = Self::new_structural(1, 0);
+        obj.callable = Some(Box::new(CallableData {
+            kind: CallableKind::BoundBuiltin { op_id, receiver },
             captures: Vec::new(),
             module: None,
             direct_eval_env: None,
@@ -1553,6 +1581,11 @@ pub enum CallableKind {
     BoundMethod { func_id: usize, receiver: Value },
     /// Native method bound to a receiver.
     BoundNative { native_id: u16, receiver: Value },
+    /// Builtin method bound to a receiver.
+    BoundBuiltin {
+        op_id: crate::compiler::builtins::BuiltinOpId,
+        receiver: Value,
+    },
     /// JS-style Function.prototype.bind result.
     Bound {
         target: Value,

@@ -1757,19 +1757,12 @@ unsafe extern "C" fn helper_native_call(
                     return BackendCallResult::threw();
                 }
             }
-            let code = [
-                (kernel_op_id & 0x00FF) as u8,
-                ((kernel_op_id >> 8) & 0x00FF) as u8,
-                argc,
-            ];
-            let mut ip = 0usize;
-            return match interpreter.exec_native_ops(
+            return match interpreter.dispatch_kernel_call(
                 &mut stack,
-                &mut ip,
-                &code,
                 module,
                 task,
-                Opcode::KernelCall,
+                kernel_op,
+                argc,
             ) {
                 crate::vm::interpreter::OpcodeResult::Continue => {
                     BackendCallResult::completed(stack.pop().unwrap_or_else(|_| Value::null()))

@@ -1221,19 +1221,12 @@ unsafe extern "C" fn helper_kernel_call_dispatch(
                 return BackendCallResult::threw();
             }
         }
-        let code = [
-            (kernel_op_id & 0x00FF) as u8,
-            ((kernel_op_id >> 8) & 0x00FF) as u8,
-            arg_count,
-        ];
-        let mut ip = 0usize;
-        return match interpreter.exec_native_ops(
+        return match interpreter.dispatch_kernel_call(
             &mut stack,
-            &mut ip,
-            &code,
             module,
             task,
-            Opcode::KernelCall,
+            kernel_op,
+            arg_count,
         ) {
             crate::vm::interpreter::OpcodeResult::Continue => {
                 BackendCallResult::completed(stack.pop().unwrap_or_else(|_| Value::null()))

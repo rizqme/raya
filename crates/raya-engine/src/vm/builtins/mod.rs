@@ -3,7 +3,6 @@
 //! This module provides:
 //! - Rust-owned type signatures for builtin globals and types
 //! - Native method handlers for builtins (arrays, strings, numbers, etc.)
-//! - Compatibility stubs for the old module-oriented builtin API
 //!
 //! Builtin globals, constructors, prototypes, and namespace objects are now
 //! materialized directly from Rust runtime bootstrap.
@@ -21,18 +20,14 @@
 pub mod handlers;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::compiler::builtins::{BuiltinRegistry, BuiltinSurfaceMemberDescriptor};
+use crate::compiler::builtins::{BuiltinOpId, BuiltinRegistry, BuiltinSurfaceMemberDescriptor};
 use crate::compiler::Module;
-
-/// Compatibility record for the legacy module-oriented builtin API.
-pub struct BuiltinModule {
-    /// Name of the builtin (e.g., "Map", "Set")
-    pub name: &'static str,
-    /// Legacy raw bytecode bytes. Rust-owned builtins leave this empty.
-    pub bytecode: &'static [u8],
-}
-
+use crate::vm::interpreter::execution::OpcodeResult;
+use crate::vm::interpreter::Interpreter;
+use crate::vm::scheduler::Task;
+use crate::vm::stack::Stack;
 /// Type signature for a builtin class method
 #[derive(Debug, Clone)]
 pub struct MethodSig {
@@ -98,42 +93,34 @@ pub struct BuiltinSignatures {
     pub functions: &'static [FunctionSig],
 }
 
-/// Builtin modules are now materialized directly from Rust runtime bootstrap.
-pub static BUILTINS: &[BuiltinModule] = &[];
-
-/// Get all legacy decoded builtin modules.
-///
-/// Rust-owned builtins no longer ship as embedded modules, so this is empty.
-pub fn get_all_builtins() -> &'static [(&'static str, Module)] {
-    &[]
-}
-
-/// Get a specific legacy builtin module by name.
-///
-/// Rust-owned builtins no longer ship as embedded modules, so this returns
-/// `None` for all names.
-pub fn get_builtin(name: &str) -> Option<&'static Module> {
-    let _ = name;
-    None
-}
-
-/// Get the raw legacy bytecode for a builtin.
-///
-/// Rust-owned builtins no longer ship as embedded modules, so this returns
-/// `None` for all names.
-pub fn get_builtin_bytecode(name: &str) -> Option<&'static [u8]> {
-    let _ = name;
-    None
-}
-
 /// List all available builtin names
 pub fn builtin_names() -> impl Iterator<Item = &'static str> {
-    BUILTINS.iter().map(|b| b.name)
+    BuiltinRegistry::shared()
+        .global_descriptors()
+        .map(|(_, descriptor)| descriptor.global_name)
 }
 
 /// Get the number of available builtins
 pub fn builtin_count() -> usize {
-    BUILTINS.len()
+    BuiltinRegistry::shared().global_descriptors().count()
+}
+
+pub(crate) fn dispatch_builtin_kernel_call(
+    interpreter: &mut Interpreter<'_>,
+    stack: &mut Stack,
+    module: &Module,
+    task: &Arc<Task>,
+    op_id: BuiltinOpId,
+    arg_count: u8,
+) -> OpcodeResult {
+    crate::vm::interpreter::dispatch_builtin_kernel_call_impl(
+        interpreter,
+        stack,
+        module,
+        task,
+        op_id,
+        arg_count,
+    )
 }
 
 // ============================================================================
@@ -257,7 +244,7 @@ fn overlay_checker_signatures_with_registry(
                 crate::compiler::type_registry::OpcodeKind::ArrayLen,
             ) => "number".to_string(),
             BuiltinSurfaceMemberDescriptor::Bound(binding) => binding
-                .return_type_name
+                .return_type_name()
                 .unwrap_or("unknown")
                 .to_string(),
         }
@@ -391,7 +378,7 @@ fn overlay_checker_signatures_with_registry(
                 params: Vec::new(),
                 return_type: descriptor
                     .binding
-                    .and_then(|binding| binding.return_type_name)
+                    .and_then(|binding| binding.return_type_name())
                     .unwrap_or("unknown")
                     .to_string(),
             });
@@ -2933,20 +2920,12 @@ mod tests {
 
     #[test]
     fn test_builtins_count() {
-        // Legacy embedded builtin modules are intentionally empty; this test
-        // only verifies the compatibility API remains well-formed.
-        let _count = builtin_count(); // usize is always non-negative
+        assert!(builtin_count() > 0);
     }
 
     #[test]
-    fn test_get_builtin() {
-        assert!(get_all_builtins().is_empty());
-        assert!(get_builtin("Map").is_none());
-    }
-
-    #[test]
-    fn test_nonexistent_builtin() {
-        assert!(get_builtin("NonExistent").is_none());
+    fn test_builtin_names_include_map() {
+        assert!(builtin_names().any(|name| name == "Map"));
     }
 
     #[test]
