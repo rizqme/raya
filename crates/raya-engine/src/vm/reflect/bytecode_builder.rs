@@ -658,9 +658,10 @@ impl BytecodeBuilder {
         self.push_type(StackType::Unknown);
 
         self.emit_byte(opcode::KERNEL_CALL);
-        self.emit_u16(crate::compiler::ir::encode_kernel_op_id(
-            crate::compiler::ir::KernelOp::VmNative(native_id),
-        ));
+        let kernel_op = crate::compiler::builtins::builtin_op_from_native_id(native_id)
+            .map(crate::compiler::ir::KernelOp::Builtin)
+            .unwrap_or(crate::compiler::ir::KernelOp::VmNative(native_id));
+        self.emit_u16(crate::compiler::ir::encode_kernel_op_id(kernel_op));
         let argc = u8::try_from(arg_count).map_err(|_| {
             VmError::RuntimeError(format!(
                 "Native call arg count {} exceeds kernel call encoding",

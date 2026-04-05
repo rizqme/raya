@@ -311,7 +311,8 @@ fn test_error_constructor_options_cause() {
     expect_bool_with_builtins(
         "let inner = new Error('inner');
          let err = new Error('outer', { cause: inner });
-         return err.cause != null && err.cause.message == 'inner';",
+         let cause = err.cause as Error;
+         return cause.message == 'inner';",
         true,
     );
 }
@@ -321,7 +322,8 @@ fn test_aggregate_error_constructor_options_cause() {
     expect_bool_with_builtins(
         "let root = new Error('root');
          let agg = new AggregateError([new Error('leaf')], 'boom', { cause: root });
-         return agg.name == 'AggregateError' && agg.cause != null && agg.cause.message == 'root' && agg.errors.length == 1;",
+         let cause = agg.cause as Error;
+         return agg.name == 'AggregateError' && cause.message == 'root' && agg.errors.length == 1;",
         true,
     );
 }

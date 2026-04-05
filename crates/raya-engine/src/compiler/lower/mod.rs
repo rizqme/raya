@@ -2,7 +2,6 @@
 //!
 //! Converts the type-checked AST into the IR representation.
 
-mod class_methods;
 mod control_flow;
 mod expr;
 mod stmt;
@@ -12,9 +11,7 @@ use crate::compiler::ir::{
     IrInstr, IrMethodKind, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, KernelOp,
     NominalTypeId, Register, RegisterId, Terminator, TypeAliasId,
 };
-use crate::compiler::module::{
-    builtin_surface_manifest_for_mode, builtin_surface_mode_for_profile, BuiltinSurfaceManifest,
-};
+use crate::compiler::module::builtin_surface_mode_for_profile;
 use crate::parser::ast::{
     self, walk_arrow_function, walk_block_statement, walk_expression, walk_function_decl,
     walk_statement, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor,
@@ -561,6 +558,9 @@ struct LoopContext {
     break_target: BasicBlockId,
     /// Block to jump to for continue
     continue_target: BasicBlockId,
+    /// Whether this loop owns an active runtime declarative env that must be
+    /// unwound when control jumps past it.
+    runtime_loop_env: bool,
     /// Active iterator for protocol-based loops that need IteratorClose on abrupt exit.
     iterator_record: Option<Register>,
     /// Depth of try_finally_stack when this loop started
@@ -841,8 +841,6 @@ pub struct Lowerer<'a> {
     /// Compile-time constant values (for constant folding)
     /// Maps symbol to its constant value (only for literals)
     constant_map: FxHashMap<Symbol, ConstantValue>,
-    /// Profile-derived builtin surface manifest used for semantic hints only.
-    builtin_surface: &'static BuiltinSurfaceManifest,
     /// Object field layout for registers from decode<T> calls
     /// Maps register id → Vec<(field_name, field_index)>
     register_object_fields: FxHashMap<RegisterId, Vec<(String, usize)>>,
@@ -902,7 +900,6 @@ pub struct Lowerer<'a> {
     /// Registry for type-specific method/property dispatch (single source of truth)
     type_registry: super::type_registry::TypeRegistry,
     /// Cache of compiled class method functions: "TypeName_methodName" → FunctionId
-    class_method_cache: FxHashMap<String, FunctionId>,
     /// ASTs of generic functions (with type_params), stored for specialization at call sites.
     /// Key: function name symbol.
     generic_function_asts: FxHashMap<Symbol, ast::FunctionDecl>,
@@ -1527,9 +1524,6 @@ impl<'a> Lowerer<'a> {
         interner: &'a Interner,
         expr_types: FxHashMap<usize, TypeId>,
     ) -> Self {
-        let builtin_surface = builtin_surface_manifest_for_mode(
-            crate::compiler::module::BuiltinSurfaceMode::RayaStrict,
-        );
         Self {
             type_ctx,
             interner,
@@ -1622,7 +1616,6 @@ impl<'a> Lowerer<'a> {
             pending_class_method_env_globals: None,
             current_method_env_globals: None,
             constant_map: FxHashMap::default(),
-            builtin_surface,
             register_object_fields: FxHashMap::default(),
             register_structural_projection_fields: FxHashMap::default(),
             register_nested_object_fields: FxHashMap::default(),
@@ -1644,8 +1637,10 @@ impl<'a> Lowerer<'a> {
             emit_sourcemap: false,
             current_span: Span::default(),
             errors: Vec::new(),
-            type_registry: super::type_registry::TypeRegistry::new(type_ctx, builtin_surface),
-            class_method_cache: FxHashMap::default(),
+            type_registry: super::type_registry::TypeRegistry::new(
+                type_ctx,
+                crate::compiler::module::BuiltinSurfaceMode::RayaStrict,
+            ),
             generic_function_asts: FxHashMap::default(),
             type_param_substitutions: FxHashMap::default(),
             specialized_function_cache: FxHashMap::default(),
@@ -1703,12 +1698,11 @@ impl<'a> Lowerer<'a> {
     /// Configure lowering behavior from a semantic lowering plan.
     pub fn with_semantic_plan(mut self, plan: SemanticLoweringPlan) -> Self {
         let lowering = plan.lowering_semantics();
-        let builtin_surface =
-            builtin_surface_manifest_for_mode(builtin_surface_mode_for_profile(plan.profile()));
         self.semantic_plan = plan;
-        self.builtin_surface = builtin_surface;
-        self.type_registry =
-            super::type_registry::TypeRegistry::new(self.type_ctx, builtin_surface);
+        self.type_registry = super::type_registry::TypeRegistry::new(
+            self.type_ctx,
+            builtin_surface_mode_for_profile(self.semantic_plan.profile()),
+        );
         self.js_this_binding_compat = lowering.js_this_binding_compat;
         self.js_dynamic_semantics = lowering.js_dynamic_semantics;
         self.track_top_level_completion = lowering.track_top_level_completion;
@@ -2459,6 +2453,15 @@ impl<'a> Lowerer<'a> {
                     self.prepare_executable_body_declarations(&func.body.statements, wrapper_tag);
                 }
                 Statement::ClassDecl(class) => {
+                    if !self.js_this_binding_compat {
+                        self.module_var_globals
+                            .entry(class.name.name)
+                            .or_insert_with(|| {
+                                let global_index = self.next_global_index;
+                                self.next_global_index += 1;
+                                global_index
+                            });
+                    }
                     let mut visitor = NestedClassRegistrar {
                         lowerer: self,
                         wrapper_tag: None,
@@ -6618,9 +6621,18 @@ impl<'a> Lowerer<'a> {
     }
 
     fn emit_vm_native_call(&mut self, dest: Option<Register>, native_id: u16, args: Vec<Register>) {
+        let op = crate::compiler::builtins::builtin_op_from_native_id(native_id)
+            .map(KernelOp::Builtin)
+            .unwrap_or_else(|| {
+                if native_id >= 0x8000 {
+                    KernelOp::Builtin(crate::compiler::builtins::BuiltinOp::Native(native_id))
+                } else {
+                    KernelOp::VmNative(native_id)
+                }
+            });
         self.emit(IrInstr::KernelCall {
             dest,
-            op: KernelOp::VmNative(native_id),
+            op,
             args,
         });
     }
@@ -8324,8 +8336,8 @@ impl<'a> Lowerer<'a> {
             .copied()
             .or_else(|| self.runtime_constructor_symbol_cache.get(&name).copied())
             .is_some_and(|ctor_symbol| {
-                self.builtin_surface
-                    .has_dispatch_type(self.interner.resolve(ctor_symbol))
+                self.type_registry
+                    .has_builtin_dispatch_type(self.interner.resolve(ctor_symbol))
             })
     }
 

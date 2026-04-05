@@ -166,26 +166,8 @@ impl<'a> Binder<'a> {
     /// compiling a `.raya` file that cross-references them.
     pub fn register_external_class(&mut self, name: &str) {
         let implicit_object_base = self.implicit_object_base_type(name);
-        // Preserve primitive named types (`string`, `number`, ...) as primitives.
-        // Builtin wrapper classes for those names need their own class TypeId so
-        // previously interned primitive references are not rewritten into classes.
-        let type_id = if let Some(existing) = self.type_ctx.lookup_named_type(name) {
-            match self.type_ctx.get(existing) {
-                Some(Type::Class(_)) => existing,
-                _ => self.type_ctx.intern(Type::Class(ClassType {
-                    name: name.to_string(),
-                    type_params: Vec::new(),
-                    properties: Vec::new(),
-                    methods: Vec::new(),
-                    static_properties: Vec::new(),
-                    static_methods: Vec::new(),
-                    extends: implicit_object_base,
-                    implements: Vec::new(),
-                    is_abstract: false,
-                })),
-            }
-        } else {
-            let id = self.type_ctx.intern(Type::Class(ClassType {
+        let external_class_type = || {
+            Type::Class(ClassType {
                 name: name.to_string(),
                 type_params: Vec::new(),
                 properties: Vec::new(),
@@ -195,7 +177,22 @@ impl<'a> Binder<'a> {
                 extends: implicit_object_base,
                 implements: Vec::new(),
                 is_abstract: false,
-            }));
+            })
+        };
+        // Preserve primitive named types (`string`, `number`, ...) as primitives.
+        // Builtin wrapper classes for those names need their own class TypeId so
+        // previously interned primitive references are not rewritten into classes.
+        let type_id = if let Some(existing) = self.type_ctx.lookup_named_type(name) {
+            match self.type_ctx.get(existing) {
+                Some(Type::Class(_)) => existing,
+                Some(Type::Primitive(_)) => self.type_ctx.intern(external_class_type()),
+                _ => {
+                    self.type_ctx.replace_type(existing, external_class_type());
+                    existing
+                }
+            }
+        } else {
+            let id = self.type_ctx.intern(external_class_type());
             self.type_ctx.register_named_type(name.to_string(), id);
             id
         };
@@ -515,6 +512,11 @@ impl<'a> Binder<'a> {
         self.type_ctx.lookup_named_type(name)
     }
 
+    /// Borrow the current binder type context.
+    pub fn type_ctx(&self) -> &TypeContext {
+        self.type_ctx
+    }
+
     /// Return whether a symbol already exists in global scope.
     pub fn has_global_symbol(&self, name: &str) -> bool {
         self.symbols.resolve_from_scope(name, ScopeId(0)).is_some()
@@ -522,7 +524,7 @@ impl<'a> Binder<'a> {
 
     /// Register compiler intrinsics like __NATIVE_CALL and __OPCODE_CHANNEL_NEW
     ///
-    /// These are special functions used in builtin .raya files to call VM opcodes.
+    /// These are special compiler intrinsics used by builtin/runtime lowering.
     fn register_intrinsics(&mut self) {
         // __NATIVE_CALL(native_id: number, ...args): any
         // This is a variadic function that can return any type
@@ -1658,14 +1660,9 @@ impl<'a> Binder<'a> {
                 id
             }
         } else if let Some(existing) = self.type_ctx.lookup_named_type(&class_sig.name) {
-            match self.type_ctx.get(existing) {
-                Some(Type::Class(_)) => {
-                    self.type_ctx
-                        .replace_type(existing, Type::Class(class_type));
-                    existing
-                }
-                _ => self.type_ctx.intern(Type::Class(class_type)),
-            }
+            self.type_ctx
+                .replace_type(existing, Type::Class(class_type));
+            existing
         } else {
             let id = self.type_ctx.intern(Type::Class(class_type));
             self.type_ctx

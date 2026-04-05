@@ -201,7 +201,8 @@ impl GraphFrontend {
         let mut binder = Binder::new(&mut type_ctx, &interner)
             .with_mode(profile.checker_mode())
             .with_policy(policy);
-        binder.register_builtins(&[]);
+        let builtin_sigs = raya_engine::builtins::to_checker_signatures();
+        binder.register_builtins(&builtin_sigs);
         let builtin_exports = crate::Runtime::builtin_global_exports_for_mode(builtin_mode)
             .map_err(FrontendBindError::Runtime)?;
         inject_ambient_exports(&mut binder, &ast, &interner, &builtin_exports);
@@ -2246,8 +2247,8 @@ mod tests {
             SemanticProfile::raya(),
         );
         assert!(
-            result.is_err(),
-            "bind/call/apply are currently not resolved in strict dispatch mode and should fail fast"
+            result.is_ok(),
+            "valid bind/call/apply usage should compile in strict dispatch mode"
         );
     }
 
@@ -3404,6 +3405,65 @@ mod tests {
             !debug.contains("Object.constructDynamicClass"),
             "{debug}"
         );
+        assert!(!debug.contains("CallMethod"), "{debug}");
+    }
+
+    #[test]
+    fn test_semantic_plan_classifies_date_instance_methods_as_builtin_dispatch() {
+        let plan = inspect_semantic_plan_with_profile(
+            r#"
+            let date = new Date();
+            date.setTime(0);
+            date.getHours();
+            "#,
+            SemanticProfile::raya(),
+        )
+        .expect("semantic plan should build");
+
+        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("setTime")
+                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
+                && dispatch.builtin_op
+                    == Some(raya_engine::compiler::builtins::BuiltinOp::Native(
+                        raya_engine::vm::builtin::date::SET_TIME,
+                    ))
+        }));
+        assert!(plan.hir.builtin_dispatches.iter().any(|dispatch| {
+            dispatch.member_name.as_deref() == Some("getHours")
+                && dispatch.kind == raya_engine::semantics::BuiltinDispatchKind::InstanceMethod
+                && dispatch.builtin_op
+                    == Some(raya_engine::compiler::builtins::BuiltinOp::Native(
+                        raya_engine::vm::builtin::date::GET_HOURS,
+                    ))
+        }));
+    }
+
+    #[test]
+    fn test_compile_debug_lowers_date_instance_methods_without_source_fallback() {
+        let checked = GraphFrontend::new(
+            r#"
+            let date = new Date();
+            date.setTime(0);
+            date.getHours();
+            "#,
+            BuiltinMode::RayaStrict,
+            SemanticProfile::raya(),
+            None,
+        )
+        .expect("frontend should build")
+        .compile_checked()
+        .expect("checked frontend should build");
+
+        let compiler = Compiler::new(checked.type_ctx, &checked.interner)
+            .with_semantic_profile(SemanticProfile::raya())
+            .with_expr_types(checked.check_result.expr_types)
+            .with_type_annotation_types(checked.check_result.type_annotation_types)
+            .with_source_text(checked.full_source.clone());
+        let (_, debug) = compiler
+            .compile_with_debug(&checked.ast)
+            .expect("compile with debug should succeed");
+
+        assert!(debug.contains("Object.constructDynamicClass"), "{debug}");
         assert!(!debug.contains("CallMethod"), "{debug}");
     }
 

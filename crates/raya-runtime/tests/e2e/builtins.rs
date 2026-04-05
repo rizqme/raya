@@ -3,8 +3,8 @@
 //! These tests compile and run Raya code that uses builtin types
 //! like Map, Set, Buffer, Date, Channel.
 //!
-//! These tests use `expect_*_with_builtins` functions which compile
-//! the builtin .raya source files together with the test code.
+//! These tests use `expect_*_with_builtins` helpers which execute against the
+//! Rust-owned builtin surface and runtime bootstrap.
 //!
 //! NOTE: These tests will fail at runtime until native function implementations
 //! are added to the VM. The tests verify compilation succeeds.
@@ -1138,6 +1138,54 @@ fn test_extended_float_and_bigint_typed_arrays_pragmatic_subset() {
         let u64 = new BigUint64Array(1);
         try { u64.set(0, 12); } catch (e) { return false; }
         return f32.length == 1 && f16.length == 1 && i64.length == 1 && u64.length == 1;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_float32_array_runtime_smoke() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let arr = new Float32Array(1);
+        arr.set(0, 3.25);
+        return arr.length == 1;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_float16_array_runtime_smoke() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let arr = new Float16Array(1);
+        arr.set(0, 2.5);
+        return arr.length == 1;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_bigint64_array_runtime_smoke() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let arr = new BigInt64Array(1);
+        arr.set(0, 11);
+        return arr.length == 1;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_biguint64_array_runtime_smoke() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let arr = new BigUint64Array(1);
+        arr.set(0, 12);
+        return arr.length == 1;
     "#,
         true,
     );

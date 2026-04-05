@@ -1,21 +1,17 @@
-//! Raya Builtin Types and Handlers
+//! Raya builtin types and handlers.
 //!
 //! This module provides:
-//! - Precompiled bytecode and type signatures for Raya's builtin types
-//! - Native method handlers for built-in types (arrays, strings, numbers, etc.)
+//! - Rust-owned type signatures for builtin globals and types
+//! - Native method handlers for builtins (arrays, strings, numbers, etc.)
+//! - Compatibility stubs for the old module-oriented builtin API
 //!
-//! The builtins are compiled at build time and embedded in the library.
-//! The handlers implement native operations called from the VM.
+//! Builtin globals, constructors, prototypes, and namespace objects are now
+//! materialized directly from Rust runtime bootstrap.
 //!
 //! # Usage
 //!
 //! ```rust,ignore
-//! use raya_engine::vm::builtins::{get_builtin, builtin_names, get_all_signatures};
-//!
-//! // Get a specific builtin module
-//! if let Some(module) = get_builtin("Map") {
-//!     // Use the compiled bytecode module
-//! }
+//! use raya_engine::vm::builtins::{builtin_names, get_all_signatures};
 //!
 //! // Get type signatures for type checking
 //! let signatures = get_all_signatures();
@@ -24,14 +20,16 @@
 // Handler modules for built-in type methods
 pub mod handlers;
 
-use crate::compiler::Module;
-use std::sync::OnceLock;
+use std::collections::HashMap;
 
-/// A precompiled builtin module
+use crate::compiler::builtins::{BuiltinRegistry, BuiltinSurfaceMemberDescriptor};
+use crate::compiler::Module;
+
+/// Compatibility record for the legacy module-oriented builtin API.
 pub struct BuiltinModule {
     /// Name of the builtin (e.g., "Map", "Set")
     pub name: &'static str,
-    /// Raw bytecode bytes
+    /// Legacy raw bytecode bytes. Rust-owned builtins leave this empty.
     pub bytecode: &'static [u8],
 }
 
@@ -100,52 +98,32 @@ pub struct BuiltinSignatures {
     pub functions: &'static [FunctionSig],
 }
 
-// Include the generated index (from build.rs)
-include!(concat!(env!("OUT_DIR"), "/builtins_index.rs"));
+/// Builtin modules are now materialized directly from Rust runtime bootstrap.
+pub static BUILTINS: &[BuiltinModule] = &[];
 
-/// Cache for decoded modules
-static DECODED_CACHE: OnceLock<Vec<(&'static str, Module)>> = OnceLock::new();
-
-/// Get all decoded builtin modules
+/// Get all legacy decoded builtin modules.
 ///
-/// This decodes the bytecode on first access and caches the result.
+/// Rust-owned builtins no longer ship as embedded modules, so this is empty.
 pub fn get_all_builtins() -> &'static [(&'static str, Module)] {
-    DECODED_CACHE.get_or_init(|| {
-        let mut modules = Vec::new();
-
-        for builtin in BUILTINS {
-            match Module::decode(builtin.bytecode) {
-                Ok(module) => {
-                    modules.push((builtin.name, module));
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to decode builtin '{}': {:?}",
-                        builtin.name, e
-                    );
-                }
-            }
-        }
-
-        modules
-    })
+    &[]
 }
 
-/// Get a specific builtin module by name
+/// Get a specific legacy builtin module by name.
 ///
-/// Returns `None` if the builtin doesn't exist or failed to decode.
+/// Rust-owned builtins no longer ship as embedded modules, so this returns
+/// `None` for all names.
 pub fn get_builtin(name: &str) -> Option<&'static Module> {
-    get_all_builtins()
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, m)| m)
+    let _ = name;
+    None
 }
 
-/// Get the raw bytecode for a builtin (without decoding)
+/// Get the raw legacy bytecode for a builtin.
 ///
-/// This is useful if you want to handle decoding yourself.
+/// Rust-owned builtins no longer ship as embedded modules, so this returns
+/// `None` for all names.
 pub fn get_builtin_bytecode(name: &str) -> Option<&'static [u8]> {
-    BUILTINS.iter().find(|b| b.name == name).map(|b| b.bytecode)
+    let _ = name;
+    None
 }
 
 /// List all available builtin names
@@ -171,10 +149,12 @@ pub fn builtin_visible_constructor_length(name: &str) -> Option<usize> {
     match name {
         "Array" | "Object" | "Function" | "Boolean" | "Number" | "String" | "Promise" => Some(1),
         "AggregateError" => Some(2),
+        "SuppressedError" => Some(3),
         "Symbol" | "Map" | "Set" | "WeakMap" | "WeakSet" => Some(0),
         "Error" | "EvalError" | "RangeError" | "ReferenceError" | "SyntaxError" | "TypeError"
-        | "URIError" | "ChannelError" | "AssertionError" => Some(1),
+        | "URIError" | "InternalError" | "ChannelError" | "AssertionError" => Some(1),
         "RegExp" => Some(2),
+        "Proxy" => Some(2),
         "ArrayBuffer" => Some(1),
         "DataView" => Some(3),
         _ => None,
@@ -191,7 +171,7 @@ pub fn get_signatures(name: &str) -> Option<&'static BuiltinSignatures> {
 /// This converts the static &'static str signatures to owned Strings
 /// for use with the type checker.
 pub fn to_checker_signatures() -> Vec<crate::parser::checker::BuiltinSignatures> {
-    BUILTIN_SIGS
+    let mut signatures: Vec<_> = BUILTIN_SIGS
         .iter()
         .map(|sig| {
             crate::parser::checker::BuiltinSignatures {
@@ -256,7 +236,166 @@ pub fn to_checker_signatures() -> Vec<crate::parser::checker::BuiltinSignatures>
                     .collect(),
             }
         })
-        .collect()
+        .collect();
+
+    overlay_checker_signatures_with_registry(&mut signatures);
+    signatures
+}
+
+fn overlay_checker_signatures_with_registry(
+    signatures: &mut Vec<crate::parser::checker::BuiltinSignatures>,
+) {
+    use crate::parser::checker::{
+        BuiltinClass, BuiltinFunction, BuiltinMethod, BuiltinProperty, BuiltinSignatures,
+    };
+
+    fn member_return_type(binding: &BuiltinSurfaceMemberDescriptor) -> String {
+        match binding {
+            BuiltinSurfaceMemberDescriptor::SurfaceOnly => "unknown".to_string(),
+            BuiltinSurfaceMemberDescriptor::Opcode(crate::compiler::type_registry::OpcodeKind::StringLen)
+            | BuiltinSurfaceMemberDescriptor::Opcode(
+                crate::compiler::type_registry::OpcodeKind::ArrayLen,
+            ) => "number".to_string(),
+            BuiltinSurfaceMemberDescriptor::Bound(binding) => binding
+                .return_type_name
+                .unwrap_or("unknown")
+                .to_string(),
+        }
+    }
+
+    let mut class_locations: HashMap<String, (usize, usize)> = HashMap::new();
+    for (module_index, module) in signatures.iter().enumerate() {
+        for (class_index, class) in module.classes.iter().enumerate() {
+            class_locations.insert(class.name.clone(), (module_index, class_index));
+        }
+    }
+
+    let registry_module_index = if let Some(index) = signatures
+        .iter()
+        .position(|module| module.name == "__rust_builtins__")
+    {
+        index
+    } else {
+        signatures.push(BuiltinSignatures::new("__rust_builtins__"));
+        signatures.len() - 1
+    };
+
+    for (type_name, descriptor) in BuiltinRegistry::shared().type_descriptors() {
+        if type_name.eq("EventEmitter") || type_name.eq("RegExp") {
+            continue;
+        }
+        let (module_index, class_index) = if let Some(&(module_index, class_index)) =
+            class_locations.get(type_name)
+        {
+            (module_index, class_index)
+        } else {
+            signatures[registry_module_index]
+                .classes
+                .push(BuiltinClass::new(type_name));
+            let class_index = signatures[registry_module_index].classes.len() - 1;
+            class_locations.insert(type_name.to_string(), (registry_module_index, class_index));
+            (registry_module_index, class_index)
+        };
+
+        let class = &mut signatures[module_index].classes[class_index];
+        if class.constructor_params.is_none() && descriptor.constructor.is_some() {
+            class.constructor_params = Some(Vec::new());
+        }
+
+        for (name, binding) in &descriptor.instance_methods {
+            if class
+                .methods
+                .iter()
+                .any(|method| !method.is_static && method.name == *name)
+            {
+                continue;
+            }
+            class.methods.push(BuiltinMethod {
+                name: (*name).to_string(),
+                params: Vec::new(),
+                min_params: 0,
+                return_type: member_return_type(binding),
+                is_static: false,
+                type_params: Vec::new(),
+            });
+        }
+
+        for (name, binding) in &descriptor.static_methods {
+            if class
+                .methods
+                .iter()
+                .any(|method| method.is_static && method.name == *name)
+            {
+                continue;
+            }
+            class.methods.push(BuiltinMethod {
+                name: (*name).to_string(),
+                params: Vec::new(),
+                min_params: 0,
+                return_type: member_return_type(binding),
+                is_static: true,
+                type_params: Vec::new(),
+            });
+        }
+
+        for (name, binding) in &descriptor.instance_properties {
+            if class
+                .properties
+                .iter()
+                .any(|property| !property.is_static && property.name == *name)
+            {
+                continue;
+            }
+            class.properties.push(BuiltinProperty {
+                name: (*name).to_string(),
+                ty: member_return_type(binding),
+                is_static: false,
+                descriptor: builtin_property_descriptor(type_name, name),
+            });
+        }
+
+        for (name, binding) in &descriptor.static_properties {
+            if class
+                .properties
+                .iter()
+                .any(|property| property.is_static && property.name == *name)
+            {
+                continue;
+            }
+            class.properties.push(BuiltinProperty {
+                name: (*name).to_string(),
+                ty: member_return_type(binding),
+                is_static: true,
+                descriptor: builtin_property_descriptor(type_name, name),
+            });
+        }
+    }
+
+    for (global_name, descriptor) in BuiltinRegistry::shared().global_descriptors() {
+        if descriptor.symbol_type != crate::compiler::SymbolType::Function {
+            continue;
+        }
+        if signatures.iter().any(|module| {
+            module
+                .functions
+                .iter()
+                .any(|function| function.name == *global_name)
+        }) {
+            continue;
+        }
+        signatures[registry_module_index]
+            .functions
+            .push(BuiltinFunction {
+                name: (*global_name).to_string(),
+                type_params: Vec::new(),
+                params: Vec::new(),
+                return_type: descriptor
+                    .binding
+                    .and_then(|binding| binding.return_type_name)
+                    .unwrap_or("unknown")
+                    .to_string(),
+            });
+    }
 }
 
 fn builtin_property_descriptor(
@@ -329,6 +468,230 @@ fn builtin_property_descriptor(
 }
 
 static BUILTIN_SIGS: &[BuiltinSignatures] = &[
+    BuiltinSignatures {
+        name: "GlobalConstructors",
+        classes: &[ClassSig {
+            name: "Array",
+            type_params: &["T"],
+            properties: &[],
+            methods: &[MethodSig {
+                name: "from",
+                params: &[("items", "unknown")],
+                min_params: 1,
+                return_type: "Array<unknown>",
+                is_static: true,
+            }],
+            constructor: Some(&[("length", "number")]),
+        }],
+        functions: &[
+            FunctionSig {
+                name: "Boolean",
+                type_params: &[],
+                params: &[("value", "any")],
+                return_type: "boolean",
+            },
+            FunctionSig {
+                name: "Number",
+                type_params: &[],
+                params: &[("value", "any")],
+                return_type: "number",
+            },
+            FunctionSig {
+                name: "String",
+                type_params: &[],
+                params: &[("value", "any")],
+                return_type: "string",
+            },
+            FunctionSig {
+                name: "encodeURI",
+                type_params: &[],
+                params: &[("value", "string")],
+                return_type: "string",
+            },
+            FunctionSig {
+                name: "decodeURI",
+                type_params: &[],
+                params: &[("value", "string")],
+                return_type: "string",
+            },
+            FunctionSig {
+                name: "encodeURIComponent",
+                type_params: &[],
+                params: &[("value", "string")],
+                return_type: "string",
+            },
+            FunctionSig {
+                name: "decodeURIComponent",
+                type_params: &[],
+                params: &[("value", "string")],
+                return_type: "string",
+            },
+            FunctionSig {
+                name: "escape",
+                type_params: &[],
+                params: &[("value", "string")],
+                return_type: "string",
+            },
+            FunctionSig {
+                name: "unescape",
+                type_params: &[],
+                params: &[("value", "string")],
+                return_type: "string",
+            },
+        ],
+    },
+    BuiltinSignatures {
+        name: "Iterator",
+        classes: &[
+            ClassSig {
+                name: "IteratorResult",
+                type_params: &["T"],
+                properties: &[
+                    PropertySig {
+                        name: "done",
+                        ty: "boolean",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "value",
+                        ty: "T",
+                        is_static: false,
+                    },
+                ],
+                methods: &[],
+                constructor: None,
+            },
+            ClassSig {
+                name: "Iterator",
+                type_params: &["T"],
+                properties: &[],
+                methods: &[
+                    MethodSig {
+                        name: "next",
+                        params: &[],
+                        min_params: 0,
+                        return_type: "IteratorResult<T>",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "fromArray",
+                        params: &[("items", "T[]")],
+                        min_params: 1,
+                        return_type: "Iterator<T>",
+                        is_static: true,
+                    },
+                    MethodSig {
+                        name: "toArray",
+                        params: &[],
+                        min_params: 0,
+                        return_type: "Array<T>",
+                        is_static: false,
+                    },
+                ],
+                constructor: None,
+            },
+        ],
+        functions: &[],
+    },
+    BuiltinSignatures {
+        name: "Temporal",
+        classes: &[
+            ClassSig {
+                name: "TemporalInstant",
+                type_params: &[],
+                properties: &[],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: None,
+            },
+            ClassSig {
+                name: "TemporalPlainDate",
+                type_params: &[],
+                properties: &[],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: None,
+            },
+            ClassSig {
+                name: "TemporalPlainTime",
+                type_params: &[],
+                properties: &[],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: None,
+            },
+            ClassSig {
+                name: "TemporalZonedDateTime",
+                type_params: &[],
+                properties: &[],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: None,
+            },
+            ClassSig {
+                name: "Temporal",
+                type_params: &[],
+                properties: &[],
+                methods: &[
+                    MethodSig {
+                        name: "Instant",
+                        params: &[("epochMilliseconds", "number")],
+                        min_params: 1,
+                        return_type: "TemporalInstant",
+                        is_static: true,
+                    },
+                    MethodSig {
+                        name: "PlainDate",
+                        params: &[("year", "number"), ("month", "number"), ("day", "number")],
+                        min_params: 3,
+                        return_type: "TemporalPlainDate",
+                        is_static: true,
+                    },
+                    MethodSig {
+                        name: "PlainTime",
+                        params: &[
+                            ("hour", "number"),
+                            ("minute", "number"),
+                            ("second", "number"),
+                            ("millisecond", "number"),
+                        ],
+                        min_params: 4,
+                        return_type: "TemporalPlainTime",
+                        is_static: true,
+                    },
+                    MethodSig {
+                        name: "ZonedDateTime",
+                        params: &[("epochNanoseconds", "number"), ("timeZone", "string")],
+                        min_params: 2,
+                        return_type: "TemporalZonedDateTime",
+                        is_static: true,
+                    },
+                ],
+                constructor: None,
+            },
+        ],
+        functions: &[],
+    },
     // string (primitive)
     BuiltinSignatures {
         name: "string",
@@ -575,6 +938,20 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     is_static: true,
                 },
                 MethodSig {
+                    name: "iterator",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "toStringTag",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
                     name: "keyFor",
                     params: &[("sym", "Symbol")],
                     min_params: 1,
@@ -661,6 +1038,16 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     return_type: "Array<[K, V]>",
                     is_static: false,
                 },
+                MethodSig {
+                    name: "forEach",
+                    params: &[
+                        ("callback", "(V, K, Map<K, V>) => void"),
+                        ("thisArg", "unknown"),
+                    ],
+                    min_params: 1,
+                    return_type: "void",
+                    is_static: false,
+                },
             ],
             constructor: Some(&[]),
         }],
@@ -725,6 +1112,13 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     params: &[],
                     min_params: 0,
                     return_type: "Array<[T, T]>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "forEach",
+                    params: &[("callback", "(T, T, Set<T>) => void"), ("thisArg", "unknown")],
+                    min_params: 1,
+                    return_type: "void",
                     is_static: false,
                 },
                 MethodSig {
@@ -1214,6 +1608,13 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     is_static: false,
                 },
                 MethodSig {
+                    name: "setTime",
+                    params: &[("value", "number")],
+                    min_params: 1,
+                    return_type: "number",
+                    is_static: false,
+                },
+                MethodSig {
                     name: "setMonth",
                     params: &[("month", "number")],
                     min_params: 1,
@@ -1283,23 +1684,24 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     return_type: "string",
                     is_static: false,
                 },
+                MethodSig {
+                    name: "now",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "number",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "parse",
+                    params: &[("str", "string")],
+                    min_params: 1,
+                    return_type: "number",
+                    is_static: true,
+                },
             ],
             constructor: Some(&[]),
         }],
-        functions: &[
-            FunctionSig {
-                name: "dateNow",
-                type_params: &[],
-                params: &[],
-                return_type: "number",
-            },
-            FunctionSig {
-                name: "dateParse",
-                type_params: &[],
-                params: &[("str", "string")],
-                return_type: "number",
-            },
-        ],
+        functions: &[],
     },
     // Channel<T>
     BuiltinSignatures {
@@ -1382,7 +1784,7 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     name: "lock",
                     params: &[],
                     min_params: 0,
-                    return_type: "T",
+                    return_type: "void",
                     is_static: false,
                 },
                 MethodSig {
@@ -1396,11 +1798,18 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     name: "tryLock",
                     params: &[],
                     min_params: 0,
-                    return_type: "T | null",
+                    return_type: "boolean",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "isLocked",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "boolean",
                     is_static: false,
                 },
             ],
-            constructor: Some(&[("value", "T")]),
+            constructor: Some(&[]),
         }],
         functions: &[],
     },
@@ -1435,51 +1844,51 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 },
                 MethodSig {
                     name: "then",
-                    params: &[("onFulfilled", "(T) => Object")],
+                    params: &[("onFulfilled", "unknown"), ("onRejected", "unknown")],
                     min_params: 1,
-                    return_type: "Promise<Object>",
+                    return_type: "Promise<T>",
                     is_static: false,
                 },
                 MethodSig {
                     name: "catch",
-                    params: &[("onRejected", "(Object) => Object")],
+                    params: &[("onRejected", "unknown")],
                     min_params: 1,
-                    return_type: "Promise<Object>",
+                    return_type: "Promise<T>",
                     is_static: false,
                 },
                 MethodSig {
                     name: "finally",
-                    params: &[("onFinally", "() => void")],
+                    params: &[("onFinally", "unknown")],
                     min_params: 1,
                     return_type: "Promise<T>",
                     is_static: false,
                 },
                 MethodSig {
                     name: "resolve",
-                    params: &[("value", "Object")],
+                    params: &[("value", "T")],
                     min_params: 1,
-                    return_type: "Promise<Object>",
+                    return_type: "Promise<T>",
                     is_static: true,
                 },
                 MethodSig {
                     name: "reject",
-                    params: &[("reason", "Object")],
+                    params: &[("reason", "unknown")],
                     min_params: 1,
-                    return_type: "Promise<Object>",
+                    return_type: "Promise<T>",
                     is_static: true,
                 },
                 MethodSig {
                     name: "all",
-                    params: &[("values", "Array<Promise<Object>>")],
+                    params: &[("values", "unknown")],
                     min_params: 1,
-                    return_type: "Promise<Array<Object>>",
+                    return_type: "Promise<Array<T>>",
                     is_static: true,
                 },
                 MethodSig {
                     name: "race",
-                    params: &[("values", "Array<Promise<Object>>")],
+                    params: &[("values", "unknown")],
                     min_params: 1,
-                    return_type: "Promise<Object>",
+                    return_type: "Promise<T>",
                     is_static: true,
                 },
             ],
@@ -1524,6 +1933,20 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     name: "for",
                     params: &[("key", "string")],
                     min_params: 1,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "iterator",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "toStringTag",
+                    params: &[],
+                    min_params: 0,
                     return_type: "Symbol",
                     is_static: true,
                 },
@@ -1922,6 +2345,60 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 constructor: Some(&[("message", "string")]),
             },
             ClassSig {
+                name: "InternalError",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "message",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "stack",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "unknown",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
+                        ty: "string",
+                        is_static: false,
+                    },
+                ],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
                 name: "AggregateError",
                 type_params: &[],
                 properties: &[
@@ -1982,6 +2459,44 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     ("errors", "Array<Error>"),
                     ("message", "string"),
                     ("options", "Object"),
+                ]),
+            },
+            ClassSig {
+                name: "SuppressedError",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "error",
+                        ty: "Object | string | number | boolean | null",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "suppressed",
+                        ty: "Object | string | number | boolean | null",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "message",
+                        ty: "string",
+                        is_static: false,
+                    },
+                ],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: Some(&[
+                    ("error", "Object | string | number | boolean | null"),
+                    ("suppressed", "Object | string | number | boolean | null"),
+                    ("message", "string"),
                 ]),
             },
             ClassSig {
@@ -2096,6 +2611,20 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     is_static: false,
                 },
                 MethodSig {
+                    name: "hasOwnProperty",
+                    params: &[("key", "string")],
+                    min_params: 1,
+                    return_type: "boolean",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "create",
+                    params: &[("proto", "Object | null"), ("descriptors", "Object")],
+                    min_params: 1,
+                    return_type: "Object",
+                    is_static: true,
+                },
+                MethodSig {
                     name: "defineProperty",
                     params: &[
                         ("obj", "Object"),
@@ -2114,14 +2643,211 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     is_static: true,
                 },
                 MethodSig {
+                    name: "keys",
+                    params: &[("obj", "Object")],
+                    min_params: 1,
+                    return_type: "string[]",
+                    is_static: true,
+                },
+                MethodSig {
                     name: "defineProperties",
                     params: &[("obj", "Object"), ("descriptors", "Object")],
                     min_params: 2,
                     return_type: "Object",
                     is_static: true,
                 },
+                MethodSig {
+                    name: "getPrototypeOf",
+                    params: &[("obj", "unknown")],
+                    min_params: 1,
+                    return_type: "Object | null",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "setPrototypeOf",
+                    params: &[("obj", "Object"), ("proto", "Object | null")],
+                    min_params: 2,
+                    return_type: "Object",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "isExtensible",
+                    params: &[("obj", "Object")],
+                    min_params: 1,
+                    return_type: "boolean",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "preventExtensions",
+                    params: &[("obj", "Object")],
+                    min_params: 1,
+                    return_type: "Object",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "is",
+                    params: &[("left", "Object"), ("right", "Object")],
+                    min_params: 2,
+                    return_type: "boolean",
+                    is_static: true,
+                },
             ],
             constructor: Some(&[]),
+        }],
+        functions: &[],
+    },
+    // JSON
+    BuiltinSignatures {
+        name: "JSON",
+        classes: &[ClassSig {
+            name: "JSON",
+            type_params: &[],
+            properties: &[],
+            methods: &[
+                MethodSig {
+                    name: "parse",
+                    params: &[("source", "string")],
+                    min_params: 1,
+                    return_type: "Json",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "stringify",
+                    params: &[("value", "unknown")],
+                    min_params: 1,
+                    return_type: "string",
+                    is_static: true,
+                },
+            ],
+            constructor: None,
+        }],
+        functions: &[],
+    },
+    // Reflect
+    BuiltinSignatures {
+        name: "Reflect",
+        classes: &[ClassSig {
+            name: "Reflect",
+            type_params: &[],
+            properties: &[],
+            methods: &[
+                MethodSig {
+                    name: "get",
+                    params: &[("target", "Object"), ("key", "string")],
+                    min_params: 2,
+                    return_type: "unknown",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "set",
+                    params: &[
+                        ("target", "Object"),
+                        ("key", "string"),
+                        ("value", "unknown"),
+                    ],
+                    min_params: 3,
+                    return_type: "boolean",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "has",
+                    params: &[("target", "Object"), ("key", "string")],
+                    min_params: 2,
+                    return_type: "boolean",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "getFieldNames",
+                    params: &[("target", "Object")],
+                    min_params: 1,
+                    return_type: "string[]",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "getFieldInfo",
+                    params: &[("target", "Object"), ("key", "string")],
+                    min_params: 2,
+                    return_type: "Object | null",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "hasMethod",
+                    params: &[("target", "Object"), ("methodName", "string")],
+                    min_params: 2,
+                    return_type: "boolean",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "isProxy",
+                    params: &[("target", "Object")],
+                    min_params: 1,
+                    return_type: "boolean",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "getProxyTarget",
+                    params: &[("proxy", "Object")],
+                    min_params: 1,
+                    return_type: "Object | null",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "getProxyHandler",
+                    params: &[("proxy", "Object")],
+                    min_params: 1,
+                    return_type: "Object | null",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "revokeProxy",
+                    params: &[("proxy", "Object")],
+                    min_params: 1,
+                    return_type: "void",
+                    is_static: true,
+                },
+            ],
+            constructor: None,
+        }],
+        functions: &[],
+    },
+    // Proxy
+    BuiltinSignatures {
+        name: "Proxy",
+        classes: &[ClassSig {
+            name: "Proxy",
+            type_params: &["T"],
+            properties: &[],
+            methods: &[
+                MethodSig {
+                    name: "isProxy",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "boolean",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "getTarget",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "T | null",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "getHandler",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Object | null",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "revoke",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "void",
+                    is_static: false,
+                },
+            ],
+            constructor: Some(&[("target", "T"), ("handler", "Object")]),
         }],
         functions: &[],
     },
@@ -2207,26 +2933,15 @@ mod tests {
 
     #[test]
     fn test_builtins_count() {
-        // Builtins may be empty during development (not precompiled yet)
-        // This test verifies the API works, not that builtins are populated
+        // Legacy embedded builtin modules are intentionally empty; this test
+        // only verifies the compatibility API remains well-formed.
         let _count = builtin_count(); // usize is always non-negative
     }
 
     #[test]
     fn test_get_builtin() {
-        // Builtins may be empty during development or fail to decode when
-        // bytecode VERSION has been bumped without regenerating the .ryb
-        // artifacts in builtins/bin/.
-        let decoded = get_all_builtins();
-        if decoded.is_empty() {
-            // No decodable builtins — acceptable during development
-            return;
-        }
-
-        // If any builtins decoded successfully, verify lookup works
-        let (name, _) = &decoded[0];
-        let module = get_builtin(name);
-        assert!(module.is_some(), "Should be able to get builtin '{}'", name);
+        assert!(get_all_builtins().is_empty());
+        assert!(get_builtin("Map").is_none());
     }
 
     #[test]

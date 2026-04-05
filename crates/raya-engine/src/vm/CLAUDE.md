@@ -26,7 +26,7 @@ The VM is not just "the interpreter". Execution depends on:
 
 ## Top-Level Files
 
-- `builtin.rs` and `builtins/`: builtin ids and embedded runtime surfaces.
+- `builtin.rs` and `builtins/`: builtin ids, handlers, and Rust-owned runtime surfaces.
 - `native_handler.rs` and `native_registry.rs`: native dispatch traits and registries.
 - `value.rs` and `object.rs`: runtime value/object model.
 - `types/`, `stack.rs`, `abi.rs`: runtime type info, call stack, ABI helpers.

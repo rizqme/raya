@@ -139,10 +139,6 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn iterator_debug_enabled() -> bool {
-        std::env::var("RAYA_DEBUG_ITERATOR_PROTOCOL").is_ok()
-    }
-
     pub(in crate::vm::interpreter) fn iterator_result_is_done(
         &mut self,
         result: Value,
@@ -183,14 +179,6 @@ impl<'a> Interpreter<'a> {
             task,
             module,
         )?;
-        if Self::iterator_debug_enabled() {
-            eprintln!(
-                "[iter] methods iterable={:#x} string_fallback={:?} direct_js={:?}",
-                iterable.raw(),
-                string_fallback_iterator.map(|value| format!("{:#x}", value.raw())),
-                direct_js.map(|value| format!("{:#x}", value.raw())),
-            );
-        }
         if let Some(iterator) = string_fallback_iterator {
             return Ok(Some(iterator));
         }
@@ -221,13 +209,6 @@ impl<'a> Interpreter<'a> {
         }
         let iterator =
             self.normalize_iterator_candidate(iterable, iterator_candidate, task, module)?;
-        if Self::iterator_debug_enabled() {
-            eprintln!(
-                "[iter] get iterable={:#x} iterator={:#x}",
-                iterable.raw(),
-                iterator.raw()
-            );
-        }
         Ok(Some(iterator))
     }
 
@@ -307,17 +288,7 @@ impl<'a> Interpreter<'a> {
             ));
         }
         if self.iterator_result_is_done(next_result, task, module)? {
-            if Self::iterator_debug_enabled() {
-                eprintln!("[iter] step iterator={:#x} -> done", iterator.raw());
-            }
             return Ok(None);
-        }
-        if Self::iterator_debug_enabled() {
-            eprintln!(
-                "[iter] step iterator={:#x} -> result={:#x}",
-                iterator.raw(),
-                next_result.raw()
-            );
         }
         Ok(Some(next_result))
     }
@@ -345,9 +316,6 @@ impl<'a> Interpreter<'a> {
             return Err(VmError::TypeError(
                 "Iterator return must produce an object".to_string(),
             ));
-        }
-        if Self::iterator_debug_enabled() {
-            eprintln!("[iter] close iterator={:#x}", iterator.raw());
         }
         Ok(())
     }

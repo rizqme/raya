@@ -260,7 +260,7 @@ impl<'a> Interpreter<'a> {
                 stack.push(result_val)?;
             }
             id if id == regexp::REPLACE_MATCHES => {
-                // Get match data for replaceWith class method IR.
+                // Get match data for replaceWith runtime dispatch.
                 // Args: input string
                 // Returns: array of [matched_text, start_index] arrays, respecting 'g' flag
                 let input = if !args.is_empty() && args[0].is_ptr() {

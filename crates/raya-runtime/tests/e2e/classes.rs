@@ -45,25 +45,6 @@ fn test_class_field_to_variable() {
     );
 }
 
-// Debug test for field access - prints bytecode
-#[test]
-fn test_class_field_access_debug() {
-    let source = "class Counter {
-             value: number = 42;
-         }
-         let c = new Counter();
-         return c.value;";
-
-    let debug_output = super::harness::debug_compile(source);
-    println!("\n=== Debug Output ===\n{}", debug_output);
-
-    // Try to run it
-    match super::harness::compile_and_run_isolated(source) {
-        Ok(v) => println!("Result: {:?}", v.as_i32()),
-        Err(e) => println!("Error: {}", e),
-    }
-}
-
 #[test]
 fn test_class_with_field() {
     expect_i32(

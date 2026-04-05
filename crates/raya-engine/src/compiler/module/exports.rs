@@ -436,6 +436,9 @@ pub fn inject_ambient_exports(
         if has_top_level_declaration_before_offset(ast, interner, name, usize::MAX) {
             continue;
         }
+        if binder.has_global_symbol(name) {
+            continue;
+        }
         let Some(exported) = exports.symbols.get(name) else {
             continue;
         };
@@ -467,6 +470,9 @@ pub fn inject_ambient_exports(
 
     for name in names {
         if has_top_level_declaration_before_offset(ast, interner, &name, usize::MAX) {
+            continue;
+        }
+        if binder.has_global_symbol(&name) {
             continue;
         }
         let Some(exported) = exports.symbols.get(&name) else {

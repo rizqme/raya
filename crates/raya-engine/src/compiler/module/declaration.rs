@@ -261,7 +261,7 @@ pub fn load_declaration_module_from_source(
     })
 }
 
-/// Load embedded builtin declaration exports for global checker seeding.
+/// Load Rust-owned builtin declaration exports for global checker seeding.
 pub fn builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExports, DeclarationError> {
     let module_name = match mode {
         BuiltinSurfaceMode::RayaStrict => "__raya_builtin__/strict".to_string(),
@@ -294,56 +294,6 @@ pub fn builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExports,
         });
     }
 
-    for signatures in crate::vm::builtins::get_all_signatures() {
-        for class in signatures.classes {
-            if class.name.starts_with("__")
-                || !builtin_root_visible_in_mode(class.name, mode)
-                || merged.has(class.name)
-            {
-                continue;
-            }
-            let kind = if class.constructor.is_some() {
-                SymbolKind::Class
-            } else {
-                SymbolKind::Variable
-            };
-            merged.add_symbol(ExportedSymbol {
-                name: class.name.to_string(),
-                local_name: class.name.to_string(),
-                kind,
-                ty: TypeId::new(TypeContext::UNKNOWN_TYPE_ID),
-                is_const: true,
-                is_async: false,
-                module_name: module_name.clone(),
-                module_id,
-                symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, class.name),
-                signature_hash: signature_hash(class.name),
-                type_signature: class.name.to_string(),
-                scope: SymbolScope::Module,
-            });
-        }
-
-        for function in signatures.functions {
-            if !builtin_root_visible_in_mode(function.name, mode) || merged.has(function.name) {
-                continue;
-            }
-            merged.add_symbol(ExportedSymbol {
-                name: function.name.to_string(),
-                local_name: function.name.to_string(),
-                kind: SymbolKind::Function,
-                ty: TypeId::new(TypeContext::UNKNOWN_TYPE_ID),
-                is_const: true,
-                is_async: false,
-                module_name: module_name.clone(),
-                module_id,
-                symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, function.name),
-                signature_hash: placeholder_hash,
-                type_signature: placeholder_signature.clone(),
-                scope: SymbolScope::Module,
-            });
-        }
-    }
-
     if matches!(mode, BuiltinSurfaceMode::NodeCompat) && !merged.has("globalThis") {
         merged.add_symbol(ExportedSymbol {
             name: "globalThis".to_string(),
@@ -374,11 +324,13 @@ fn registry_global_symbol_kind(
     if descriptor.symbol_type == SymbolType::Class {
         return SymbolKind::Class;
     }
-    if BuiltinRegistry::shared()
-        .type_descriptor(descriptor.backing_type_name)
-        .is_some_and(|surface| surface.constructor.is_some())
-    {
-        return SymbolKind::Class;
+    if let Some(surface) = BuiltinRegistry::shared().type_descriptor(descriptor.backing_type_name) {
+        if surface.constructor.is_some()
+            || !surface.static_methods.is_empty()
+            || !surface.static_properties.is_empty()
+        {
+            return SymbolKind::Class;
+        }
     }
     if global_name == "globalThis" {
         return SymbolKind::Variable;
@@ -390,6 +342,17 @@ fn registry_global_type_signature(
     global_name: &str,
     descriptor: &crate::compiler::builtins::BuiltinGlobalDescriptor,
 ) -> String {
+    if descriptor.symbol_type == SymbolType::Function {
+        return "Function".to_string();
+    }
+    if let Some(literal) = descriptor.literal {
+        return match literal {
+            crate::compiler::builtins::BuiltinLiteral::String(_) => "string".to_string(),
+            crate::compiler::builtins::BuiltinLiteral::Bool(_) => "boolean".to_string(),
+            crate::compiler::builtins::BuiltinLiteral::I32(_) => "int".to_string(),
+            crate::compiler::builtins::BuiltinLiteral::F64(_) => "number".to_string(),
+        };
+    }
     match registry_global_symbol_kind(global_name, descriptor) {
         SymbolKind::Class => descriptor.backing_type_name.to_string(),
         _ => "unknown".to_string(),

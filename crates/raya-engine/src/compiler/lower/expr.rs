@@ -11,6 +11,7 @@ use crate::compiler::ir::{
     BasicBlock, BinaryOp, FunctionId, IrConstant, IrInstr, IrValue, KernelOp, NominalTypeId,
     Register, Terminator, UnaryOp,
 };
+use crate::compiler::builtins::BuiltinRegistry;
 use crate::compiler::CompileError;
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
 use crate::parser::interner::Symbol;
@@ -573,6 +574,21 @@ impl<'a> Lowerer<'a> {
             return Some(dest);
         }
 
+        if let Some(crate::compiler::builtins::BuiltinSurfaceMemberDescriptor::Bound(binding)) =
+            crate::compiler::builtins::BuiltinRegistry::shared()
+                .type_descriptor(class_name)
+                .and_then(|descriptor| descriptor.static_methods.get(method_name))
+                .copied()
+        {
+            self.emit_builtin_kernel_call(
+                Some(dest.clone()),
+                KernelOp::Builtin(binding.op),
+                args.to_vec(),
+            );
+            self.propagate_type_projection_to_register(call_ty, &dest);
+            return Some(dest);
+        }
+
         let receiver = self.lower_expr(&member.object);
         let closure = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
         self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
@@ -594,9 +610,16 @@ impl<'a> Lowerer<'a> {
         args: Vec<Register>,
     ) {
         let op = match op {
-            KernelOp::Builtin(crate::compiler::builtins::BuiltinOp::Native(native_id)) => {
-                KernelOp::VmNative(native_id)
-            }
+            KernelOp::Builtin(crate::compiler::builtins::BuiltinOp::Native(native_id)) =>
+                KernelOp::Builtin(
+                    crate::compiler::builtins::builtin_op_from_native_id(native_id)
+                        .unwrap_or(crate::compiler::builtins::BuiltinOp::Native(native_id)),
+                ),
+            KernelOp::VmNative(native_id) => crate::compiler::builtins::builtin_op_from_native_id(
+                native_id,
+            )
+            .map(KernelOp::Builtin)
+            .unwrap_or(KernelOp::VmNative(native_id)),
             other => other,
         };
         self.emit(IrInstr::KernelCall { dest, op, args });
@@ -622,22 +645,10 @@ impl<'a> Lowerer<'a> {
         } else {
             dest
         };
-        if let Some(metaobject_op) = dispatch.metaobject_op {
-            self.emit_builtin_kernel_call(
-                Some(dispatch_dest.clone()),
-                KernelOp::Builtin(metaobject_op.into()),
-                args.to_vec(),
-            );
-        } else if let Some(op) = dispatch.builtin_op {
+        if let Some(op) = dispatch.effective_builtin_op() {
             self.emit_builtin_kernel_call(
                 Some(dispatch_dest.clone()),
                 KernelOp::Builtin(op),
-                args.to_vec(),
-            );
-        } else if let Some(native_id) = dispatch.native_id {
-            self.emit_builtin_kernel_call(
-                Some(dispatch_dest.clone()),
-                KernelOp::VmNative(native_id),
                 args.to_vec(),
             );
         } else {
@@ -645,15 +656,7 @@ impl<'a> Lowerer<'a> {
             let _ = method_name;
             return None;
         }
-        if matches!(
-            dispatch.builtin_op,
-            Some(crate::compiler::builtins::BuiltinOp::Metaobject(
-                crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor
-            ))
-        ) || matches!(
-            dispatch.metaobject_op,
-            Some(crate::semantics::MetaobjectOpKind::GetOwnPropertyDescriptor)
-        ) {
+        if dispatch.is_get_own_property_descriptor_dispatch() {
             self.register_object_fields.insert(
                 dispatch_dest.id,
                 vec![
@@ -749,7 +752,7 @@ impl<'a> Lowerer<'a> {
                 let object = prelowered_object
                     .clone()
                     .unwrap_or_else(|| self.lower_expr(&member.object));
-                match builtin_dispatch.builtin_op {
+                match builtin_dispatch.effective_builtin_op() {
                     Some(crate::compiler::builtins::BuiltinOp::HostHandle(op)) => {
                         let mut builtin_args = Vec::with_capacity(args.len() + 1);
                         builtin_args.push(object);
@@ -985,10 +988,7 @@ impl<'a> Lowerer<'a> {
                 Some(dest)
             }
             crate::semantics::CallDispatchKind::RuntimeLateBoundMethod => {
-                let checker_validated = {
-                    let obj_ty = self.get_expr_type(&member.object);
-                    self.type_has_checker_validated_class_members(obj_ty)
-                };
+                let checker_validated = self.receiver_has_checker_validated_members(&member.object);
                 let strict_builtin_member_allowed = matches!(
                     semantic_member_target_kind,
                     Some(crate::semantics::MemberTargetKind::BuiltinProperty)
@@ -1020,6 +1020,20 @@ impl<'a> Lowerer<'a> {
                 Some(dest)
             }
             crate::semantics::CallDispatchKind::DynamicCall => {
+                if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
+                    if let Some(result) = self.try_lower_nominal_member_call(
+                        dest.clone(),
+                        member,
+                        nominal_type_id,
+                        method_name_symbol,
+                        method_name,
+                        call_ty,
+                        args,
+                        prelowered_object.clone(),
+                    ) {
+                        return Some(result);
+                    }
+                }
                 let receiver = prelowered_object
                     .clone()
                     .unwrap_or_else(|| self.lower_expr(&member.object));
@@ -1094,7 +1108,6 @@ impl<'a> Lowerer<'a> {
                 self.emit_dyn_get_named(dest.clone(), object, property_name);
                 Some(dest)
             }
-            crate::compiler::type_registry::DispatchAction::ClassMethod(_, _) => None,
         }
     }
 
@@ -1180,6 +1193,30 @@ impl<'a> Lowerer<'a> {
         member: &ast::MemberExpression,
         prelowered_object: Option<Register>,
     ) -> Option<Register> {
+        let property_name = self.interner.resolve(member.property.name);
+        if let Some(nominal_type_id) = self.static_member_owner_nominal_type(&member.object) {
+            if let Some(global_index) = self
+                .class_info_map
+                .get(&nominal_type_id)
+                .and_then(|info| {
+                    info.static_fields
+                        .iter()
+                        .find(|field| self.interner.resolve(field.name) == property_name)
+                        .map(|field| field.global_index)
+                })
+            {
+                let member_expr = Expression::Member(member.clone());
+                let inferred_ty = self.get_expr_type(&member_expr);
+                let member_ty = self.dynamic_property_result_type(inferred_ty);
+                let dest = self.alloc_register(member_ty);
+                self.emit(IrInstr::LoadGlobal {
+                    dest: dest.clone(),
+                    index: global_index,
+                });
+                return Some(dest);
+            }
+        }
+
         if let Some(builtin_dispatch) = self
             .semantic_builtin_dispatch(member.span.start, member.span.end)
             .cloned()
@@ -1199,17 +1236,13 @@ impl<'a> Lowerer<'a> {
         let member_target_kind = self
             .semantic_member_target(member.span.start, member.span.end)
             .map(|target| target.kind);
-        let property_name = self.interner.resolve(member.property.name);
         let object = prelowered_object
             .clone()
             .unwrap_or_else(|| self.lower_expr(&member.object));
         let member_expr = Expression::Member(member.clone());
         let inferred_ty = self.get_expr_type(&member_expr);
         let member_ty = self.dynamic_property_result_type(inferred_ty);
-        let checker_validated = {
-            let obj_ty = self.get_expr_type(&member.object);
-            self.type_has_checker_validated_class_members(obj_ty)
-        };
+        let checker_validated = self.receiver_has_checker_validated_members(&member.object);
 
         if !self.js_dynamic_semantics_enabled()
             && !matches!(
@@ -1227,7 +1260,9 @@ impl<'a> Lowerer<'a> {
                 .push(crate::compiler::CompileError::InternalError {
                     message: format!(
                         "strict mode forbids dynamic JS property access for '{}.{}'",
-                        self.get_expr_type(&member.object).as_u32(),
+                        self.checker_validated_receiver_type(&member.object)
+                            .unwrap_or_else(|| self.get_expr_type(&member.object))
+                            .as_u32(),
                         property_name
                     ),
                 });
@@ -1264,6 +1299,26 @@ impl<'a> Lowerer<'a> {
         object: Register,
         value: Register,
     ) -> bool {
+        let property_name = self.interner.resolve(member.property.name);
+        if let Some(nominal_type_id) = self.static_member_owner_nominal_type(&member.object) {
+            if let Some(global_index) = self
+                .class_info_map
+                .get(&nominal_type_id)
+                .and_then(|info| {
+                    info.static_fields
+                        .iter()
+                        .find(|field| self.interner.resolve(field.name) == property_name)
+                        .map(|field| field.global_index)
+                })
+            {
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_index,
+                    value,
+                });
+                return true;
+            }
+        }
+
         let Some(dispatch) = self
             .semantic_property_dispatch(member.span.start, member.span.end)
             .cloned()
@@ -1273,7 +1328,6 @@ impl<'a> Lowerer<'a> {
         let member_target_kind = self
             .semantic_member_target(member.span.start, member.span.end)
             .map(|target| target.kind);
-        let property_name = self.interner.resolve(member.property.name);
         let dynamic_any_object = matches!(&*member.object, Expression::Identifier(ident) if self.dynamic_any_vars.contains(&ident.name));
         let nominal_type_id = if dynamic_any_object
             || matches!(
@@ -1600,20 +1654,6 @@ impl<'a> Lowerer<'a> {
                     KernelOp::Builtin(op),
                     builtin_args,
                 );
-                Some(dest)
-            }
-            crate::compiler::type_registry::DispatchAction::ClassMethod(
-                ref cm_type,
-                ref cm_method,
-            ) => {
-                let func_id = self.get_or_build_class_method(cm_type, cm_method);
-                let mut call_args = vec![object];
-                call_args.extend(args.iter().cloned());
-                self.emit(IrInstr::Call {
-                    dest: Some(dest.clone()),
-                    func: func_id,
-                    args: call_args,
-                });
                 Some(dest)
             }
             crate::compiler::type_registry::DispatchAction::DeclaredField { .. } => None,
@@ -2282,7 +2322,7 @@ impl<'a> Lowerer<'a> {
         dest: Register,
         builtin_dispatch: &crate::semantics::SemanticBuiltinDispatch,
     ) -> Option<Register> {
-        match builtin_dispatch.builtin_op {
+        match builtin_dispatch.effective_builtin_op() {
             Some(crate::compiler::builtins::BuiltinOp::HostHandle(
                 crate::semantics::HostHandleOpKind::ChannelConstructor,
             )) => {
@@ -2309,6 +2349,24 @@ impl<'a> Lowerer<'a> {
                         crate::semantics::HostHandleOpKind::MutexConstructor.into(),
                     ),
                     vec![],
+                );
+                Some(dest)
+            }
+            Some(crate::compiler::builtins::BuiltinOp::Native(native_id))
+                if native_id == crate::vm::builtin::date::CONSTRUCT =>
+            {
+                let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
+                native_args.push(self.lower_expr(&new_expr.callee));
+                native_args.extend(
+                    new_expr
+                        .arguments
+                        .iter()
+                        .map(|arg| self.lower_expr(arg.expression())),
+                );
+                self.emit_vm_native_call(
+                    Some(dest.clone()),
+                    crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
+                    native_args,
                 );
                 Some(dest)
             }
@@ -2417,6 +2475,19 @@ impl<'a> Lowerer<'a> {
             .and_then(|shape| shape.type_id)
     }
 
+    fn checker_validated_receiver_type(&self, expr: &Expression) -> Option<TypeId> {
+        let expr_ty = self.get_expr_type(expr);
+        if expr_ty.as_u32() != UNRESOLVED_TYPE_ID {
+            return Some(expr_ty);
+        }
+        self.semantic_object_shape_type_id(expr.span().start, expr.span().end)
+    }
+
+    fn receiver_has_checker_validated_members(&self, expr: &Expression) -> bool {
+        self.checker_validated_receiver_type(expr)
+            .is_some_and(|ty| self.type_has_checker_validated_class_members(ty))
+    }
+
     fn semantic_call_completion_kind(
         &self,
         span_start: usize,
@@ -2504,6 +2575,13 @@ impl<'a> Lowerer<'a> {
                 is_refcell: false,
                 is_immutable: false,
                 is_named_function_self: true,
+            });
+        }
+
+        if self.active_runtime_declaration_bindings.contains(name) {
+            return Some(super::ResolvedBinding::RuntimeIdentifier {
+                env: self.env_handle_for_binding(false, false, false),
+                symbol,
             });
         }
 
@@ -2596,6 +2674,8 @@ impl<'a> Lowerer<'a> {
         &mut self,
         symbol: Symbol,
     ) -> Option<super::ResolvedBinding> {
+        let name = self.interner.resolve(symbol);
+
         if let Some(&local_idx) = self.local_map.get(&symbol) {
             return Some(super::ResolvedBinding::Local {
                 env: self.env_handle_for_binding(false, false, false),
@@ -2615,6 +2695,13 @@ impl<'a> Lowerer<'a> {
                 is_refcell: false,
                 is_immutable: false,
                 is_named_function_self: true,
+            });
+        }
+
+        if self.active_runtime_declaration_bindings.contains(name) {
+            return Some(super::ResolvedBinding::RuntimeIdentifier {
+                env: self.env_handle_for_binding(false, false, false),
+                symbol,
             });
         }
 
@@ -3089,7 +3176,7 @@ impl<'a> Lowerer<'a> {
         }
         self.emit_vm_native_call(
             Some(dest),
-            crate::compiler::native_id::FUNCTION_CALL_HELPER,
+            crate::compiler::native_id::FUNCTION_APPLY_HELPER,
             vec![closure, receiver, args_array],
         );
     }
@@ -3103,7 +3190,7 @@ impl<'a> Lowerer<'a> {
     ) {
         self.emit_vm_native_call(
             Some(dest),
-            crate::compiler::native_id::FUNCTION_CALL_HELPER,
+            crate::compiler::native_id::FUNCTION_APPLY_HELPER,
             vec![closure, receiver, args_array],
         );
     }
@@ -3122,7 +3209,8 @@ impl<'a> Lowerer<'a> {
                             self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
                         })
                         .flatten()
-                }),
+                })
+                .or_else(|| self.unshadowed_class_identifier_nominal_type(ident)),
             Expression::This(_)
                 if self.current_method_is_static
                     && (self.this_register.is_some()
@@ -3133,6 +3221,30 @@ impl<'a> Lowerer<'a> {
             }
             _ => None,
         }
+    }
+
+    fn unshadowed_class_identifier_nominal_type(
+        &self,
+        ident: &ast::Identifier,
+    ) -> Option<NominalTypeId> {
+        if self.local_map.contains_key(&ident.name)
+            || self.named_function_self_bindings.contains_key(&ident.name)
+            || self.constant_map.contains_key(&ident.name)
+            || self.function_map.contains_key(&ident.name)
+            || self.captures.iter().any(|capture| capture.symbol == ident.name)
+            || self
+                .ancestor_variables
+                .as_ref()
+                .is_some_and(|ancestors| ancestors.contains_key(&ident.name))
+            || self
+                .current_method_env_globals
+                .as_ref()
+                .is_some_and(|bindings| bindings.contains_key(&ident.name))
+        {
+            return None;
+        }
+
+        self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
     }
 
     fn synthetic_class_expression_decl_from_call<'b>(
@@ -4930,6 +5042,33 @@ impl<'a> Lowerer<'a> {
             _ => {}
         }
 
+        if let Some(current_class) = self.current_class {
+            let is_unshadowed_current_class_name =
+                self.nominal_type_id_from_type_name(name) == Some(current_class)
+                    && !self.local_map.contains_key(&ident.name)
+                    && !self.named_function_self_bindings.contains_key(&ident.name)
+                    && !self.constant_map.contains_key(&ident.name)
+                    && !self.function_map.contains_key(&ident.name)
+                    && !self.captures.iter().any(|capture| capture.symbol == ident.name)
+                    && !self
+                        .ancestor_variables
+                        .as_ref()
+                        .is_some_and(|ancestors| ancestors.contains_key(&ident.name));
+            if is_unshadowed_current_class_name {
+                let ty = self.effective_identifier_value_type(ident, self.default_js_function_type());
+                if let Some(binding) = self.resolve_identifier_binding(ident.name, ident.span.start)
+                {
+                    return self.emit_load_identifier_binding(binding, ty);
+                }
+                if self.js_this_binding_compat {
+                    if let Some(&global_idx) = self.js_script_lexical_globals.get(&ident.name) {
+                        return self.emit_load_js_script_lexical_global(ident, global_idx);
+                    }
+                }
+                return self.load_class_value_for_nominal_type(current_class);
+            }
+        }
+
         if self.parameter_scope_eval_mode && self.parameter_tdz_symbols.contains(&ident.name) {
             return self.emit_parameter_tdz_reference_error(name);
         }
@@ -5049,6 +5188,10 @@ impl<'a> Lowerer<'a> {
             });
             self.propagate_type_projection_to_register(ty, &dest);
             return dest;
+        }
+
+        if self.active_runtime_declaration_bindings.contains(name) {
+            return self.emit_direct_eval_binding_get(name, false);
         }
 
         if self.parameter_scope_eval_mode {
@@ -5337,7 +5480,8 @@ impl<'a> Lowerer<'a> {
                     ))
                     .then(|| self.nominal_type_id_from_type_name(name))
                     .flatten()
-                });
+                })
+                .or_else(|| self.unshadowed_class_identifier_nominal_type(ident));
             if let Some(nominal_type_id) = class_value_nominal_type_id {
                 if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
                     eprintln!(
@@ -5350,6 +5494,11 @@ impl<'a> Lowerer<'a> {
                         self.parameter_scope_eval_mode
                     );
                 }
+                let ty = self.effective_identifier_value_type(ident, self.default_js_function_type());
+                if let Some(binding) = self.resolve_identifier_binding(ident.name, ident.span.start)
+                {
+                    return self.emit_load_identifier_binding(binding, ty);
+                }
                 return self.load_class_value_for_nominal_type(nominal_type_id);
             }
         }
@@ -5361,9 +5510,14 @@ impl<'a> Lowerer<'a> {
             return self.lower_parameter_scope_eval_arguments();
         }
 
-        // Ambient builtin globals (seeded by declaration surfaces) are resolved at runtime
-        // through a dedicated native lookup and do not require source-level declarations.
-        if self.semantic_identifier_is_builtin_global(ident.span.start) {
+        // Ambient builtin globals are resolved at runtime through a dedicated
+        // lookup path and do not require source-level declarations.
+        let builtin_global_fallback = BuiltinRegistry::shared()
+            .global_descriptor(name)
+            .is_some()
+            || self.type_registry.constructor_builtin_op(name).is_some();
+        if self.semantic_identifier_is_builtin_global(ident.span.start) || builtin_global_fallback
+        {
             if self.direct_eval_binding_preempts_local_resolution(name) {
                 return self.emit_direct_eval_binding_get(name, false);
             }
@@ -5534,6 +5688,37 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn load_class_value_for_nominal_type(
+        &mut self,
+        nominal_type_id: NominalTypeId,
+    ) -> Register {
+        if let Some(class_symbol) = self
+            .class_map
+            .iter()
+            .find_map(|(&symbol, &id)| (id == nominal_type_id).then_some(symbol))
+        {
+            if let Some(&global_idx) = self.module_var_globals.get(&class_symbol) {
+                let dest = self.alloc_register(self.default_js_function_type());
+                self.emit(IrInstr::LoadGlobal {
+                    dest: dest.clone(),
+                    index: global_idx,
+                });
+                return dest;
+            }
+            if self.js_this_binding_compat {
+                if let Some(&global_idx) = self.js_script_lexical_globals.get(&class_symbol) {
+                    let ident = ast::Identifier {
+                        name: class_symbol,
+                        span: self.current_span,
+                    };
+                    return self.emit_load_js_script_lexical_global(&ident, global_idx);
+                }
+            }
+        }
+
+        self.load_raw_class_value_for_nominal_type(nominal_type_id)
+    }
+
+    pub(super) fn load_raw_class_value_for_nominal_type(
         &mut self,
         nominal_type_id: NominalTypeId,
     ) -> Register {
@@ -6567,19 +6752,6 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            // Global number utility functions
-            if name == "parseInt" || name == "parseFloat" || name == "isNaN" || name == "isFinite" {
-                let native_id = match name {
-                    "parseInt" => crate::vm::builtin::number::PARSE_INT,
-                    "parseFloat" => crate::vm::builtin::number::PARSE_FLOAT,
-                    "isNaN" => crate::vm::builtin::number::IS_NAN,
-                    "isFinite" => crate::vm::builtin::number::IS_FINITE,
-                    _ => unreachable!(),
-                };
-                self.emit_vm_native_call(Some(dest.clone()), native_id, args);
-                return dest;
-            }
-
             let is_captured = self.captures.iter().any(|c| c.symbol == ident.name);
             let is_ancestor = self
                 .ancestor_variables
@@ -7293,26 +7465,6 @@ impl<'a> Lowerer<'a> {
             sources: vec![(null_exit, null_result), (call_exit, call_result)],
         });
         dest
-    }
-
-    /// Get or build a class method IR function. Caches by "TypeName_methodName".
-    fn get_or_build_class_method(&mut self, type_name: &str, method_name: &str) -> FunctionId {
-        let key = format!("{}_{}", type_name, method_name);
-        if let Some(&func_id) = self.class_method_cache.get(&key) {
-            return func_id;
-        }
-
-        let ir_func = super::class_methods::build_class_method_ir(type_name, method_name)
-            .unwrap_or_else(|| panic!("Unknown class method: {}.{}", type_name, method_name));
-
-        let func_id = FunctionId::new(self.next_function_id);
-        self.next_function_id += 1;
-
-        self.pending_arrow_functions
-            .push((func_id.as_u32(), ir_func));
-        self.class_method_cache.insert(key, func_id);
-
-        func_id
     }
 
     /// Helper: emit an i32 constant into a register.
@@ -9732,6 +9884,9 @@ impl<'a> Lowerer<'a> {
     fn identifier_has_static_assignment_target(&self, symbol: Symbol) -> bool {
         self.local_map.contains_key(&symbol)
             || self.named_function_self_bindings.contains_key(&symbol)
+            || self
+                .active_runtime_declaration_bindings
+                .contains(self.interner.resolve(symbol))
             || self.captures.iter().any(|capture| capture.symbol == symbol)
             || self
                 .ancestor_variables
@@ -11108,34 +11263,21 @@ impl<'a> Lowerer<'a> {
                     .map(|dispatch| dispatch.kind);
 
                 // Check for static field write: ClassName.staticField = value
-                if let Expression::Identifier(ident) = &*member.object {
-                    if let Some(nominal_type_id) = self
-                        .semantic_object_shape_type_id(ident.span.start, ident.span.end)
-                        .and_then(|ty| self.nominal_type_id_from_type_id(ty))
-                        .or_else(|| {
-                            self.object_expr_is_class_constructor_ref(&member.object)
-                                .then(|| {
-                                    self.nominal_type_id_from_type_name(
-                                        self.interner.resolve(ident.name),
-                                    )
-                                })
-                                .flatten()
-                        })
-                    {
-                        let global_index =
-                            self.class_info_map.get(&nominal_type_id).and_then(|info| {
-                                info.static_fields
-                                    .iter()
-                                    .find(|f| self.interner.resolve(f.name) == prop_name)
-                                    .map(|sf| sf.global_index)
-                            });
-                        if let Some(index) = global_index {
-                            self.emit(IrInstr::StoreGlobal {
-                                index,
-                                value: value.clone(),
-                            });
-                            return value;
-                        }
+                if let Some(nominal_type_id) =
+                    self.static_member_owner_nominal_type(&member.object)
+                {
+                    let global_index = self.class_info_map.get(&nominal_type_id).and_then(|info| {
+                        info.static_fields
+                            .iter()
+                            .find(|f| self.interner.resolve(f.name) == prop_name)
+                            .map(|sf| sf.global_index)
+                    });
+                    if let Some(index) = global_index {
+                        self.emit(IrInstr::StoreGlobal {
+                            index,
+                            value: value.clone(),
+                        });
+                        return value;
                     }
                 }
 
@@ -11556,12 +11698,7 @@ impl<'a> Lowerer<'a> {
             self.next_local = js_this_slots as u16;
         }
 
-        let named_self_local = func.name.as_ref().map(|name| {
-            let local_idx = self.allocate_anonymous_local();
-            self.named_function_self_bindings
-                .insert(name.name, local_idx);
-            local_idx
-        });
+        let mut named_self_local = None;
 
         if use_js_parameter_env {
             for param in &func.params {
@@ -11637,6 +11774,13 @@ impl<'a> Lowerer<'a> {
                 destructure_params.push((decl_param_idx, &param.pattern, reg.clone()));
             }
             params.push(reg);
+        }
+
+        if let Some(name) = &func.name {
+            let local_idx = self.allocate_anonymous_local();
+            self.named_function_self_bindings
+                .insert(name.name, local_idx);
+            named_self_local = Some(local_idx);
         }
 
         let return_ty = func
@@ -12741,6 +12885,18 @@ impl<'a> Lowerer<'a> {
             if !self.js_this_binding_compat
                 && self.object_expr_is_class_constructor_ref(&Expression::Identifier(ident.clone()))
                 && self.shared_script_binding_slot(ident.name).is_none()
+            {
+                let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::String("function".to_string())),
+                });
+                return dest;
+            }
+            if self.function_map.contains_key(&ident.name)
+                && self
+                    .resolve_identifier_binding(ident.name, ident.span.start)
+                    .is_none()
             {
                 let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                 self.emit(IrInstr::Assign {
@@ -14705,6 +14861,13 @@ impl<'a> Lowerer<'a> {
         use crate::parser::types::ty::Type;
 
         match self.type_ctx.get(ty_id) {
+            Some(Type::Json) => true,
+            Some(Type::Object(obj)) => {
+                !obj.properties.is_empty()
+                    || obj.index_signature.is_some()
+                    || !obj.call_signatures.is_empty()
+                    || !obj.construct_signatures.is_empty()
+            }
             Some(Type::Class(class_ty)) => {
                 !class_ty.methods.is_empty() || !class_ty.properties.is_empty()
             }

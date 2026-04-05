@@ -78,30 +78,6 @@ use raya_engine::vm::VmError;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::OnceLock;
-
-static STRICT_BUILTIN_RUNTIME_MODULES: OnceLock<Result<Vec<Module>, String>> = OnceLock::new();
-static NODE_BUILTIN_RUNTIME_MODULES: OnceLock<Result<Vec<Module>, String>> = OnceLock::new();
-
-struct EmbeddedBuiltinModule {
-    logical_path: &'static str,
-    bytecode: &'static [u8],
-}
-
-struct EmbeddedLiteralGlobal {
-    name: &'static str,
-    value: EmbeddedLiteralValue,
-}
-
-enum EmbeddedLiteralValue {
-    I32(i32),
-    F64(f64),
-    String(&'static str),
-    Bool(bool),
-    Null,
-}
-
-include!(concat!(env!("OUT_DIR"), "/embedded_builtins.rs"));
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -911,14 +887,6 @@ impl Runtime {
         Ok(deps)
     }
 
-    fn runtime_only_ambient_builtin_names(mode: BuiltinMode) -> Vec<String> {
-        match mode {
-            BuiltinMode::RayaStrict | BuiltinMode::NodeCompat => {
-                vec!["EventEmitter".to_string()]
-            }
-        }
-    }
-
     fn ambient_builtin_export_names(mode: BuiltinMode) -> Result<Vec<String>, RuntimeError> {
         let mut names = Self::builtin_global_exports_for_mode(mode)?
             .symbols
@@ -930,72 +898,10 @@ impl Runtime {
         Ok(names)
     }
 
-    fn embedded_builtin_modules(mode: BuiltinMode) -> &'static [EmbeddedBuiltinModule] {
-        match mode {
-            BuiltinMode::RayaStrict => STRICT_EMBEDDED_BUILTIN_MODULES,
-            BuiltinMode::NodeCompat => NODE_EMBEDDED_BUILTIN_MODULES,
-        }
-    }
-
-    fn embedded_builtin_literal_globals(mode: BuiltinMode) -> &'static [EmbeddedLiteralGlobal] {
-        match mode {
-            BuiltinMode::RayaStrict => STRICT_EMBEDDED_LITERAL_GLOBALS,
-            BuiltinMode::NodeCompat => NODE_EMBEDDED_LITERAL_GLOBALS,
-        }
-    }
-
-    fn seed_builtin_internal_literal_globals(
-        mode: BuiltinMode,
-        vm: &mut raya_engine::vm::Vm,
-    ) -> Result<(), RuntimeError> {
-        for literal in Self::embedded_builtin_literal_globals(mode) {
-            let value = match literal.value {
-                EmbeddedLiteralValue::I32(value) => Value::i32(value),
-                EmbeddedLiteralValue::F64(value) => Value::f64(value),
-                EmbeddedLiteralValue::String(value) => {
-                    let string = RayaString::new(value.to_string());
-                    let gc_ptr = vm.shared_state().gc.lock().allocate(string);
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
-                }
-                EmbeddedLiteralValue::Bool(value) => Value::bool(value),
-                EmbeddedLiteralValue::Null => Value::null(),
-            };
-            vm.shared_state()
-                .set_builtin_global(literal.name.to_string(), value);
-        }
-
-        Ok(())
-    }
-
-    fn compiled_builtin_runtime_modules(mode: BuiltinMode) -> Result<Vec<Module>, RuntimeError> {
-        let cache = match mode {
-            BuiltinMode::RayaStrict => &STRICT_BUILTIN_RUNTIME_MODULES,
-            BuiltinMode::NodeCompat => &NODE_BUILTIN_RUNTIME_MODULES,
-        };
-
-        let cached = cache.get_or_init(|| {
-            Self::embedded_builtin_modules(mode)
-                .iter()
-                .map(|module| {
-                    Module::decode(module.bytecode).map_err(|error| {
-                        format!(
-                            "Failed to decode embedded builtin '{}': {}",
-                            module.logical_path, error
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        });
-
-        cached
-            .as_ref()
-            .cloned()
-            .map_err(|message| RuntimeError::Dependency(message.clone()))
-    }
-
     #[doc(hidden)]
     pub fn debug_compiled_builtin_modules(mode: BuiltinMode) -> Result<Vec<Module>, RuntimeError> {
-        Self::compiled_builtin_runtime_modules(mode)
+        let _ = mode;
+        Ok(Vec::new())
     }
 
     fn ensure_ambient_builtin_globals_seeded(
@@ -1013,40 +919,6 @@ impl Runtime {
             return Ok(());
         }
 
-        let builtin_modules = Self::compiled_builtin_runtime_modules(self.options.builtin_mode)?
-            .into_iter()
-            .map(Arc::new)
-            .collect::<Vec<_>>();
-
-        // Bootstrap the whole builtin graph before executing any builtin top-level code.
-        // `register_module()` seeds function/class exports into ambient globals, so later
-        // builtin initializers can depend on foundational globals like `String`.
-        for builtin_module in &builtin_modules {
-            vm.shared_state()
-                .register_module(builtin_module.clone())
-                .map_err(RuntimeError::Dependency)?;
-        }
-
-        Self::seed_builtin_internal_literal_globals(self.options.builtin_mode, vm)?;
-
-        for builtin_module in &builtin_modules {
-            if !vm.shared_state().is_module_initialized(&builtin_module) {
-                match vm.execute_entry_only(&builtin_module) {
-                    Ok(_) => {}
-                    Err(raya_engine::vm::VmError::RuntimeError(message))
-                        if message == "No main function" => {}
-                    Err(error) => return Err(RuntimeError::Vm(error)),
-                }
-                vm.shared_state().mark_module_initialized(&builtin_module);
-            }
-
-            for export in &builtin_module.exports {
-                let value = Self::materialize_export_value(vm, &builtin_module, export)?;
-                vm.shared_state()
-                    .set_builtin_global(export.name.clone(), value);
-            }
-        }
-
         Ok(())
     }
 
@@ -1060,28 +932,6 @@ impl Runtime {
         let mut merged = declaration_builtin_global_exports(declaration_mode).map_err(|error| {
             RuntimeError::TypeCheck(format!("builtin declaration exports: {error}"))
         })?;
-
-        for name in Self::runtime_only_ambient_builtin_names(mode) {
-            if merged.symbols.contains_key(&name) {
-                continue;
-            }
-            merged.add_symbol(raya_engine::compiler::module::ExportedSymbol {
-                name: name.clone(),
-                local_name: name.clone(),
-                kind: SymbolKind::Class,
-                ty: raya_engine::parser::types::TypeId::new(
-                    raya_engine::TypeContext::UNKNOWN_TYPE_ID,
-                ),
-                is_const: true,
-                is_async: false,
-                module_name: merged.module_name.clone(),
-                module_id: module_id_from_name(&merged.module_name),
-                symbol_id: symbol_id_from_name(&merged.module_name, SymbolScope::Module, &name),
-                signature_hash: signature_hash("EventEmitter"),
-                type_signature: "EventEmitter".to_string(),
-                scope: SymbolScope::Module,
-            });
-        }
 
         Ok(merged)
     }

@@ -1902,6 +1902,130 @@ impl Default for SetObject {
     }
 }
 
+/// WeakMap builtin - object-identity key-value store
+#[derive(Debug, Clone)]
+pub struct WeakMapObject {
+    /// Internal HashMap storage keyed by heap identity.
+    pub inner: HashMap<usize, Value>,
+}
+
+impl WeakMapObject {
+    /// Create a new empty weak map.
+    pub fn new() -> Self {
+        Self {
+            inner: HashMap::new(),
+        }
+    }
+
+    fn key_id(key: Value) -> Option<usize> {
+        key.is_ptr().then_some(key.raw() as usize)
+    }
+
+    /// Get a value by object key.
+    pub fn get(&self, key: Value) -> Option<Value> {
+        let key_id = Self::key_id(key)?;
+        self.inner.get(&key_id).copied()
+    }
+
+    /// Set a key-value pair.
+    pub fn set(&mut self, key: Value, value: Value) -> bool {
+        let Some(key_id) = Self::key_id(key) else {
+            return false;
+        };
+        self.inner.insert(key_id, value);
+        true
+    }
+
+    /// Check if an object key exists.
+    pub fn has(&self, key: Value) -> bool {
+        let Some(key_id) = Self::key_id(key) else {
+            return false;
+        };
+        self.inner.contains_key(&key_id)
+    }
+
+    /// Delete an object key, returns true if it existed.
+    pub fn delete(&mut self, key: Value) -> bool {
+        let Some(key_id) = Self::key_id(key) else {
+            return false;
+        };
+        self.inner.remove(&key_id).is_some()
+    }
+}
+
+impl Default for WeakMapObject {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// WeakSet builtin - object-identity membership store
+#[derive(Debug, Clone)]
+pub struct WeakSetObject {
+    /// Internal HashSet storage keyed by heap identity.
+    pub inner: HashSet<usize>,
+}
+
+impl WeakSetObject {
+    /// Create a new empty weak set.
+    pub fn new() -> Self {
+        Self {
+            inner: HashSet::new(),
+        }
+    }
+
+    fn key_id(value: Value) -> Option<usize> {
+        value.is_ptr().then_some(value.raw() as usize)
+    }
+
+    /// Add an object value to the set.
+    pub fn add(&mut self, value: Value) -> bool {
+        let Some(key_id) = Self::key_id(value) else {
+            return false;
+        };
+        self.inner.insert(key_id);
+        true
+    }
+
+    /// Check if an object value exists.
+    pub fn has(&self, value: Value) -> bool {
+        let Some(key_id) = Self::key_id(value) else {
+            return false;
+        };
+        self.inner.contains(&key_id)
+    }
+
+    /// Delete an object value, returns true if it existed.
+    pub fn delete(&mut self, value: Value) -> bool {
+        let Some(key_id) = Self::key_id(value) else {
+            return false;
+        };
+        self.inner.remove(&key_id)
+    }
+}
+
+impl Default for WeakSetObject {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// WeakRef builtin - stable reference to a heap object.
+#[derive(Debug, Clone, Copy)]
+pub struct WeakRefObject {
+    pub target: Value,
+}
+
+impl WeakRefObject {
+    pub fn new(target: Value) -> Self {
+        Self { target }
+    }
+
+    pub fn deref(&self) -> Value {
+        self.target
+    }
+}
+
 /// Buffer builtin - raw binary data buffer
 /// Native IDs: 0x0700-0x070B
 #[derive(Debug, Clone)]

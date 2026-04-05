@@ -2,7 +2,8 @@
 //! and static/runtime type helpers.
 
 use super::native::{
-    checked_bigint_ptr, checked_callable_ptr, checked_object_ptr, js_number_to_string,
+    checked_array_ptr, checked_bigint_ptr, checked_callable_ptr, checked_object_ptr,
+    js_number_to_string,
 };
 use crate::compiler::native_id;
 use crate::compiler::type_registry::TypeRegistry;
@@ -190,6 +191,9 @@ pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
                 "reduce" => Some(array::REDUCE),
                 "fill" => Some(array::FILL),
                 "flat" => Some(array::FLAT),
+                "values" => Some(array::VALUES),
+                "keys" => Some(array::KEYS),
+                "entries" => Some(array::ENTRIES),
                 _ => None,
             };
         }
@@ -349,6 +353,7 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> Option<Value> {
+        let debug_promise_lookup = std::env::var("RAYA_DEBUG_PROMISE_HANDLE_LOOKUP").is_ok();
         if self.promise_handle_from_value(target).is_none() {
             return None;
         }
@@ -356,14 +361,47 @@ impl<'a> Interpreter<'a> {
             return None;
         }
 
-        let promise_ctor = self.builtin_global_value("Promise")?;
-        let promise_proto = self.constructor_prototype_value(promise_ctor)?;
+        let promise_proto = self
+            .builtin_global_value("Promise")
+            .and_then(|promise_ctor| self.constructor_prototype_value(promise_ctor))
+            .or_else(|| self.intrinsic_class_prototype_value("Promise"));
+        if debug_promise_lookup {
+            eprintln!(
+                "[promise-handle] key={} proto={}",
+                key,
+                promise_proto
+                    .map(|value| format!("{:#x}", value.raw()))
+                    .unwrap_or_else(|| "none".to_string())
+            );
+        }
+        let promise_proto = promise_proto?;
         let method = self
             .property_value_with_protocol_alias(promise_proto, key)
             .or_else(|| {
-                self.prototype_chain_property_value_with_protocol_alias(promise_proto, key)
-            })?;
+                self.prototype_chain_property_value_with_protocol_alias(
+                    promise_proto,
+                    promise_proto,
+                    key,
+                )
+            });
+        if debug_promise_lookup {
+            eprintln!(
+                "[promise-handle] key={} method={}",
+                key,
+                method
+                    .map(|value| format!("{:#x}", value.raw()))
+                    .unwrap_or_else(|| "none".to_string())
+            );
+        }
+        let method = method?;
         if !Self::is_callable_value(method) {
+            if debug_promise_lookup {
+                eprintln!(
+                    "[promise-handle] key={} callable=false raw={:#x}",
+                    key,
+                    method.raw()
+                );
+            }
             return None;
         }
 
@@ -383,10 +421,18 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    fn property_value_with_protocol_alias(&self, target: Value, key: &str) -> Option<Value> {
+    fn property_value_with_protocol_alias_for_receiver(
+        &self,
+        target: Value,
+        receiver: Value,
+        key: &str,
+    ) -> Option<Value> {
         for candidate in std::iter::once(key).chain(protocol_alias_names(key).iter().copied()) {
             // Check fields first
             if let Some(value) = self.get_field_value_by_name(target, candidate) {
+                return Some(value);
+            }
+            if let Some(value) = self.get_own_js_property_value_by_name(target, candidate) {
                 return Some(value);
             }
             // Check dyn_props
@@ -428,19 +474,19 @@ impl<'a> Interpreter<'a> {
                                 })
                         })
                 }) {
-                    if let Ok(value) = self.bound_method_value_for_slot(target, method_slot) {
+                    if let Ok(value) = self.bound_method_value_for_slot(receiver, method_slot) {
                         return Some(value);
                     }
                 }
             }
-            if let Some(value) = self.task_promise_method_value(target, candidate) {
+            if let Some(value) = self.task_promise_method_value(receiver, candidate) {
                 return Some(value);
             }
             // Check builtin native methods
             if let Some(native_id) =
                 builtin_handle_native_method_id(self.pinned_handles, target, candidate)
             {
-                let method = Object::new_bound_native(target, native_id);
+                let method = Object::new_bound_native(receiver, native_id);
                 let method_ptr = self.gc.lock().allocate(method);
                 let val = unsafe {
                     Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap())
@@ -451,9 +497,14 @@ impl<'a> Interpreter<'a> {
         None
     }
 
+    fn property_value_with_protocol_alias(&self, target: Value, key: &str) -> Option<Value> {
+        self.property_value_with_protocol_alias_for_receiver(target, target, key)
+    }
+
     fn prototype_chain_property_value_with_protocol_alias(
         &self,
         target: Value,
+        receiver: Value,
         key: &str,
     ) -> Option<Value> {
         let mut current = self.prototype_of_value(target);
@@ -463,7 +514,9 @@ impl<'a> Interpreter<'a> {
                 break;
             }
             seen.push(prototype.raw());
-            if let Some(value) = self.property_value_with_protocol_alias(prototype, key) {
+            if let Some(value) =
+                self.property_value_with_protocol_alias_for_receiver(prototype, receiver, key)
+            {
                 return Some(value);
             }
             current = self.prototype_of_value(prototype);
@@ -544,7 +597,13 @@ impl<'a> Interpreter<'a> {
         }
         if let Some(value) = self
             .property_value_with_protocol_alias(object_value, symbol_key)
-            .or_else(|| self.prototype_chain_property_value_with_protocol_alias(object_value, symbol_key))
+            .or_else(|| {
+                self.prototype_chain_property_value_with_protocol_alias(
+                    object_value,
+                    object_value,
+                    symbol_key,
+                )
+            })
         {
             return Ok(Some(value));
         }
@@ -555,6 +614,60 @@ impl<'a> Interpreter<'a> {
             caller_module,
         )? {
             return Ok(Some(value));
+        }
+
+        if symbol_key == "Symbol.iterator" {
+            let fallback_method = if checked_array_ptr(object_value).is_some() {
+                Some((Some("values"), None))
+            } else if self.map_handle_from_value(object_value).is_ok() {
+                Some((Some("entries"), Some(crate::compiler::native_id::MAP_ENTRIES)))
+            } else if self.set_handle_from_value(object_value).is_ok() {
+                Some((Some("values"), Some(crate::compiler::native_id::SET_VALUES)))
+            } else if object_value.is_ptr() {
+                if let Some(ptr) = unsafe { object_value.as_ptr::<u8>() } {
+                    let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
+                    let ty = header.type_id();
+                    if ty == std::any::TypeId::of::<MapObject>() {
+                        Some((Some("entries"), Some(crate::compiler::native_id::MAP_ENTRIES)))
+                    } else if ty == std::any::TypeId::of::<SetObject>() {
+                        Some((Some("values"), Some(crate::compiler::native_id::SET_VALUES)))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some((fallback_method_name, fallback_native_id)) = fallback_method {
+                if let Some(method_name) = fallback_method_name {
+                    if let Some(value) = self.prototype_chain_property_value_with_protocol_alias(
+                        object_value,
+                        object_value,
+                        method_name,
+                    ) {
+                        return Ok(Some(value));
+                    }
+                    if let Some(value) = self.get_property_value_via_js_semantics_with_context(
+                        object_value,
+                        method_name,
+                        caller_task,
+                        caller_module,
+                    )? {
+                        return Ok(Some(value));
+                    }
+                    if let Some(value) =
+                        self.property_value_with_protocol_alias(object_value, method_name)
+                    {
+                        return Ok(Some(value));
+                    }
+                }
+                if let Some(native_id) = fallback_native_id {
+                    return Ok(Some(self.alloc_unbound_native_value(native_id)));
+                }
+            }
         }
 
         if self.fixed_property_deleted(object_value, symbol_key) {
@@ -592,14 +705,7 @@ impl<'a> Interpreter<'a> {
             )));
         };
 
-        let obj = unsafe { &*obj_ptr.as_ptr() };
-        let layout_name = self
-            .layouts
-            .read()
-            .get_layout(obj.layout_id())
-            .and_then(|layout| layout.name.clone());
-
-        if layout_name.as_deref() != Some("Symbol") {
+        if !self.is_symbol_value(key_val) {
             return Err(VmError::TypeError(format!(
                 "{op_name} key must be a string, symbol, or non-negative integer"
             )));
@@ -721,7 +827,15 @@ impl<'a> Interpreter<'a> {
             ) && required_names.get(slot).map_or(true, |name| {
                 !matches!(
                     name.as_str(),
-                    "constructor" | "equals" | "hashCode" | "isPrototypeOf" | "valueOf"
+                    "constructor"
+                        | "equals"
+                        | "hashCode"
+                        | "hasOwnProperty"
+                        | "isPrototypeOf"
+                        | "propertyIsEnumerable"
+                        | "toLocaleString"
+                        | "toString"
+                        | "valueOf"
                 ) && !self.has_property_via_js_semantics(obj_val, name)
             }) {
                 return OpcodeResult::Error(VmError::TypeError(format!(
@@ -945,9 +1059,7 @@ impl<'a> Interpreter<'a> {
                 let type_ctx = TypeContext::new();
                 TypeRegistry::new(
                     &type_ctx,
-                    crate::compiler::module::builtin_surface_manifest_for_mode(
-                        crate::compiler::module::BuiltinSurfaceMode::NodeCompat,
-                    ),
+                    crate::compiler::module::BuiltinSurfaceMode::NodeCompat,
                 )
             })
             .native_method_id_for_type_name(class_name, method_name)
@@ -1267,6 +1379,18 @@ impl<'a> Interpreter<'a> {
                             Value::i32(s.len() as i32)
                         } else if let Some(key_str) = key_str.as_deref() {
                             if let Some(value) = match self
+                                .well_known_symbol_property_value(obj_val, key_str, task, module)
+                            {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            } {
+                                value
+                            } else if let Some(value) =
+                                self.get_own_js_property_value_by_name(obj_val, key_str)
+                            {
+                                value
+                            } else
+                            if let Some(value) = match self
                                 .get_property_value_via_js_semantics_with_context(
                                     obj_val, key_str, task, module,
                                 ) {
@@ -1313,6 +1437,18 @@ impl<'a> Interpreter<'a> {
                                 value
                             } else if let Some(key_str) = key_str.as_deref() {
                                 if let Some(value) = match self
+                                    .well_known_symbol_property_value(obj_val, key_str, task, module)
+                                {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                } {
+                                    value
+                                } else if let Some(value) =
+                                    self.get_own_js_property_value_by_name(obj_val, key_str)
+                                {
+                                    value
+                                } else
+                                if let Some(value) = match self
                                     .get_property_value_via_js_semantics_with_context(
                                         obj_val, key_str, task, module,
                                     ) {
@@ -1327,6 +1463,18 @@ impl<'a> Interpreter<'a> {
                                 Value::undefined()
                             }
                         } else if let Some(key_str) = key_str.as_deref() {
+                            if let Some(value) = match self
+                                .well_known_symbol_property_value(obj_val, key_str, task, module)
+                            {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            } {
+                                value
+                            } else if let Some(value) =
+                                self.get_own_js_property_value_by_name(obj_val, key_str)
+                            {
+                                value
+                            } else
                             if let Some(value) = match self
                                 .get_property_value_via_js_semantics_with_context(
                                     obj_val, key_str, task, module,

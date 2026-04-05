@@ -340,10 +340,10 @@ impl<'a> Compiler<'a> {
         }
 
         // Step 2b: Resolve late-bound member accesses (TypeVar → concrete type dispatch)
-        let builtin_surface = module::builtin_surface_manifest_for_mode(
+        let type_registry = type_registry::TypeRegistry::new(
+            &self.type_ctx,
             module::builtin_surface_mode_for_profile(self.semantic_profile),
         );
-        let type_registry = type_registry::TypeRegistry::new(&self.type_ctx, builtin_surface);
         monomorphize::resolve_late_bound_members(&mut ir_module, &type_registry, &self.type_ctx);
 
         // Strict dynamic-JS invariant: dynamic JS property writes must not survive
@@ -515,10 +515,10 @@ impl<'a> Compiler<'a> {
         .unwrap();
 
         // Step 2b: Resolve late-bound member accesses (TypeVar → concrete type dispatch)
-        let builtin_surface = module::builtin_surface_manifest_for_mode(
+        let type_registry = type_registry::TypeRegistry::new(
+            &self.type_ctx,
             module::builtin_surface_mode_for_profile(self.semantic_profile),
         );
-        let type_registry = type_registry::TypeRegistry::new(&self.type_ctx, builtin_surface);
         monomorphize::resolve_late_bound_members(&mut ir_module, &type_registry, &self.type_ctx);
 
         // Step 3: Optimization passes

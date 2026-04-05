@@ -112,6 +112,52 @@ pub const OBJECT_DEFINE_CLASS_PROPERTY: u16 = 0x003D;
 pub const OBJECT_GET_OWN_PROPERTY_SYMBOLS: u16 = 0x003E;
 /// `String.fromCharCode(...codeUnits)` helper.
 pub const OBJECT_STRING_FROM_CHAR_CODE: u16 = 0x003F;
+/// `Symbol.for(key)` helper.
+pub const SYMBOL_FOR: u16 = 0x006F;
+/// `Symbol.keyFor(sym)` helper.
+pub const SYMBOL_KEY_FOR: u16 = 0x0070;
+/// `sym.toString()` helper.
+pub const SYMBOL_TO_STRING: u16 = 0x0071;
+/// `sym.valueOf()` helper.
+pub const SYMBOL_VALUE_OF: u16 = 0x0072;
+/// `Symbol.iterator` / `Symbol.iterator()` helper.
+pub const SYMBOL_ITERATOR: u16 = 0x0073;
+/// `Symbol.toStringTag` / `Symbol.toStringTag()` helper.
+pub const SYMBOL_TO_STRING_TAG: u16 = 0x0074;
+/// `Object.keys(obj)` helper.
+pub const OBJECT_KEYS: u16 = 0x0075;
+/// `Object.prototype.propertyIsEnumerable(key)` helper.
+pub const OBJECT_PROPERTY_IS_ENUMERABLE: u16 = 0x0076;
+/// `Intl.NumberFormat(locale, options)` helper.
+pub const INTL_NUMBER_FORMAT: u16 = 0x0077;
+/// `Intl.DateTimeFormat(locale, options)` helper.
+pub const INTL_DATE_TIME_FORMAT: u16 = 0x0078;
+/// `formatter.format(value)` helper for Intl formatter objects.
+pub const INTL_FORMATTER_FORMAT: u16 = 0x0079;
+/// `formatter.resolvedOptions()` helper for Intl formatter objects.
+pub const INTL_FORMATTER_RESOLVED_OPTIONS: u16 = 0x007A;
+/// `new DisposableStack()` helper.
+pub const DISPOSABLE_STACK_NEW: u16 = 0x007B;
+/// `stack.defer(callback)` helper.
+pub const DISPOSABLE_STACK_DEFER: u16 = 0x007C;
+/// `stack.dispose()` helper.
+pub const DISPOSABLE_STACK_DISPOSE: u16 = 0x007D;
+/// `stack.move()` helper.
+pub const DISPOSABLE_STACK_MOVE: u16 = 0x007E;
+/// `new AsyncDisposableStack()` helper.
+pub const ASYNC_DISPOSABLE_STACK_NEW: u16 = 0x007F;
+/// `stack.defer(callback)` helper for async disposable stacks.
+pub const ASYNC_DISPOSABLE_STACK_DEFER: u16 = 0x0080;
+/// `stack.disposeAsync()` helper.
+pub const ASYNC_DISPOSABLE_STACK_DISPOSE_ASYNC: u16 = 0x0081;
+/// `new FinalizationRegistry(cleanupCallback)` helper.
+pub const FINALIZATION_REGISTRY_NEW: u16 = 0x0082;
+/// `registry.register(target, heldValue, unregisterToken?)` helper.
+pub const FINALIZATION_REGISTRY_REGISTER: u16 = 0x0083;
+/// `registry.unregister(unregisterToken)` helper.
+pub const FINALIZATION_REGISTRY_UNREGISTER: u16 = 0x0084;
+/// `registry.cleanupSome(callback?)` helper.
+pub const FINALIZATION_REGISTRY_CLEANUP_SOME: u16 = 0x0085;
 /// Read the current JS `new.target` value.
 pub const OBJECT_CURRENT_NEW_TARGET: u16 = 0x0032;
 /// Read the current callable closure object.
@@ -206,6 +252,14 @@ pub const OBJECT_ITERATOR_RESUME_THROW: u16 = 0x0067;
 pub const OBJECT_ASYNC_ITERATOR_GET: u16 = 0x0068;
 /// Define a JS env binding directly on an env record and its visible object surface.
 pub const OBJECT_JS_DEFINE_ENV_BINDING: u16 = 0x006A;
+/// Construct a plain object with an explicit prototype and optional descriptors.
+pub const OBJECT_CREATE: u16 = 0x006B;
+/// Object.prototype.hasOwnProperty(key) using own-property JS semantics.
+pub const OBJECT_HAS_OWN_PROPERTY: u16 = 0x006C;
+/// Iterator.fromArray(items) helper.
+pub const ITERATOR_FROM_ARRAY: u16 = 0x006D;
+/// Iterator.prototype.toArray() helper.
+pub const ITERATOR_TO_ARRAY: u16 = 0x006E;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -563,6 +617,22 @@ pub const PATH_DELIMITER: u16 = 0x600A;
 pub const PATH_STRIP_EXT: u16 = 0x600B;
 /// path.withExt(p, ext) - Replace extension
 pub const PATH_WITH_EXT: u16 = 0x600C;
+/// Temporal.Instant(epochMilliseconds) - Temporal instant factory
+pub const TEMPORAL_INSTANT: u16 = 0x600D;
+/// Temporal.PlainDate(year, month, day) - Temporal plain-date factory
+pub const TEMPORAL_PLAIN_DATE: u16 = 0x600E;
+/// Temporal.PlainTime(hour, minute, second, millisecond) - Temporal plain-time factory
+pub const TEMPORAL_PLAIN_TIME: u16 = 0x600F;
+/// Temporal.ZonedDateTime(epochNanoseconds, timeZone) - Temporal zoned datetime factory
+pub const TEMPORAL_ZONED_DATE_TIME: u16 = 0x6010;
+/// TemporalInstant.prototype.toString() helper
+pub const TEMPORAL_INSTANT_TO_STRING: u16 = 0x6011;
+/// TemporalPlainDate.prototype.toString() helper
+pub const TEMPORAL_PLAIN_DATE_TO_STRING: u16 = 0x6012;
+/// TemporalPlainTime.prototype.toString() helper
+pub const TEMPORAL_PLAIN_TIME_TO_STRING: u16 = 0x6013;
+/// TemporalZonedDateTime.prototype.toString() helper
+pub const TEMPORAL_ZONED_DATE_TIME_TO_STRING: u16 = 0x6014;
 
 // ============================================================================
 // JSON (0x0Cxx)
@@ -714,6 +784,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_INSTANCE_OF_DYNAMIC_CLASS => "Object.instanceOfDynamicClass",
         OBJECT_DELETE_PROPERTY => "Object.deleteProperty",
         OBJECT_WELL_KNOWN_SYMBOL => "Object.wellKnownSymbol",
+        ARRAY_FROM => "Array.from",
         FUNCTION_CALL_HELPER => "Function.call",
         FUNCTION_APPLY_HELPER => "Function.apply",
         FUNCTION_BIND_HELPER => "Function.bind",
@@ -756,6 +827,29 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_SET_PROPERTY => "Object.setProperty",
         OBJECT_SET_PROPERTY_STRICT => "Object.setPropertyStrict",
         OBJECT_SET_SUPER_PROPERTY => "Object.setSuperProperty",
+        SYMBOL_FOR => "Symbol.for",
+        SYMBOL_KEY_FOR => "Symbol.keyFor",
+        SYMBOL_TO_STRING => "Symbol.toString",
+        SYMBOL_VALUE_OF => "Symbol.valueOf",
+        SYMBOL_ITERATOR => "Symbol.iterator",
+        SYMBOL_TO_STRING_TAG => "Symbol.toStringTag",
+        OBJECT_KEYS => "Object.keys",
+        OBJECT_PROPERTY_IS_ENUMERABLE => "Object.propertyIsEnumerable",
+        INTL_NUMBER_FORMAT => "Intl.NumberFormat",
+        INTL_DATE_TIME_FORMAT => "Intl.DateTimeFormat",
+        INTL_FORMATTER_FORMAT => "IntlFormatter.format",
+        INTL_FORMATTER_RESOLVED_OPTIONS => "IntlFormatter.resolvedOptions",
+        DISPOSABLE_STACK_NEW => "DisposableStack.new",
+        DISPOSABLE_STACK_DEFER => "DisposableStack.defer",
+        DISPOSABLE_STACK_DISPOSE => "DisposableStack.dispose",
+        DISPOSABLE_STACK_MOVE => "DisposableStack.move",
+        ASYNC_DISPOSABLE_STACK_NEW => "AsyncDisposableStack.new",
+        ASYNC_DISPOSABLE_STACK_DEFER => "AsyncDisposableStack.defer",
+        ASYNC_DISPOSABLE_STACK_DISPOSE_ASYNC => "AsyncDisposableStack.disposeAsync",
+        FINALIZATION_REGISTRY_NEW => "FinalizationRegistry.new",
+        FINALIZATION_REGISTRY_REGISTER => "FinalizationRegistry.register",
+        FINALIZATION_REGISTRY_UNREGISTER => "FinalizationRegistry.unregister",
+        FINALIZATION_REGISTRY_CLEANUP_SOME => "FinalizationRegistry.cleanupSome",
         HOST_TEST262_ASYNC_DONE => "Host.test262AsyncDone",
         OBJECT_SET_SUPER_PROPERTY_STRICT => "Object.setSuperPropertyStrict",
         OBJECT_STRING_FROM_CHAR_CODE => "Object.stringFromCharCode",
@@ -776,6 +870,9 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_ITERATOR_RESUME_RETURN => "Object.iteratorResumeReturn",
         OBJECT_ITERATOR_RESUME_THROW => "Object.iteratorResumeThrow",
         OBJECT_ASYNC_ITERATOR_GET => "Object.asyncIteratorGet",
+        OBJECT_HAS_OWN_PROPERTY => "Object.hasOwnProperty",
+        ITERATOR_FROM_ARRAY => "Iterator.fromArray",
+        ITERATOR_TO_ARRAY => "Iterator.toArray",
         OBJECT_THROW_REFERENCE_ERROR => "Object.throwReferenceError",
         OBJECT_THROW_TYPE_ERROR => "Object.throwTypeError",
         OBJECT_CREATE_REFERENCE_ERROR => "Object.createReferenceError",
@@ -788,6 +885,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_JS_TO_NUMBER => "Object.jsToNumber",
         OBJECT_JS_TO_INTEGER_OR_INFINITY => "Object.jsToIntegerOrInfinity",
         TRY_GET_GLOBAL => "tryGetGlobal",
+        OBJECT_CREATE => "Object.create",
         OBJECT_HAS_PROPERTY => "Object.hasProperty",
         OBJECT_JS_CAPTURE_IDENTIFIER_ENV => "Object.jsCaptureIdentifierEnv",
         OBJECT_JS_GET_IDENTIFIER_FROM_ENV => "Object.jsGetIdentifierFromEnv",
@@ -1015,6 +1113,14 @@ pub fn native_name(id: u16) -> &'static str {
         PATH_DELIMITER => "path.delimiter",
         PATH_STRIP_EXT => "path.stripExt",
         PATH_WITH_EXT => "path.withExt",
+        TEMPORAL_INSTANT => "Temporal.Instant",
+        TEMPORAL_PLAIN_DATE => "Temporal.PlainDate",
+        TEMPORAL_PLAIN_TIME => "Temporal.PlainTime",
+        TEMPORAL_ZONED_DATE_TIME => "Temporal.ZonedDateTime",
+        TEMPORAL_INSTANT_TO_STRING => "TemporalInstant.toString",
+        TEMPORAL_PLAIN_DATE_TO_STRING => "TemporalPlainDate.toString",
+        TEMPORAL_PLAIN_TIME_TO_STRING => "TemporalPlainTime.toString",
+        TEMPORAL_ZONED_DATE_TIME_TO_STRING => "TemporalZonedDateTime.toString",
 
         _ => "unknown",
     }

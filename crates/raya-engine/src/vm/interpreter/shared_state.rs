@@ -532,83 +532,6 @@ pub struct SharedVmState {
 }
 
 impl SharedVmState {
-    fn is_builtin_module(module: &Module) -> bool {
-        if module.metadata.name.starts_with("__raya_builtin__/")
-            || module.metadata.name.contains("builtins/")
-        {
-            return true;
-        }
-        module
-            .metadata
-            .source_file
-            .as_deref()
-            .is_some_and(|path| path.contains("builtins/"))
-    }
-
-    fn seed_builtin_global_exports(&self, module: &Arc<Module>, layout: &ModuleRuntimeLayout) {
-        if !Self::is_builtin_module(module) {
-            return;
-        }
-
-        for export in &module.exports {
-            let value = match export.symbol_type {
-                crate::compiler::SymbolType::Function => {
-                    let closure = crate::vm::object::Object::new_closure_with_module(
-                        export.index,
-                        Vec::new(),
-                        module.clone(),
-                    );
-                    let gc_ptr = self.gc.lock().allocate(closure);
-                    Some(unsafe {
-                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                    })
-                }
-                crate::compiler::SymbolType::Class => {
-                    let local_nominal_type_id = export
-                        .nominal_type
-                        .map(|nominal| nominal.local_nominal_type_index as usize)
-                        .unwrap_or(export.index);
-                    let global_nominal_type_id = layout.nominal_type_base + local_nominal_type_id;
-                    self.ensure_constructor_value_for_nominal_type(global_nominal_type_id)
-                }
-                crate::compiler::SymbolType::Constant => self
-                    .globals_by_index
-                    .read()
-                    .get(
-                        layout.global_base
-                            + export
-                                .runtime_global_slot
-                                .map(|slot| slot as usize)
-                                .unwrap_or(export.index),
-                    )
-                    .copied(),
-            };
-
-            if let Some(value) = value {
-                // Point builtin_global_slots to the module's global slot (when available)
-                // so that builtin_global_value() returns the same identity as LoadGlobal.
-                // This ensures e.g. TypeError.prototype.constructor === TypeError.
-                if let Some(runtime_slot) = export.runtime_global_slot {
-                    let module_slot = layout.global_base + runtime_slot as usize;
-                    // Store the initial value at the module slot too
-                    let mut globals = self.globals_by_index.write();
-                    if module_slot >= globals.len() {
-                        globals.resize(module_slot + 1, Value::null());
-                    }
-                    if globals[module_slot].is_null() || globals[module_slot].is_undefined() {
-                        globals[module_slot] = value;
-                    }
-                    drop(globals);
-                    self.builtin_global_slots
-                        .write()
-                        .insert(export.name.clone(), module_slot);
-                } else {
-                    self.set_builtin_global(export.name.clone(), value);
-                }
-            }
-        }
-    }
-
     pub fn ensure_constructor_value_for_nominal_type(
         &self,
         nominal_type_id: usize,
@@ -1762,7 +1685,6 @@ impl SharedVmState {
                     layout.global_base + binding.slot as usize,
                 );
             }
-            self.seed_builtin_global_exports(&module, &layout);
         }
 
         Ok(())

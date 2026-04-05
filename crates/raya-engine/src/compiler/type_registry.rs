@@ -2,12 +2,15 @@
 //!
 //! Derived builtin dispatch registry.
 //!
-//! Builtin surface shape now comes from builtin source modules plus builtin
-//! contract manifests. `TypeRegistry` is only the derived lookup/index layer
-//! used by lowering, monomorphization, and runtime helpers.
+//! Builtin surface shape now comes from the Rust-owned builtin registry and
+//! derived surface manifest. `TypeRegistry` is only the lookup/index layer used
+//! by lowering, monomorphization, and runtime helpers.
 
 use crate::compiler::builtins::{builtin_op_from_native_id, native_id_for_builtin_op, BuiltinOp};
-use crate::compiler::module::{BuiltinDispatchBinding, BuiltinSurfaceManifest};
+use crate::compiler::module::{
+    builtin_surface_manifest_for_mode, BuiltinDispatchBinding, BuiltinSurfaceManifest,
+    BuiltinSurfaceMode,
+};
 use crate::parser::types::ty::{Type, TypeId};
 use crate::parser::TypeContext;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -33,9 +36,6 @@ pub enum DispatchAction {
         field_type: Option<u32>,
         field_index: Option<u16>,
     },
-    /// Emit Call to a pre-compiled class method function.
-    /// Contains (type_name, method_name) to look up the IR builder.
-    ClassMethod(String, String),
 }
 
 /// Specialized opcodes for property/method access.
@@ -49,7 +49,7 @@ pub enum OpcodeKind {
 // Type Registry
 // ============================================================================
 
-/// Central type registry built from `.raya` builtin files.
+/// Central type registry built from the Rust-owned builtin surface manifest.
 ///
 /// Provides dispatch lookup for methods and properties on native types,
 /// constructor native IDs, name↔TypeId mapping (via TypeContext),
@@ -63,8 +63,8 @@ pub struct TypeRegistry {
     array_methods: FxHashMap<String, DispatchAction>,
     /// Array property dispatch
     array_properties: FxHashMap<String, DispatchAction>,
-    /// Constructor native IDs: type_name → native_id
-    constructors: FxHashMap<String, u16>,
+    /// Constructor dispatch ops: type_name → builtin op
+    constructors: FxHashMap<String, BuiltinOp>,
     /// Set of type names that are `//@@builtin_primitive`
     builtin_primitives: FxHashSet<String>,
     /// TypeId → type name (reverse lookup)
@@ -82,8 +82,9 @@ impl TypeRegistry {
         ))
     }
 
-    /// Build the registry from the derived builtin surface manifest and TypeContext.
-    pub fn new(type_ctx: &TypeContext, manifest: &BuiltinSurfaceManifest) -> Self {
+    /// Build the registry from the builtin mode and TypeContext.
+    pub fn new(type_ctx: &TypeContext, mode: BuiltinSurfaceMode) -> Self {
+        let manifest = builtin_surface_manifest_for_mode(mode);
         let mut registry = Self {
             method_dispatch: FxHashMap::default(),
             property_dispatch: FxHashMap::default(),
@@ -163,12 +164,12 @@ impl TypeRegistry {
                 self.builtin_primitives.insert(type_name.clone());
             }
 
-            if let Some(native_id) = surface
+            if let Some(op) = surface
                 .constructor_binding
                 .as_ref()
-                .and_then(BuiltinDispatchBinding::native_id)
+                .and_then(BuiltinDispatchBinding::builtin_op)
             {
-                self.constructors.insert(type_name.clone(), native_id);
+                self.constructors.insert(type_name.clone(), op);
             }
 
             let is_array = type_name == TypeContext::ARRAY_TYPE_NAME;
@@ -293,9 +294,16 @@ impl TypeRegistry {
         None
     }
 
+    /// Get the constructor builtin op for a type (e.g., Array, RegExp).
+    pub fn constructor_builtin_op(&self, type_name: &str) -> Option<BuiltinOp> {
+        self.constructors.get(type_name).copied()
+    }
+
     /// Get the constructor native ID for a type (e.g., Array, RegExp).
     pub fn constructor_native_id(&self, type_name: &str) -> Option<u16> {
-        self.constructors.get(type_name).copied()
+        self.constructors
+            .get(type_name)
+            .and_then(|op| native_id_for_builtin_op(*op))
     }
 
     /// Returns true when a type name is handled by the builtin dispatch registry,
@@ -1027,10 +1035,8 @@ fn resolve_return_type_str(type_ctx: &TypeContext, return_type: &str) -> Option<
 mod tests {
     use super::*;
 
-    fn strict_builtin_manifest() -> &'static crate::compiler::module::BuiltinSurfaceManifest {
-        crate::compiler::module::builtin_surface_manifest_for_mode(
-            crate::compiler::module::BuiltinSurfaceMode::RayaStrict,
-        )
+    fn strict_builtin_mode() -> crate::compiler::module::BuiltinSurfaceMode {
+        crate::compiler::module::BuiltinSurfaceMode::RayaStrict
     }
 
     #[test]
@@ -1113,7 +1119,7 @@ class Array<T> {
     #[test]
     fn test_registry_new() {
         let type_ctx = TypeContext::new();
-        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_mode());
 
         // Verify string methods
         let str_id = type_ctx.lookup_named_type("string").unwrap().as_u32();
@@ -1156,10 +1162,21 @@ class Array<T> {
             Some(DispatchAction::Builtin(_))
         ));
 
-        // Verify constructors. Array-style direct native constructors remain surfaced here,
-        // while source-defined RegExp construction now stays on the class path.
-        assert!(registry.constructor_native_id("RegExp").is_none());
+        // Verify constructors exposed through the Rust-owned builtin registry.
+        assert_eq!(
+            registry.constructor_builtin_op("RegExp"),
+            Some(BuiltinOp::Native(crate::vm::builtin::regexp::NEW))
+        );
+        assert_eq!(
+            registry.constructor_native_id("RegExp"),
+            Some(crate::vm::builtin::regexp::NEW)
+        );
+        assert!(registry.constructor_builtin_op("string").is_none());
         assert!(registry.constructor_native_id("string").is_none());
+        assert_eq!(
+            registry.constructor_builtin_op("Buffer"),
+            Some(BuiltinOp::Native(crate::vm::builtin::buffer::NEW))
+        );
         assert_eq!(
             registry.constructor_native_id("Buffer"),
             Some(crate::vm::builtin::buffer::NEW)
@@ -1251,7 +1268,7 @@ class Array<T> {
         let null_id = type_ctx.lookup_named_type("null").unwrap();
         let union_id = type_ctx.union_type(vec![str_id, null_id]);
 
-        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_mode());
         let result = registry.resolve_union_for_dispatch(union_id.as_u32(), &type_ctx);
         assert_eq!(result, Ok(str_id.as_u32()));
     }
@@ -1265,7 +1282,7 @@ class Array<T> {
         let int_id = type_ctx.lookup_named_type("int").unwrap();
         let union_id = type_ctx.union_type(vec![num_id, int_id]);
 
-        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_mode());
         let result = registry.resolve_union_for_dispatch(union_id.as_u32(), &type_ctx);
         assert_eq!(result, Ok(num_id.as_u32()));
     }
@@ -1279,7 +1296,7 @@ class Array<T> {
         let num_id = type_ctx.lookup_named_type("number").unwrap();
         let union_id = type_ctx.union_type(vec![str_id, num_id]);
 
-        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_mode());
         let result = registry.resolve_union_for_dispatch(union_id.as_u32(), &type_ctx);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("ambiguous union"));
@@ -1295,7 +1312,7 @@ class Array<T> {
         let void_id = type_ctx.lookup_named_type("void").unwrap();
         let union_id = type_ctx.union_type(vec![str_id, null_id, void_id]);
 
-        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_mode());
         let result = registry.resolve_union_for_dispatch(union_id.as_u32(), &type_ctx);
         assert_eq!(result, Ok(str_id.as_u32()));
     }
@@ -1303,7 +1320,7 @@ class Array<T> {
     #[test]
     fn test_type_name_lookup() {
         let type_ctx = TypeContext::new();
-        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_mode());
 
         let str_id = type_ctx.lookup_named_type("string").unwrap().as_u32();
         assert_eq!(registry.type_name(str_id), Some("string"));
@@ -1315,14 +1332,14 @@ class Array<T> {
     #[test]
     fn test_return_type_propagation() {
         let type_ctx = TypeContext::new();
-        let registry = TypeRegistry::new(&type_ctx, strict_builtin_manifest());
+        let registry = TypeRegistry::new(&type_ctx, strict_builtin_mode());
 
         let str_id = type_ctx.lookup_named_type("string").unwrap().as_u32();
         let num_id = type_ctx.lookup_named_type("number").unwrap().as_u32();
         let bool_id = type_ctx.lookup_named_type("boolean").unwrap().as_u32();
         let int_id = type_ctx.lookup_named_type("int").unwrap().as_u32();
 
-        // String methods — return types from string.raya
+        // String methods — return types from the Rust builtin registry
         assert_eq!(registry.lookup_return_type(0x0200), Some(str_id)); // charAt → string
         assert_eq!(registry.lookup_return_type(0x0201), Some(str_id)); // substring → string
         assert_eq!(registry.lookup_return_type(0x0205), Some(int_id)); // indexOf → int
@@ -1345,7 +1362,7 @@ class Array<T> {
             Some(TypeContext::ARRAY_TYPE_ID)
         ); // SPLIT_REGEXP → string[]
 
-        // Number methods — return types from number.raya
+        // Number methods — return types from the Rust builtin registry
         assert_eq!(registry.lookup_return_type(0x0F00), Some(str_id)); // toFixed → string
         assert_eq!(registry.lookup_return_type(0x0F01), Some(str_id)); // toPrecision → string
         assert_eq!(registry.lookup_return_type(0x0F02), Some(str_id)); // toString → string
@@ -1354,7 +1371,7 @@ class Array<T> {
         // contribute native return-type propagation entries here.
         assert_eq!(registry.lookup_return_type(0x0A01), None); // test → source-defined
 
-        // Array push → return type is number (from array.raya)
+        // Array push → return type is number from the Rust builtin registry
         assert_eq!(registry.lookup_return_type(0x0100), Some(num_id)); // push → number
     }
 

@@ -1051,7 +1051,8 @@ impl ModuleCompiler {
             .with_policy(checker_policy);
 
         if self.should_inject_builtin_globals(path) {
-            binder.register_builtins(&[]);
+            let builtin_sigs = crate::builtins::to_checker_signatures();
+            binder.register_builtins(&builtin_sigs);
             self.inject_builtin_globals(&mut binder, &ast, &interner, path)?;
         }
 

@@ -336,12 +336,19 @@ impl<'a> Canonicalizer<'a> {
                 if method.visibility != Visibility::Public {
                     continue;
                 }
-                let method_sig = this.with_alpha_params(&method.type_params, |this| {
-                    this.canonicalize_type(method.ty)
+                let (method_type_params, method_sig) = this.with_alpha_params(&method.type_params, |this| {
+                    let params = method
+                        .type_params
+                        .iter()
+                        .map(|param| this.resolve_or_bind_type_var(param))
+                        .collect::<Vec<_>>();
+                    let sig = this.canonicalize_type(method.ty);
+                    (params, sig)
                 });
                 members.insert(format!(
-                    "inst_method:{}:{}",
+                    "inst_method:{}:[{}]:{}",
                     escape(&method.name),
+                    method_type_params.join(","),
                     method_sig
                 ));
             }
@@ -365,12 +372,19 @@ impl<'a> Canonicalizer<'a> {
                 if method.visibility != Visibility::Public {
                     continue;
                 }
-                let method_sig = this.with_alpha_params(&method.type_params, |this| {
-                    this.canonicalize_type(method.ty)
+                let (method_type_params, method_sig) = this.with_alpha_params(&method.type_params, |this| {
+                    let params = method
+                        .type_params
+                        .iter()
+                        .map(|param| this.resolve_or_bind_type_var(param))
+                        .collect::<Vec<_>>();
+                    let sig = this.canonicalize_type(method.ty);
+                    (params, sig)
                 });
                 members.insert(format!(
-                    "static_method:{}:{}",
+                    "static_method:{}:[{}]:{}",
                     escape(&method.name),
+                    method_type_params.join(","),
                     method_sig
                 ));
             }
@@ -420,10 +434,21 @@ impl<'a> Canonicalizer<'a> {
                 if method.visibility != Visibility::Public {
                     continue;
                 }
-                let method_sig = this.with_alpha_params(&method.type_params, |this| {
-                    this.canonicalize_type(method.ty)
+                let (method_type_params, method_sig) = this.with_alpha_params(&method.type_params, |this| {
+                    let params = method
+                        .type_params
+                        .iter()
+                        .map(|param| this.resolve_or_bind_type_var(param))
+                        .collect::<Vec<_>>();
+                    let sig = this.canonicalize_type(method.ty);
+                    (params, sig)
                 });
-                members.insert(format!("method:{}:{}", escape(&method.name), method_sig));
+                members.insert(format!(
+                    "method:{}:[{}]:{}",
+                    escape(&method.name),
+                    method_type_params.join(","),
+                    method_sig
+                ));
             }
 
             if !iface.extends.is_empty() {
@@ -468,9 +493,9 @@ impl<'a> Canonicalizer<'a> {
         )
     }
 
-    fn with_alpha_params<F>(&mut self, params: &[String], f: F) -> String
+    fn with_alpha_params<T, F>(&mut self, params: &[String], f: F) -> T
     where
-        F: FnOnce(&mut Self) -> String,
+        F: FnOnce(&mut Self) -> T,
     {
         let mut scope = HashMap::new();
         for param in params {
@@ -650,10 +675,34 @@ impl<'a> SignatureHydrator<'a> {
             "unknown" => return Some(self.type_ctx.unknown_type()),
             "any" => return Some(self.type_ctx.any_type()),
             "js_object" => return Some(self.type_ctx.jsobject_type()),
-            "Mutex" => return Some(self.type_ctx.mutex_type()),
-            "RegExp" => return Some(self.type_ctx.regexp_type()),
-            "Date" => return Some(self.type_ctx.date_type()),
-            "Buffer" => return Some(self.type_ctx.buffer_type()),
+            "Mutex" => {
+                return Some(
+                    self.type_ctx
+                        .lookup_named_type("Mutex")
+                        .unwrap_or_else(|| self.type_ctx.mutex_type()),
+                )
+            }
+            "RegExp" => {
+                return Some(
+                    self.type_ctx
+                        .lookup_named_type("RegExp")
+                        .unwrap_or_else(|| self.type_ctx.regexp_type()),
+                )
+            }
+            "Date" => {
+                return Some(
+                    self.type_ctx
+                        .lookup_named_type("Date")
+                        .unwrap_or_else(|| self.type_ctx.date_type()),
+                )
+            }
+            "Buffer" => {
+                return Some(
+                    self.type_ctx
+                        .lookup_named_type("Buffer")
+                        .unwrap_or_else(|| self.type_ctx.buffer_type()),
+                )
+            }
             "json" => return Some(self.type_ctx.json_type()),
             _ => {}
         }
@@ -926,11 +975,26 @@ impl<'a> SignatureHydrator<'a> {
                     }
                     "inst_method" | "static_method" if fields.len() >= 3 => {
                         let name = unescape(&fields[1]);
-                        let ty = self.parse_type(&fields[2])?;
+                        let (type_params, ty_field) = if fields.len() >= 4 {
+                            let params_body = strip_wrapped(&fields[2], "[", "]").unwrap_or("");
+                            let params = if params_body.trim().is_empty() {
+                                Vec::new()
+                            } else {
+                                split_top_level(params_body, ',')
+                                    .into_iter()
+                                    .map(|part| unescape(part.trim()))
+                                    .filter(|part| !part.is_empty())
+                                    .collect()
+                            };
+                            (params, &fields[3])
+                        } else {
+                            (Vec::new(), &fields[2])
+                        };
+                        let ty = self.parse_type(ty_field)?;
                         let method = super::ty::MethodSignature {
                             name,
                             ty,
-                            type_params: Vec::new(),
+                            type_params,
                             visibility: Visibility::Public,
                         };
                         if kind == "inst_method" {
@@ -1043,11 +1107,26 @@ impl<'a> SignatureHydrator<'a> {
                     }
                     "method" if fields.len() >= 3 => {
                         let name = unescape(&fields[1]);
-                        let ty = self.parse_type(&fields[2])?;
+                        let (type_params, ty_field) = if fields.len() >= 4 {
+                            let params_body = strip_wrapped(&fields[2], "[", "]").unwrap_or("");
+                            let params = if params_body.trim().is_empty() {
+                                Vec::new()
+                            } else {
+                                split_top_level(params_body, ',')
+                                    .into_iter()
+                                    .map(|part| unescape(part.trim()))
+                                    .filter(|part| !part.is_empty())
+                                    .collect()
+                            };
+                            (params, &fields[3])
+                        } else {
+                            (Vec::new(), &fields[2])
+                        };
+                        let ty = self.parse_type(ty_field)?;
                         methods.push(super::ty::MethodSignature {
                             name,
                             ty,
-                            type_params: Vec::new(),
+                            type_params,
                             visibility: Visibility::Public,
                         });
                     }
@@ -1204,22 +1283,40 @@ impl<'a> SignatureHydrator<'a> {
         let mut seen = HashSet::new();
         let mut visited = HashSet::new();
         for prop in properties {
-            self.collect_type_var_names(prop.ty, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(prop.ty, &mut out, &mut seen, &mut visited, &[]);
         }
         for method in methods {
-            self.collect_type_var_names(method.ty, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(
+                method.ty,
+                &mut out,
+                &mut seen,
+                &mut visited,
+                &method.type_params,
+            );
         }
         for prop in static_properties {
-            self.collect_type_var_names(prop.ty, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(prop.ty, &mut out, &mut seen, &mut visited, &[]);
         }
         for method in static_methods {
-            self.collect_type_var_names(method.ty, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(
+                method.ty,
+                &mut out,
+                &mut seen,
+                &mut visited,
+                &method.type_params,
+            );
         }
         if let Some(parent) = extends {
-            self.collect_type_var_names(parent, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(parent, &mut out, &mut seen, &mut visited, &[]);
         }
         for &implemented in implements {
-            self.collect_type_var_names(implemented, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(
+                implemented,
+                &mut out,
+                &mut seen,
+                &mut visited,
+                &[],
+            );
         }
         out
     }
@@ -1236,19 +1333,25 @@ impl<'a> SignatureHydrator<'a> {
         let mut seen = HashSet::new();
         let mut visited = HashSet::new();
         for prop in properties {
-            self.collect_type_var_names(prop.ty, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(prop.ty, &mut out, &mut seen, &mut visited, &[]);
         }
         for method in methods {
-            self.collect_type_var_names(method.ty, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(
+                method.ty,
+                &mut out,
+                &mut seen,
+                &mut visited,
+                &method.type_params,
+            );
         }
         for &sig in call_signatures {
-            self.collect_type_var_names(sig, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(sig, &mut out, &mut seen, &mut visited, &[]);
         }
         for &sig in construct_signatures {
-            self.collect_type_var_names(sig, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(sig, &mut out, &mut seen, &mut visited, &[]);
         }
         for &parent in extends {
-            self.collect_type_var_names(parent, &mut out, &mut seen, &mut visited);
+            self.collect_type_var_names_filtered(parent, &mut out, &mut seen, &mut visited, &[]);
         }
         out
     }
@@ -1260,6 +1363,17 @@ impl<'a> SignatureHydrator<'a> {
         seen: &mut HashSet<String>,
         visited: &mut HashSet<TypeId>,
     ) {
+        self.collect_type_var_names_filtered(ty, out, seen, visited, &[]);
+    }
+
+    fn collect_type_var_names_filtered(
+        &self,
+        ty: TypeId,
+        out: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+        visited: &mut HashSet<TypeId>,
+        excluded: &[String],
+    ) {
         if !visited.insert(ty) {
             return;
         }
@@ -1268,107 +1382,137 @@ impl<'a> SignatureHydrator<'a> {
         };
         match ty_data {
             Type::TypeVar(tv) => {
+                if excluded.iter().any(|name| name == &tv.name) {
+                    return;
+                }
                 if seen.insert(tv.name.clone()) {
                     out.push(tv.name.clone());
                 }
                 if let Some(constraint) = tv.constraint {
-                    self.collect_type_var_names(constraint, out, seen, visited);
+                    self.collect_type_var_names_filtered(constraint, out, seen, visited, excluded);
                 }
                 if let Some(default) = tv.default {
-                    self.collect_type_var_names(default, out, seen, visited);
+                    self.collect_type_var_names_filtered(default, out, seen, visited, excluded);
                 }
             }
-            Type::Array(arr) => self.collect_type_var_names(arr.element, out, seen, visited),
-            Type::Task(task) => self.collect_type_var_names(task.result, out, seen, visited),
+            Type::Array(arr) => {
+                self.collect_type_var_names_filtered(arr.element, out, seen, visited, excluded)
+            }
+            Type::Task(task) => {
+                self.collect_type_var_names_filtered(task.result, out, seen, visited, excluded)
+            }
             Type::Tuple(tuple) => {
                 for &elem in &tuple.elements {
-                    self.collect_type_var_names(elem, out, seen, visited);
+                    self.collect_type_var_names_filtered(elem, out, seen, visited, excluded);
                 }
             }
             Type::Object(obj) => {
                 for prop in &obj.properties {
-                    self.collect_type_var_names(prop.ty, out, seen, visited);
+                    self.collect_type_var_names_filtered(prop.ty, out, seen, visited, excluded);
                 }
                 if let Some((_, value_ty)) = obj.index_signature {
-                    self.collect_type_var_names(value_ty, out, seen, visited);
+                    self.collect_type_var_names_filtered(value_ty, out, seen, visited, excluded);
                 }
                 for &sig in &obj.call_signatures {
-                    self.collect_type_var_names(sig, out, seen, visited);
+                    self.collect_type_var_names_filtered(sig, out, seen, visited, excluded);
                 }
                 for &sig in &obj.construct_signatures {
-                    self.collect_type_var_names(sig, out, seen, visited);
+                    self.collect_type_var_names_filtered(sig, out, seen, visited, excluded);
                 }
             }
             Type::Interface(iface) => {
                 for prop in &iface.properties {
-                    self.collect_type_var_names(prop.ty, out, seen, visited);
+                    self.collect_type_var_names_filtered(prop.ty, out, seen, visited, excluded);
                 }
                 for method in &iface.methods {
-                    self.collect_type_var_names(method.ty, out, seen, visited);
+                    self.collect_type_var_names_filtered(
+                        method.ty,
+                        out,
+                        seen,
+                        visited,
+                        &method.type_params,
+                    );
                 }
                 for &sig in &iface.call_signatures {
-                    self.collect_type_var_names(sig, out, seen, visited);
+                    self.collect_type_var_names_filtered(sig, out, seen, visited, excluded);
                 }
                 for &sig in &iface.construct_signatures {
-                    self.collect_type_var_names(sig, out, seen, visited);
+                    self.collect_type_var_names_filtered(sig, out, seen, visited, excluded);
                 }
                 for &parent in &iface.extends {
-                    self.collect_type_var_names(parent, out, seen, visited);
+                    self.collect_type_var_names_filtered(parent, out, seen, visited, excluded);
                 }
             }
             Type::Class(class_ty) => {
                 for prop in &class_ty.properties {
-                    self.collect_type_var_names(prop.ty, out, seen, visited);
+                    self.collect_type_var_names_filtered(prop.ty, out, seen, visited, excluded);
                 }
                 for method in &class_ty.methods {
-                    self.collect_type_var_names(method.ty, out, seen, visited);
+                    self.collect_type_var_names_filtered(
+                        method.ty,
+                        out,
+                        seen,
+                        visited,
+                        &method.type_params,
+                    );
                 }
                 for prop in &class_ty.static_properties {
-                    self.collect_type_var_names(prop.ty, out, seen, visited);
+                    self.collect_type_var_names_filtered(prop.ty, out, seen, visited, excluded);
                 }
                 for method in &class_ty.static_methods {
-                    self.collect_type_var_names(method.ty, out, seen, visited);
+                    self.collect_type_var_names_filtered(
+                        method.ty,
+                        out,
+                        seen,
+                        visited,
+                        &method.type_params,
+                    );
                 }
                 if let Some(parent) = class_ty.extends {
-                    self.collect_type_var_names(parent, out, seen, visited);
+                    self.collect_type_var_names_filtered(parent, out, seen, visited, excluded);
                 }
                 for &implemented in &class_ty.implements {
-                    self.collect_type_var_names(implemented, out, seen, visited);
+                    self.collect_type_var_names_filtered(implemented, out, seen, visited, excluded);
                 }
             }
             Type::Function(func) => {
                 for &param in &func.params {
-                    self.collect_type_var_names(param, out, seen, visited);
+                    self.collect_type_var_names_filtered(param, out, seen, visited, excluded);
                 }
                 if let Some(rest) = func.rest_param {
-                    self.collect_type_var_names(rest, out, seen, visited);
+                    self.collect_type_var_names_filtered(rest, out, seen, visited, excluded);
                 }
-                self.collect_type_var_names(func.return_type, out, seen, visited);
+                self.collect_type_var_names_filtered(func.return_type, out, seen, visited, excluded);
             }
             Type::Union(union) => {
                 for &member in &union.members {
-                    self.collect_type_var_names(member, out, seen, visited);
+                    self.collect_type_var_names_filtered(member, out, seen, visited, excluded);
                 }
             }
             Type::Generic(generic) => {
-                self.collect_type_var_names(generic.base, out, seen, visited);
+                self.collect_type_var_names_filtered(generic.base, out, seen, visited, excluded);
                 for &arg in &generic.type_args {
-                    self.collect_type_var_names(arg, out, seen, visited);
+                    self.collect_type_var_names_filtered(arg, out, seen, visited, excluded);
                 }
             }
             Type::Reference(reference) => {
+                if reference.type_args.is_none()
+                    && excluded.iter().any(|name| name == &reference.name)
+                {
+                    return;
+                }
                 if let Some(args) = &reference.type_args {
                     for &arg in args {
-                        self.collect_type_var_names(arg, out, seen, visited);
+                        self.collect_type_var_names_filtered(arg, out, seen, visited, excluded);
                     }
                 }
             }
             Type::Keyof(keyof_ty) => {
-                self.collect_type_var_names(keyof_ty.target, out, seen, visited);
+                self.collect_type_var_names_filtered(keyof_ty.target, out, seen, visited, excluded);
             }
             Type::IndexedAccess(indexed) => {
-                self.collect_type_var_names(indexed.object, out, seen, visited);
-                self.collect_type_var_names(indexed.index, out, seen, visited);
+                self.collect_type_var_names_filtered(indexed.object, out, seen, visited, excluded);
+                self.collect_type_var_names_filtered(indexed.index, out, seen, visited, excluded);
             }
             _ => {}
         }

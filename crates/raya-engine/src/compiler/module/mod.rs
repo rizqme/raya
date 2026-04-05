@@ -9,7 +9,6 @@
 //! - Cross-module symbol resolution
 //! - Type definition parsing (`.d.ts` subset)
 
-mod builtin_contract;
 mod builtin_surface;
 mod cache;
 mod compiler;
@@ -26,9 +25,8 @@ pub const STD_MODULE_PREFIX: &str = "std:";
 pub const NODE_MODULE_PREFIX: &str = "node:";
 
 pub(crate) use builtin_surface::{
-    builtin_class_method_sources, builtin_surface_manifest_for_mode,
-    builtin_surface_mode_for_profile, BuiltinDispatchBinding, BuiltinGlobalKind,
-    BuiltinSurfaceManifest,
+    builtin_surface_manifest_for_mode, builtin_surface_mode_for_profile, BuiltinDispatchBinding,
+    BuiltinGlobalKind, BuiltinSurfaceManifest,
 };
 pub use cache::ModuleCache;
 pub use compiler::{CompiledModule, ModuleCompileError, ModuleCompiler};

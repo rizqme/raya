@@ -119,19 +119,6 @@ impl<'a> Interpreter<'a> {
                     .get(*func_id)
                     .map(|function| (function.is_async, function.is_generator))
                     .unwrap_or((false, false));
-                if std::env::var_os("RAYA_DEBUG_CALL_FLOW").is_some() {
-                    let func_name = target_module
-                        .functions
-                        .get(*func_id)
-                        .map(|function| function.name.as_str())
-                        .unwrap_or("<unknown>");
-                    eprintln!(
-                        "[call-flow] bound-method {}::{} final_args={:?}",
-                        target_module.metadata.name,
-                        func_name,
-                        final_args
-                    );
-                }
                 Ok(Some(CallableInvocationPlan::Function {
                     func_id: *func_id,
                     module: target_module,
@@ -144,11 +131,18 @@ impl<'a> Interpreter<'a> {
             CallableKind::BoundNative {
                 native_id,
                 receiver,
-            } => Ok(Some(CallableInvocationPlan::Native {
-                receiver: *receiver,
-                native_id: *native_id,
-                args: args.to_vec(),
-            })),
+            } => {
+                let receiver_value = if receiver.is_undefined() {
+                    explicit_this.unwrap_or(Value::undefined())
+                } else {
+                    *receiver
+                };
+                Ok(Some(CallableInvocationPlan::Native {
+                    receiver: receiver_value,
+                    native_id: *native_id,
+                    args: args.to_vec(),
+                }))
+            }
             CallableKind::Bound {
                 target,
                 this_arg,
@@ -203,19 +197,6 @@ impl<'a> Interpreter<'a> {
                     final_args.push(this_arg);
                 }
                 final_args.extend_from_slice(args);
-                if std::env::var_os("RAYA_DEBUG_CALL_FLOW").is_some() {
-                    let func_name = target_module
-                        .functions
-                        .get(*func_id)
-                        .map(|function| function.name.as_str())
-                        .unwrap_or("<unknown>");
-                    eprintln!(
-                        "[call-flow] closure {}::{} final_args={:?}",
-                        target_module.metadata.name,
-                        func_name,
-                        final_args
-                    );
-                }
                 Ok(Some(CallableInvocationPlan::Function {
                     func_id: *func_id,
                     module: target_module,
@@ -233,12 +214,20 @@ impl<'a> Interpreter<'a> {
         receiver: Value,
         shape_id: u64,
         field_offset: usize,
-    ) -> Option<Value> {
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<Value>, VmError> {
         use crate::vm::json::view::{js_classify, JSView};
 
         let member_name = {
             let names = self.structural_shape_names.read();
-            names.get(&shape_id)?.get(field_offset)?.clone()
+            let Some(names) = names.get(&shape_id) else {
+                return Ok(None);
+            };
+            let Some(name) = names.get(field_offset) else {
+                return Ok(None);
+            };
+            name.clone()
         };
 
         let bound_native = |this: &mut Self, native_id: u16| {
@@ -252,36 +241,58 @@ impl<'a> Interpreter<'a> {
                 let arr = unsafe { &*ptr };
                 if member_name == "length" {
                     let len = arr.len();
-                    Some(if len <= i32::MAX as usize {
+                    Ok(Some(if len <= i32::MAX as usize {
                         Value::i32(len as i32)
                     } else {
                         Value::f64(len as f64)
-                    })
+                    }))
                 } else {
-                    super::types::builtin_handle_native_method_id(
-                        self.pinned_handles,
+                    match self.get_property_value_via_js_semantics_with_context(
                         receiver,
                         &member_name,
-                    )
-                    .map(|native_id| bound_native(self, native_id))
-                    .or(Some(Value::null()))
+                        task,
+                        module,
+                    ) {
+                        Ok(Some(value)) => Ok(Some(value)),
+                        Ok(None) => Ok(
+                            super::types::builtin_handle_native_method_id(
+                                self.pinned_handles,
+                                receiver,
+                                &member_name,
+                            )
+                            .map(|native_id| bound_native(self, native_id))
+                            .or(Some(Value::null())),
+                        ),
+                        Err(error) => Err(error),
+                    }
                 }
             }
             JSView::Str(ptr) => {
                 let s = unsafe { &*ptr };
                 if member_name == "length" {
-                    Some(Value::i32(s.len() as i32))
+                    Ok(Some(Value::i32(s.len() as i32)))
                 } else {
-                    super::types::builtin_handle_native_method_id(
-                        self.pinned_handles,
+                    match self.get_property_value_via_js_semantics_with_context(
                         receiver,
                         &member_name,
-                    )
-                    .map(|native_id| bound_native(self, native_id))
-                    .or(Some(Value::null()))
+                        task,
+                        module,
+                    ) {
+                        Ok(Some(value)) => Ok(Some(value)),
+                        Ok(None) => Ok(
+                            super::types::builtin_handle_native_method_id(
+                                self.pinned_handles,
+                                receiver,
+                                &member_name,
+                            )
+                            .map(|native_id| bound_native(self, native_id))
+                            .or(Some(Value::null())),
+                        ),
+                        Err(error) => Err(error),
+                    }
                 }
             }
-            _ => None,
+            _ => Ok(None),
         }
     }
 
@@ -970,9 +981,16 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if let Some(value) =
-                    self.load_shape_field_on_non_object(obj_val, shape_id, field_offset)
-                {
+                if let Some(value) = match self.load_shape_field_on_non_object(
+                    obj_val,
+                    shape_id,
+                    field_offset,
+                    task,
+                    module,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                } {
                     if let Err(e) = stack.push(value) {
                         return OpcodeResult::Error(e);
                     }
@@ -1338,9 +1356,16 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Continue;
                 }
 
-                if let Some(value) =
-                    self.load_shape_field_on_non_object(obj_val, shape_id, field_offset)
-                {
+                if let Some(value) = match self.load_shape_field_on_non_object(
+                    obj_val,
+                    shape_id,
+                    field_offset,
+                    task,
+                    module,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                } {
                     if let Err(e) = stack.push(value) {
                         return OpcodeResult::Error(e);
                     }

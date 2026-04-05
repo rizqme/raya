@@ -694,6 +694,9 @@ impl<'a> TypeChecker<'a> {
             return None;
         };
         let name = self.resolve(ident.name);
+        if matches!(name.as_str(), "Number" | "String") {
+            return self.type_ctx.lookup_named_type(&name);
+        }
         self.symbols
             .resolve_from_scope(&name, self.current_scope)
             .filter(|symbol| symbol.kind == SymbolKind::Class)
@@ -3879,18 +3882,6 @@ impl<'a> TypeChecker<'a> {
             }
         };
 
-        if !self.is_js_mode() {
-            for arg in &call.arguments {
-                self.check_expr(arg.expression());
-            }
-            self.push_error_soft(CheckError::PropertyNotFound {
-                property: helper.clone(),
-                ty: self.format_type(target_ty),
-                span: member.span,
-            });
-            return Some(self.type_ctx.unknown_type());
-        }
-
         let arg_types: Vec<(TypeId, crate::parser::Span)> = call
             .arguments
             .iter()
@@ -5313,8 +5304,8 @@ impl<'a> TypeChecker<'a> {
                 })
                 .unwrap_or_default();
 
-            // Check for built-in types with type parameters
-            // Note: Mutex is now a normal class from mutex.raya, not special-cased
+            // Check for built-in types with type parameters provided by the Rust-owned
+            // builtin registry/type context.
             let builtin_type = match name.as_str() {
                 "RegExp" => Some(self.type_ctx.regexp_type()),
                 "Array" => {
@@ -5345,7 +5336,6 @@ impl<'a> TypeChecker<'a> {
                         Some(self.type_ctx.set_type())
                     }
                 }
-                // Note: Buffer and Date are now normal classes from their .raya files
                 "Channel" => {
                     // Channel<T> - expect 1 type argument
                     if resolved_type_args.len() == 1 {
@@ -6125,9 +6115,42 @@ impl<'a> TypeChecker<'a> {
         // This happens when the object is an identifier that resolves to a class symbol
         if let Expression::Identifier(ident) = &*member.object {
             let class_name = self.resolve(ident.name);
+            if matches!(class_name.as_str(), "Number" | "String") {
+                if let Some(ty) = self.lookup_callable_builtin_static_member(&class_name, &property_name)
+                {
+                    return ty;
+                }
+            }
+            if class_name == "JSON" {
+                match property_name.as_str() {
+                    "parse" => {
+                        let string_ty = self.type_ctx.string_type();
+                        let json_ty = self.type_ctx.json_type();
+                        return self
+                            .type_ctx
+                            .function_type(vec![string_ty], json_ty, false);
+                    }
+                    "stringify" => {
+                        let unknown_ty = self.type_ctx.unknown_type();
+                        let string_ty = self.type_ctx.string_type();
+                        return self
+                            .type_ctx
+                            .function_type(vec![unknown_ty], string_ty, false);
+                    }
+                    _ => {}
+                }
+            }
             if self.is_js_mode() && class_name == "Object" {
                 match property_name.as_str() {
                     "getOwnPropertyNames" => {
+                        let any_ty = self.type_ctx.any_type();
+                        let string_ty = self.type_ctx.string_type();
+                        let string_array = self.type_ctx.array_type(string_ty);
+                        return self
+                            .type_ctx
+                            .function_type(vec![any_ty], string_array, false);
+                    }
+                    "keys" => {
                         let any_ty = self.type_ctx.any_type();
                         let string_ty = self.type_ctx.string_type();
                         let string_array = self.type_ctx.array_type(string_ty);
@@ -6188,6 +6211,16 @@ impl<'a> TypeChecker<'a> {
                     if self.is_js_mode() && class.name == "Object" {
                         match property_name.as_str() {
                             "getOwnPropertyNames" => {
+                                let any_ty = self.type_ctx.any_type();
+                                let string_ty = self.type_ctx.string_type();
+                                let string_array = self.type_ctx.array_type(string_ty);
+                                return self.type_ctx.function_type(
+                                    vec![any_ty],
+                                    string_array,
+                                    false,
+                                );
+                            }
+                            "keys" => {
                                 let any_ty = self.type_ctx.any_type();
                                 let string_ty = self.type_ctx.string_type();
                                 let string_array = self.type_ctx.array_type(string_ty);
@@ -6377,8 +6410,6 @@ impl<'a> TypeChecker<'a> {
             };
         }
 
-        // Note: Mutex methods are now resolved via normal class method lookup from mutex.raya
-
         // Check for built-in Promise methods
         if let Some(crate::parser::types::Type::Task(task_ty)) = &obj_type {
             if let Some(method_type) = self.get_task_method_type(&property_name, task_ty.result) {
@@ -6447,9 +6478,6 @@ impl<'a> TypeChecker<'a> {
         if matches!(&obj_type, Some(crate::parser::types::Type::Json)) {
             return self.type_ctx.json_type();
         }
-
-        // Note: Date methods are now resolved via normal class method lookup
-        // from date.raya file definition
 
         // Check for built-in Channel methods
         if let Some(crate::parser::types::Type::Channel(chan_ty)) = &obj_type {
@@ -6900,6 +6928,33 @@ impl<'a> TypeChecker<'a> {
             FallbackReason::RecoverableUnsupportedExpr,
             "member-access",
         )
+    }
+
+    fn lookup_callable_builtin_static_member(
+        &mut self,
+        class_name: &str,
+        property_name: &str,
+    ) -> Option<TypeId> {
+        match (class_name, property_name) {
+            ("Number", "isNaN") | ("Number", "isFinite") => {
+                let number_ty = self.type_ctx.number_type();
+                let boolean_ty = self.type_ctx.boolean_type();
+                Some(
+                    self.type_ctx
+                        .function_type(vec![number_ty], boolean_ty, false),
+                )
+            }
+            ("String", "fromCharCode") => {
+                let number_ty = self.type_ctx.number_type();
+                let string_ty = self.type_ctx.string_type();
+                let rest_ty = self.type_ctx.array_type(number_ty);
+                Some(
+                    self.type_ctx
+                        .function_type_with_rest(vec![number_ty], string_ty, false, 1, Some(rest_ty)),
+                )
+            }
+            _ => None,
+        }
     }
 
     fn lookup_interface_member(
@@ -7657,8 +7712,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    // Note: Mutex methods are now resolved from mutex.raya class definition
-    // (get_mutex_method_type removed - no longer needed)
+    // Mutex methods are resolved through the shared builtin registry/type surface.
 
     /// Get the type of a built-in Promise method
     fn get_task_method_type(&mut self, method_name: &str, result_ty: TypeId) -> Option<TypeId> {
@@ -7843,15 +7897,19 @@ impl<'a> TypeChecker<'a> {
                 let array_ty = self.type_ctx.array_type(tuple_ty);
                 Some(self.type_ctx.function_type(vec![], array_ty, false))
             }
-            // forEach(fn: (value: V, key: K) => void) -> void
+            // forEach(fn: (value: V, key: K, map: Map<K, V>) => void, thisArg?) -> void
             "forEach" => {
+                let map_ty = self.type_ctx.map_type_with(key_ty, value_ty);
                 let callback_ty =
                     self.type_ctx
-                        .function_type(vec![value_ty, key_ty], void_ty, false);
-                Some(
-                    self.type_ctx
-                        .function_type(vec![callback_ty], void_ty, false),
-                )
+                        .function_type(vec![value_ty, key_ty, map_ty], void_ty, false);
+                let unknown_ty = self.type_ctx.unknown_type();
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![callback_ty, unknown_ty],
+                    void_ty,
+                    false,
+                    1,
+                ))
             }
             _ => None,
         }
@@ -7894,15 +7952,19 @@ impl<'a> TypeChecker<'a> {
                 let array_ty = self.type_ctx.array_type(tuple_ty);
                 Some(self.type_ctx.function_type(vec![], array_ty, false))
             }
-            // forEach(fn: (value: T) => void) -> void
+            // forEach(fn: (value: T, valueAgain: T, set: Set<T>) => void, thisArg?) -> void
             "forEach" => {
+                let set_ty = self.type_ctx.set_type_with(element_ty);
                 let callback_ty = self
                     .type_ctx
-                    .function_type(vec![element_ty], void_ty, false);
-                Some(
-                    self.type_ctx
-                        .function_type(vec![callback_ty], void_ty, false),
-                )
+                    .function_type(vec![element_ty, element_ty, set_ty], void_ty, false);
+                let unknown_ty = self.type_ctx.unknown_type();
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![callback_ty, unknown_ty],
+                    void_ty,
+                    false,
+                    1,
+                ))
             }
             // union(other: Set<T>) -> Set<T>
             "union" => {
@@ -8376,11 +8438,13 @@ impl<'a> TypeChecker<'a> {
             if std::env::var_os("RAYA_DEBUG_CHECK_ASSIGNABLE").is_some() {
                 use crate::parser::types::Type;
                 eprintln!(
-                    "[check-assignable] mismatch at line {} col {}: source={} target={}",
+                    "[check-assignable] mismatch at line {} col {}: source={} ({:?}) target={} ({:?})",
                     span.line,
                     span.column,
                     self.format_type(source),
+                    self.type_ctx.get(source),
                     self.format_type(target),
+                    self.type_ctx.get(target),
                 );
                 if let Some(Type::Function(f)) = self.type_ctx.get(source) {
                     eprintln!(
@@ -8525,8 +8589,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
 
-                // Handle built-in types
-                // Note: Mutex is now a normal class from mutex.raya
+                // Handle built-in types supplied by the shared builtin registry.
                 if name == TC::REGEXP_TYPE_NAME {
                     return self.type_ctx.regexp_type();
                 }

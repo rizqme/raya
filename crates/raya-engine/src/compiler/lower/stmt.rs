@@ -515,7 +515,7 @@ impl<'a> Lowerer<'a> {
                     self.pending_class_method_env_globals = saved_pending_method_env;
                 }
 
-                let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
+                let class_value = self.load_raw_class_value_for_nominal_type(nominal_type_id);
                 if self.js_this_binding_compat && self.function_depth == 0 && self.block_depth == 0
                 {
                     if let Some(&global_idx) = self.js_script_lexical_globals.get(&class.name.name)
@@ -526,6 +526,17 @@ impl<'a> Lowerer<'a> {
                             value: class_value.clone(),
                         });
                         self.mark_js_script_lexical_initialized(class.name.name);
+                    }
+                } else if !self.js_this_binding_compat
+                    && self.function_depth == 0
+                    && self.block_depth == 0
+                {
+                    if let Some(&global_idx) = self.module_var_globals.get(&class.name.name) {
+                        self.global_type_map.insert(global_idx, class_value.ty);
+                        self.emit(IrInstr::StoreGlobal {
+                            index: global_idx,
+                            value: class_value.clone(),
+                        });
                     }
                 }
                 if self.in_direct_eval_function {
@@ -638,6 +649,7 @@ impl<'a> Lowerer<'a> {
             label: self.pending_label.take(),
             break_target: exit_block,
             continue_target: cond_block,
+            runtime_loop_env: false,
             iterator_record: None,
             try_finally_depth: self.try_finally_stack.len(),
         });
@@ -731,10 +743,9 @@ impl<'a> Lowerer<'a> {
 
     fn lower_for_of(&mut self, for_of: &ast::ForOfStatement) {
         let loop_plan = self.loop_scope_plan(for_of.span.start);
-        let runtime_loop_env = self.js_this_binding_compat
-            && loop_plan.as_ref().is_some_and(|plan| {
-                plan.creates_per_iteration_env && !plan.binding_names.is_empty()
-            });
+        let runtime_loop_env = loop_plan.as_ref().is_some_and(|plan| {
+            plan.creates_per_iteration_env && !plan.binding_names.is_empty()
+        });
         let runtime_loop_binding_names = loop_plan
             .as_ref()
             .map(|plan| plan.binding_names.clone())
@@ -795,6 +806,7 @@ impl<'a> Lowerer<'a> {
             } else {
                 header_block
             },
+            runtime_loop_env,
             iterator_record: Some(iterator_reg.clone()),
             try_finally_depth: self.try_finally_stack.len(),
         });
@@ -878,7 +890,13 @@ impl<'a> Lowerer<'a> {
         }
 
         // Lower the body
-        self.lower_stmt(&for_of.body);
+        if runtime_loop_env {
+            self.with_runtime_loop_declaration_bindings(&runtime_loop_binding_names, |this| {
+                this.lower_stmt(&for_of.body);
+            });
+        } else {
+            self.lower_stmt(&for_of.body);
+        }
 
         if !self.current_block_is_terminated() {
             self.set_terminator(Terminator::Jump(if runtime_loop_env {
@@ -972,10 +990,9 @@ impl<'a> Lowerer<'a> {
         let string_ty = TypeId::new(1); // string type
 
         let loop_plan = self.loop_scope_plan(for_in.span.start);
-        let runtime_loop_env = self.js_this_binding_compat
-            && loop_plan.as_ref().is_some_and(|plan| {
-                plan.creates_per_iteration_env && !plan.binding_names.is_empty()
-            });
+        let runtime_loop_env = loop_plan.as_ref().is_some_and(|plan| {
+            plan.creates_per_iteration_env && !plan.binding_names.is_empty()
+        });
         let runtime_loop_binding_names = loop_plan
             .as_ref()
             .map(|plan| plan.binding_names.clone())
@@ -1057,6 +1074,7 @@ impl<'a> Lowerer<'a> {
             label: self.pending_label.take(),
             break_target: exit_block,
             continue_target: update_block,
+            runtime_loop_env,
             iterator_record: None,
             try_finally_depth: self.try_finally_stack.len(),
         });
@@ -1125,7 +1143,13 @@ impl<'a> Lowerer<'a> {
         }
 
         // Lower the body
-        self.lower_stmt(&for_in.body);
+        if runtime_loop_env {
+            self.with_runtime_loop_declaration_bindings(&runtime_loop_binding_names, |this| {
+                this.lower_stmt(&for_in.body);
+            });
+        } else {
+            self.lower_stmt(&for_in.body);
+        }
 
         // Jump to update block if not terminated
         if !self.current_block_is_terminated() {
@@ -2151,7 +2175,7 @@ impl<'a> Lowerer<'a> {
             crate::parser::types::Type::Class(class_ty) => {
                 self.nominal_type_id_from_type_name(&class_ty.name)
                     .is_none()
-                    && !self.builtin_surface.has_dispatch_type(&class_ty.name)
+                    && !self.type_registry.has_builtin_dispatch_type(&class_ty.name)
             }
             crate::parser::types::Type::Union(union) => union
                 .members
@@ -3175,7 +3199,7 @@ impl<'a> Lowerer<'a> {
                 let typed_value = if let Some(type_ann) = &decl.type_annotation {
                     let ann_ty = self.resolve_type_annotation(type_ann);
                     // If annotation resolves to UNRESOLVED (common for generic placeholders
-                    // in precompiled builtin class methods), keep inferred initializer type.
+                    // in synthesized/runtime-published builtin members), keep inferred initializer type.
                     if ann_ty != value.ty && ann_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
                         use crate::compiler::ir::Register;
                         Register {
@@ -3345,16 +3369,15 @@ impl<'a> Lowerer<'a> {
             span: Span::new(0, 0, 0, 0),
         };
 
-        // Ordinary nested declarations should lower as fresh closures. Reusing
-        // declaration-registration IDs here can point block-scoped functions at
-        // the wrong callable body shape, especially for async declarations.
+        // Function declarations are pre-registered so sibling, recursive, and
+        // hoisted references all point at a stable function ID. Reuse that ID
+        // for the real lowered body so the registry and emitted function table
+        // stay in sync.
         let in_module_wrapper = self
             .current_function
             .as_ref()
             .is_some_and(|f| is_module_wrapper_function_name(&f.name));
-        let preassigned_func_id = in_module_wrapper
-            .then(|| self.function_id_for_decl(func_decl))
-            .flatten();
+        let preassigned_func_id = self.function_id_for_decl(func_decl);
         let closure_reg =
             self.lower_function_expression_with_preassigned_id(&function_expr, preassigned_func_id);
         if let Some(func_id) = preassigned_func_id.or(self.last_arrow_func_id) {
@@ -3369,22 +3392,21 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Module-wrapper functions rely on sibling helper functions from class methods
-        // (e.g., EnvNamespace.cwd() calling local `cwd()`), so expose wrapper-local
-        // function declarations in function_map for direct identifier calls.
-        if in_module_wrapper {
-            if let Some(func_id) = self.last_arrow_func_id {
-                self.function_map.insert(func_decl.name.name, func_id);
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!(
-                        "[lower] wrapper helper fn '{}' -> func_id={} preassigned={}",
-                        self.interner.resolve(func_decl.name.name),
-                        func_id.as_u32(),
-                        preassigned_func_id
-                            .map(|id| id.as_u32().to_string())
-                            .unwrap_or_else(|| "none".to_string())
-                    );
-                }
+        // Nested declarations are pre-registered before lowering so sibling and
+        // recursive references can resolve. Once the real lowered body exists,
+        // refresh function_map to point at the actual callable ID rather than
+        // the provisional pre-registration ID.
+        if let Some(func_id) = preassigned_func_id.or(self.last_arrow_func_id) {
+            self.function_map.insert(func_decl.name.name, func_id);
+            if in_module_wrapper && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                eprintln!(
+                    "[lower] wrapper helper fn '{}' -> func_id={} preassigned={}",
+                    self.interner.resolve(func_decl.name.name),
+                    func_id.as_u32(),
+                    preassigned_func_id
+                        .map(|id| id.as_u32().to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                );
             }
         }
 
@@ -3575,6 +3597,22 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn unwind_runtime_loop_envs_from_target(&mut self, target_index: usize, include_target: bool) {
+        let runtime_env_count = self
+            .loop_stack
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(index, ctx)| {
+                !(*index < target_index || (!include_target && *index == target_index))
+                    && ctx.runtime_loop_env
+            })
+            .count();
+        for _ in 0..runtime_env_count {
+            self.emit_pop_declarative_env();
+        }
+    }
+
     fn lower_if(&mut self, if_stmt: &ast::IfStatement) {
         let cond = self.lower_expr(&if_stmt.condition);
 
@@ -3648,6 +3686,7 @@ impl<'a> Lowerer<'a> {
             label: self.pending_label.take(),
             break_target: exit_block,
             continue_target: header_block,
+            runtime_loop_env: false,
             iterator_record: None,
             try_finally_depth: self.try_finally_stack.len(),
         });
@@ -3672,10 +3711,9 @@ impl<'a> Lowerer<'a> {
 
     fn lower_for(&mut self, for_stmt: &ast::ForStatement) {
         let loop_plan = self.loop_scope_plan(for_stmt.span.start);
-        let runtime_loop_env = self.js_this_binding_compat
-            && loop_plan.as_ref().is_some_and(|plan| {
-                plan.creates_per_iteration_env && !plan.binding_names.is_empty()
-            });
+        let runtime_loop_env = loop_plan.as_ref().is_some_and(|plan| {
+            plan.creates_per_iteration_env && !plan.binding_names.is_empty()
+        });
         let runtime_loop_binding_names = loop_plan
             .as_ref()
             .map(|plan| plan.binding_names.clone())
@@ -3718,7 +3756,13 @@ impl<'a> Lowerer<'a> {
         self.current_block = header_block;
 
         if let Some(cond) = &for_stmt.test {
-            let cond_reg = self.lower_expr(cond);
+            let cond_reg = if runtime_loop_env {
+                self.with_runtime_loop_declaration_bindings(&runtime_loop_binding_names, |this| {
+                    this.lower_expr(cond)
+                })
+            } else {
+                self.lower_expr(cond)
+            };
             self.set_terminator(Terminator::Branch {
                 cond: cond_reg,
                 then_block: body_block,
@@ -3735,6 +3779,7 @@ impl<'a> Lowerer<'a> {
             label: self.pending_label.take(),
             break_target: exit_block,
             continue_target: update_block,
+            runtime_loop_env,
             iterator_record: None,
             try_finally_depth: self.try_finally_stack.len(),
         });
@@ -3744,7 +3789,13 @@ impl<'a> Lowerer<'a> {
             .add_block(crate::ir::BasicBlock::with_label(body_block, "for.body"));
         self.current_block = body_block;
 
-        self.lower_stmt(&for_stmt.body);
+        if runtime_loop_env {
+            self.with_runtime_loop_declaration_bindings(&runtime_loop_binding_names, |this| {
+                this.lower_stmt(&for_stmt.body);
+            });
+        } else {
+            self.lower_stmt(&for_stmt.body);
+        }
 
         if !self.current_block_is_terminated() {
             self.set_terminator(Terminator::Jump(update_block));
@@ -3764,7 +3815,13 @@ impl<'a> Lowerer<'a> {
             self.emit_replace_declarative_env(&runtime_loop_binding_names);
         }
         if let Some(update) = &for_stmt.update {
-            self.lower_expr(update);
+            if runtime_loop_env {
+                self.with_runtime_loop_declaration_bindings(&runtime_loop_binding_names, |this| {
+                    this.lower_expr(update)
+                });
+            } else {
+                self.lower_expr(update);
+            }
         }
         self.set_terminator(Terminator::Jump(header_block));
 
@@ -3803,20 +3860,21 @@ impl<'a> Lowerer<'a> {
         // Labeled break: search loop stack for matching label
         if let Some(ref label_ident) = brk.label {
             let label_sym = label_ident.name;
-            if let Some((target_index, loop_ctx)) = self
-                .loop_stack
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, ctx)| ctx.label == Some(label_sym))
-                .map(|(index, ctx)| (index, ctx.clone()))
-            {
-                self.close_loop_iterators_from_target(target_index, true);
-                let depth = loop_ctx.try_finally_depth;
-                let entries: Vec<super::TryFinallyEntry> =
-                    self.try_finally_stack.drain(depth..).rev().collect();
-                for entry in &entries {
-                    if entry.in_try_body {
+        if let Some((target_index, loop_ctx)) = self
+            .loop_stack
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, ctx)| ctx.label == Some(label_sym))
+            .map(|(index, ctx)| (index, ctx.clone()))
+        {
+            self.close_loop_iterators_from_target(target_index, true);
+            self.unwind_runtime_loop_envs_from_target(target_index, false);
+            let depth = loop_ctx.try_finally_depth;
+            let entries: Vec<super::TryFinallyEntry> =
+                self.try_finally_stack.drain(depth..).rev().collect();
+            for entry in &entries {
+                if entry.in_try_body {
                         self.emit(IrInstr::EndTry);
                     }
                     self.lower_block(&entry.finally_body);
@@ -3902,6 +3960,7 @@ impl<'a> Lowerer<'a> {
 
         if let Some((target_index, loop_ctx)) = loop_ctx {
             self.close_loop_iterators_from_target(target_index, false);
+            self.unwind_runtime_loop_envs_from_target(target_index, false);
             let depth = loop_ctx.try_finally_depth;
             let entries: Vec<super::TryFinallyEntry> =
                 self.try_finally_stack.drain(depth..).rev().collect();

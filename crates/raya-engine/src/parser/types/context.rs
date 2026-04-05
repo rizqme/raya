@@ -285,42 +285,42 @@ impl TypeContext {
 
     /// Get the number type (f64)
     pub fn number_type(&mut self) -> TypeId {
-        self.intern(Type::Primitive(super::ty::PrimitiveType::Number))
+        TypeId(Self::NUMBER_TYPE_ID)
     }
 
     /// Get the int type (i32)
     pub fn int_type(&mut self) -> TypeId {
-        self.intern(Type::Primitive(super::ty::PrimitiveType::Int))
+        TypeId(Self::INT_TYPE_ID)
     }
 
     /// Get the string type
     pub fn string_type(&mut self) -> TypeId {
-        self.intern(Type::Primitive(super::ty::PrimitiveType::String))
+        TypeId(Self::STRING_TYPE_ID)
     }
 
     /// Get the boolean type
     pub fn boolean_type(&mut self) -> TypeId {
-        self.intern(Type::Primitive(super::ty::PrimitiveType::Boolean))
+        TypeId(Self::BOOLEAN_TYPE_ID)
     }
 
     /// Get the null type
     pub fn null_type(&mut self) -> TypeId {
-        self.intern(Type::Primitive(super::ty::PrimitiveType::Null))
+        TypeId(Self::NULL_TYPE_ID)
     }
 
     /// Get the void type
     pub fn void_type(&mut self) -> TypeId {
-        self.intern(Type::Primitive(super::ty::PrimitiveType::Void))
+        TypeId(Self::VOID_TYPE_ID)
     }
 
     /// Get the never type
     pub fn never_type(&mut self) -> TypeId {
-        self.intern(Type::Never)
+        TypeId(Self::NEVER_TYPE_ID)
     }
 
     /// Get the unknown type
     pub fn unknown_type(&mut self) -> TypeId {
-        self.intern(Type::Unknown)
+        TypeId(Self::UNKNOWN_TYPE_ID)
     }
 
     /// Get the any type (node-compat dynamic escape hatch)
@@ -356,21 +356,24 @@ impl TypeContext {
 
     /// Get the json type (for JSON.parse return values)
     pub fn json_type(&mut self) -> TypeId {
-        self.intern(Type::Json)
+        TypeId(Self::JSON_TYPE_ID)
     }
 
     /// Get the mutex type
     pub fn mutex_type(&mut self) -> TypeId {
-        self.intern(Type::Mutex)
+        TypeId(Self::MUTEX_TYPE_ID)
     }
 
     /// Get the regexp type
     pub fn regexp_type(&mut self) -> TypeId {
-        self.intern(Type::RegExp)
+        TypeId(Self::REGEXP_TYPE_ID)
     }
 
     /// Get the channel type with a specific message type
     pub fn channel_type_with(&mut self, message: TypeId) -> TypeId {
+        if message == TypeId(Self::UNKNOWN_TYPE_ID) {
+            return TypeId(Self::CHANNEL_TYPE_ID);
+        }
         self.intern(Type::Channel(super::ty::ChannelType { message }))
     }
 
@@ -382,6 +385,9 @@ impl TypeContext {
 
     /// Get the map type with specific key and value types
     pub fn map_type_with(&mut self, key: TypeId, value: TypeId) -> TypeId {
+        if key == TypeId(Self::UNKNOWN_TYPE_ID) && value == TypeId(Self::UNKNOWN_TYPE_ID) {
+            return TypeId(Self::MAP_TYPE_ID);
+        }
         self.intern(Type::Map(super::ty::MapType { key, value }))
     }
 
@@ -393,6 +399,9 @@ impl TypeContext {
 
     /// Get the set type with a specific element type
     pub fn set_type_with(&mut self, element: TypeId) -> TypeId {
+        if element == TypeId(Self::UNKNOWN_TYPE_ID) {
+            return TypeId(Self::SET_TYPE_ID);
+        }
         self.intern(Type::Set(super::ty::SetType { element }))
     }
 
@@ -404,12 +413,12 @@ impl TypeContext {
 
     /// Get the date type
     pub fn date_type(&mut self) -> TypeId {
-        self.intern(Type::Date)
+        TypeId(Self::DATE_TYPE_ID)
     }
 
     /// Get the buffer type
     pub fn buffer_type(&mut self) -> TypeId {
-        self.intern(Type::Buffer)
+        TypeId(Self::BUFFER_TYPE_ID)
     }
 
     /// Create a string literal type
@@ -461,11 +470,17 @@ impl TypeContext {
 
     /// Create an array type
     pub fn array_type(&mut self, element: TypeId) -> TypeId {
+        if element == TypeId(Self::UNKNOWN_TYPE_ID) {
+            return TypeId(Self::ARRAY_TYPE_ID);
+        }
         self.intern(Type::Array(super::ty::ArrayType { element }))
     }
 
     /// Create a task type (for async functions)
     pub fn task_type(&mut self, result: TypeId) -> TypeId {
+        if result == TypeId(Self::UNKNOWN_TYPE_ID) {
+            return TypeId(Self::TASK_TYPE_ID);
+        }
         self.intern(Type::Task(super::ty::TaskType { result }))
     }
 

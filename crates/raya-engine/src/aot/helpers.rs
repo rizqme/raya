@@ -1116,6 +1116,12 @@ unsafe extern "C" fn helper_object_implements_shape(
         return 0;
     };
     let object = &*object_ptr.as_ptr();
+    let required_names = shared
+        .structural_shape_names
+        .read()
+        .get(&required_shape)
+        .cloned()
+        .unwrap_or_default();
     let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object, required_shape) else {
         return 0;
     };
@@ -1123,7 +1129,20 @@ unsafe extern "C" fn helper_object_implements_shape(
         !matches!(
             adapter.binding_for_slot(slot),
             crate::vm::interpreter::StructuralSlotBinding::Missing
-        )
+        ) || required_names.get(slot).is_some_and(|name| {
+            matches!(
+                name.as_str(),
+                "constructor"
+                    | "equals"
+                    | "hashCode"
+                    | "hasOwnProperty"
+                    | "isPrototypeOf"
+                    | "propertyIsEnumerable"
+                    | "toLocaleString"
+                    | "toString"
+                    | "valueOf"
+            )
+        })
     }) {
         1
     } else {
@@ -1413,11 +1432,30 @@ unsafe extern "C" fn helper_cast_shape(
         );
         return abi::NULL_VALUE;
     };
+    let required_names = shared
+        .structural_shape_names
+        .read()
+        .get(&required_shape)
+        .cloned()
+        .unwrap_or_default();
     for slot in 0..adapter.len() {
         if matches!(
             adapter.binding_for_slot(slot),
             crate::vm::interpreter::StructuralSlotBinding::Missing
-        ) {
+        ) && !required_names.get(slot).is_some_and(|name| {
+            matches!(
+                name.as_str(),
+                "constructor"
+                    | "equals"
+                    | "hashCode"
+                    | "hasOwnProperty"
+                    | "isPrototypeOf"
+                    | "propertyIsEnumerable"
+                    | "toLocaleString"
+                    | "toString"
+                    | "valueOf"
+            )
+        }) {
             aot_raise_type_error(
                 ctx,
                 format!(

@@ -146,6 +146,14 @@ pub mod array {
     pub const SPLICE: u16 = 0x0117;
     /// `Array.from(items, mapfn?, thisArg?)` - Create array from iterable or array-like
     pub const FROM: u16 = 0x0118;
+    /// `arr.values()` - Create an array value iterator
+    pub const VALUES: u16 = 0x0119;
+    /// `arr.keys()` - Create an array key iterator
+    pub const KEYS: u16 = 0x011A;
+    /// `arr.entries()` - Create an array entry iterator
+    pub const ENTRIES: u16 = 0x011B;
+    /// Internal `next()` for array iterator objects
+    pub const ITERATOR_NEXT: u16 = 0x011C;
 }
 
 /// Built-in method IDs for strings
@@ -336,6 +344,103 @@ pub mod set {
     pub const DIFFERENCE: u16 = 0x090A;
     /// `set.entries()` - Get all [value, value] pairs
     pub const ENTRIES: u16 = 0x090B;
+}
+
+/// Built-in method IDs for WeakMap<K, V>
+pub mod weak_map {
+    /// `new WeakMap()` - Create weak map
+    pub const NEW: u16 = 0x0910;
+    /// `weakMap.get(key)` - Get value by object key
+    pub const GET: u16 = 0x0911;
+    /// `weakMap.set(key, value)` - Set value by object key
+    pub const SET: u16 = 0x0912;
+    /// `weakMap.has(key)` - Check if object key exists
+    pub const HAS: u16 = 0x0913;
+    /// `weakMap.delete(key)` - Delete object key
+    pub const DELETE: u16 = 0x0914;
+}
+
+/// Built-in method IDs for WeakSet<T>
+pub mod weak_set {
+    /// `new WeakSet()` - Create weak set
+    pub const NEW: u16 = 0x0915;
+    /// `weakSet.add(value)` - Add object value
+    pub const ADD: u16 = 0x0916;
+    /// `weakSet.has(value)` - Check membership
+    pub const HAS: u16 = 0x0917;
+    /// `weakSet.delete(value)` - Delete membership
+    pub const DELETE: u16 = 0x0918;
+}
+
+/// Built-in method IDs for WeakRef<T>
+pub mod weak_ref {
+    /// `new WeakRef(target)` - Create weak ref
+    pub const NEW: u16 = 0x0919;
+    /// `weakRef.deref()` - Dereference target
+    pub const DEREF: u16 = 0x091A;
+}
+
+/// Built-in method IDs for ArrayBuffer / SharedArrayBuffer
+pub mod array_buffer {
+    pub const NEW: u16 = 0x9200;
+    pub const SHARED_NEW: u16 = 0x9201;
+    pub const SLICE: u16 = 0x9202;
+    pub const BYTE_LENGTH: u16 = 0x9203;
+}
+
+/// Built-in method IDs for DataView
+pub mod data_view {
+    pub const NEW: u16 = 0x9220;
+    pub const GET_UINT8: u16 = 0x9221;
+    pub const SET_UINT8: u16 = 0x9222;
+    pub const GET_INT8: u16 = 0x9223;
+    pub const SET_INT8: u16 = 0x9224;
+    pub const GET_INT32: u16 = 0x9225;
+    pub const SET_INT32: u16 = 0x9226;
+    pub const GET_UINT32: u16 = 0x9227;
+    pub const SET_UINT32: u16 = 0x9228;
+    pub const GET_FLOAT64: u16 = 0x9229;
+    pub const SET_FLOAT64: u16 = 0x922A;
+    pub const BUFFER: u16 = 0x922B;
+    pub const BYTE_LENGTH: u16 = 0x922C;
+    pub const BYTE_OFFSET: u16 = 0x922D;
+}
+
+/// Built-in method IDs for TypedArray-family views
+pub mod typed_array {
+    pub const GENERIC_NEW: u16 = 0x9240;
+    pub const UINT8_NEW: u16 = 0x9241;
+    pub const UINT8_CLAMPED_NEW: u16 = 0x9242;
+    pub const INT8_NEW: u16 = 0x9243;
+    pub const UINT16_NEW: u16 = 0x9244;
+    pub const INT16_NEW: u16 = 0x9245;
+    pub const INT32_NEW: u16 = 0x9246;
+    pub const UINT32_NEW: u16 = 0x9247;
+    pub const FLOAT32_NEW: u16 = 0x9248;
+    pub const FLOAT16_NEW: u16 = 0x9249;
+    pub const FLOAT64_NEW: u16 = 0x924A;
+    pub const BIGINT64_NEW: u16 = 0x924B;
+    pub const BIGUINT64_NEW: u16 = 0x924C;
+    pub const GET: u16 = 0x9250;
+    pub const SET: u16 = 0x9251;
+    pub const BUFFER: u16 = 0x9252;
+    pub const BYTE_LENGTH: u16 = 0x9253;
+    pub const BYTE_OFFSET: u16 = 0x9254;
+    pub const LENGTH: u16 = 0x9255;
+}
+
+/// Built-in method IDs for Atomics
+pub mod atomics {
+    pub const LOAD: u16 = 0x9280;
+    pub const STORE: u16 = 0x9281;
+    pub const ADD: u16 = 0x9282;
+    pub const COMPARE_EXCHANGE: u16 = 0x9283;
+    pub const WAIT: u16 = 0x9284;
+}
+
+/// Built-in helpers for coded JS errors
+pub mod error {
+    pub const CREATE_RANGE_ERROR: u16 = 0x92A0;
 }
 
 /// Built-in method IDs for RegExp
@@ -1155,6 +1260,34 @@ pub mod url {
     pub const PARAMS_SIZE: u16 = 0x903D;
 }
 
+/// Built-in method IDs for EventEmitter
+pub mod event_emitter {
+    /// `emitter.on(event, listener)` - Add listener
+    pub const ON: u16 = 0x9100;
+    /// `emitter.once(event, listener)` - Add one-shot listener
+    pub const ONCE: u16 = 0x9101;
+    /// `emitter.off(event, listener)` - Remove listener
+    pub const OFF: u16 = 0x9102;
+    /// `emitter.addListener(event, listener)` - Alias of on
+    pub const ADD_LISTENER: u16 = 0x9103;
+    /// `emitter.removeListener(event, listener)` - Alias of off
+    pub const REMOVE_LISTENER: u16 = 0x9104;
+    /// `emitter.emit(event, ...args)` - Emit event
+    pub const EMIT: u16 = 0x9105;
+    /// `emitter.listeners(event)` - Get listeners
+    pub const LISTENERS: u16 = 0x9106;
+    /// `emitter.listenerCount(event)` - Count listeners
+    pub const LISTENER_COUNT: u16 = 0x9107;
+    /// `emitter.eventNames()` - List event names
+    pub const EVENT_NAMES: u16 = 0x9108;
+    /// `emitter.setMaxListeners(n)` - Set max listeners
+    pub const SET_MAX_LISTENERS: u16 = 0x9109;
+    /// `emitter.getMaxListeners()` - Get max listeners
+    pub const GET_MAX_LISTENERS: u16 = 0x910A;
+    /// `emitter.removeAllListeners(event?)` - Remove listeners
+    pub const REMOVE_ALL_LISTENERS: u16 = 0x910B;
+}
+
 /// Check if a method ID is a URL method (std:url)
 pub fn is_url_method(method_id: u16) -> bool {
     (0x9000..=0x90FF).contains(&method_id)
@@ -1186,6 +1319,8 @@ pub mod date {
     pub const GET_MILLISECONDS: u16 = 0x0B0A;
     /// `date.getTimezoneOffset()` - Get local timezone offset in minutes
     pub const GET_TIMEZONE_OFFSET: u16 = 0x0B0B;
+    /// `date.setTime(timestamp)` - Set the underlying timestamp directly
+    pub const SET_TIME: u16 = 0x0B10;
     /// `date.setFullYear(year)` - Set year
     pub const SET_FULL_YEAR: u16 = 0x0B11;
     /// `date.setMonth(month)` - Set month
@@ -1307,6 +1442,22 @@ pub mod number {
 /// Returns Some(method_id) if the method is a built-in, None otherwise.
 pub fn lookup_builtin_method(type_name: &str, method_name: &str) -> Option<u16> {
     match type_name {
+        "Object" | "object" => match method_name {
+            "toString" => Some(crate::compiler::native_id::OBJECT_TO_STRING),
+            "hashCode" => Some(crate::compiler::native_id::OBJECT_HASH_CODE),
+            "equals" => Some(crate::compiler::native_id::OBJECT_EQUAL),
+            "hasOwnProperty" => Some(crate::compiler::native_id::OBJECT_HAS_OWN_PROPERTY),
+            "propertyIsEnumerable" => {
+                Some(crate::compiler::native_id::OBJECT_PROPERTY_IS_ENUMERABLE)
+            }
+            _ => None,
+        },
+        "Function" | "function" => match method_name {
+            "call" => Some(crate::compiler::native_id::FUNCTION_CALL_HELPER),
+            "apply" => Some(crate::compiler::native_id::FUNCTION_APPLY_HELPER),
+            "bind" => Some(crate::compiler::native_id::FUNCTION_BIND_HELPER),
+            _ => None,
+        },
         "Array" | "array" => match method_name {
             "push" => Some(array::PUSH),
             "pop" => Some(array::POP),
@@ -1331,6 +1482,9 @@ pub fn lookup_builtin_method(type_name: &str, method_name: &str) -> Option<u16> 
             "reduce" => Some(array::REDUCE),
             "fill" => Some(array::FILL),
             "flat" => Some(array::FLAT),
+            "values" => Some(array::VALUES),
+            "keys" => Some(array::KEYS),
+            "entries" => Some(array::ENTRIES),
             _ => None,
         },
         "String" | "string" => match method_name {
@@ -1351,6 +1505,9 @@ pub fn lookup_builtin_method(type_name: &str, method_name: &str) -> Option<u16> 
             "padEnd" => Some(string::PAD_END),
             "charCodeAt" => Some(string::CHAR_CODE_AT),
             "lastIndexOf" => Some(string::LAST_INDEX_OF),
+            "match" => Some(string::MATCH),
+            "matchAll" => Some(string::MATCH_ALL),
+            "search" => Some(string::SEARCH),
             "trimStart" => Some(string::TRIM_START),
             "trimEnd" => Some(string::TRIM_END),
             _ => None,
@@ -1402,6 +1559,80 @@ pub fn lookup_builtin_method(type_name: &str, method_name: &str) -> Option<u16> 
             "slice" => Some(buffer::SLICE),
             "copy" => Some(buffer::COPY),
             "toString" => Some(buffer::TO_STRING),
+            _ => None,
+        },
+        "ArrayBuffer" | "arraybuffer" | "SharedArrayBuffer" | "sharedarraybuffer" => {
+            match method_name {
+                "slice" => Some(array_buffer::SLICE),
+                _ => None,
+            }
+        }
+        "DataView" | "dataview" => match method_name {
+            "getUint8" => Some(data_view::GET_UINT8),
+            "setUint8" => Some(data_view::SET_UINT8),
+            "getInt8" => Some(data_view::GET_INT8),
+            "setInt8" => Some(data_view::SET_INT8),
+            "getInt32" => Some(data_view::GET_INT32),
+            "setInt32" => Some(data_view::SET_INT32),
+            "getUint32" => Some(data_view::GET_UINT32),
+            "setUint32" => Some(data_view::SET_UINT32),
+            "getFloat64" => Some(data_view::GET_FLOAT64),
+            "setFloat64" => Some(data_view::SET_FLOAT64),
+            _ => None,
+        },
+        "TypedArray"
+        | "typedarray"
+        | "Uint8Array"
+        | "uint8array"
+        | "Uint8ClampedArray"
+        | "uint8clampedarray"
+        | "Int8Array"
+        | "int8array"
+        | "Uint16Array"
+        | "uint16array"
+        | "Int16Array"
+        | "int16array"
+        | "Int32Array"
+        | "int32array"
+        | "Uint32Array"
+        | "uint32array"
+        | "Float32Array"
+        | "float32array"
+        | "Float16Array"
+        | "float16array"
+        | "Float64Array"
+        | "float64array"
+        | "BigInt64Array"
+        | "bigint64array"
+        | "BigUint64Array"
+        | "biguint64array" => match method_name {
+            "get" => Some(typed_array::GET),
+            "set" => Some(typed_array::SET),
+            _ => None,
+        },
+        "Date" | "date" => match method_name {
+            "getTime" => Some(date::GET_TIME),
+            "getFullYear" => Some(date::GET_FULL_YEAR),
+            "getMonth" => Some(date::GET_MONTH),
+            "getDate" => Some(date::GET_DATE),
+            "getDay" => Some(date::GET_DAY),
+            "getHours" => Some(date::GET_HOURS),
+            "getMinutes" => Some(date::GET_MINUTES),
+            "getSeconds" => Some(date::GET_SECONDS),
+            "getMilliseconds" => Some(date::GET_MILLISECONDS),
+            "getTimezoneOffset" => Some(date::GET_TIMEZONE_OFFSET),
+            "setTime" => Some(date::SET_TIME),
+            "setFullYear" => Some(date::SET_FULL_YEAR),
+            "setMonth" => Some(date::SET_MONTH),
+            "setDate" => Some(date::SET_DATE),
+            "setHours" => Some(date::SET_HOURS),
+            "setMinutes" => Some(date::SET_MINUTES),
+            "setSeconds" => Some(date::SET_SECONDS),
+            "setMilliseconds" => Some(date::SET_MILLISECONDS),
+            "toString" => Some(date::TO_STRING),
+            "toISOString" => Some(date::TO_ISO_STRING),
+            "toDateString" => Some(date::TO_DATE_STRING),
+            "toTimeString" => Some(date::TO_TIME_STRING),
             _ => None,
         },
         "number" | "int" => match method_name {
@@ -1457,6 +1688,20 @@ pub fn is_regexp_method(method_id: u16) -> bool {
 /// Check if a method ID is a built-in date method
 pub fn is_date_method(method_id: u16) -> bool {
     (0x0B00..=0x0BFF).contains(&method_id)
+}
+
+pub fn is_date_setter(method_id: u16) -> bool {
+    matches!(
+        method_id,
+        date::SET_TIME
+            | date::SET_FULL_YEAR
+            | date::SET_MONTH
+            | date::SET_DATE
+            | date::SET_HOURS
+            | date::SET_MINUTES
+            | date::SET_SECONDS
+            | date::SET_MILLISECONDS
+    )
 }
 
 /// Check if a method ID is a built-in reflect method

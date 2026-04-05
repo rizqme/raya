@@ -789,6 +789,8 @@ impl std::fmt::Display for UnaryOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::builtins::BuiltinOp;
+    use crate::vm::builtin;
 
     #[test]
     fn test_binary_op_display() {
@@ -852,5 +854,13 @@ mod tests {
             StringCompareMode::from_origins(ValueOrigin::Computed, ValueOrigin::Computed),
             StringCompareMode::Full
         );
+    }
+
+    #[test]
+    fn test_kernel_builtin_native_roundtrip_for_high_native_ids() {
+        let op = KernelOp::Builtin(BuiltinOp::Native(builtin::array_buffer::SLICE));
+        let encoded = encode_kernel_op_id(op);
+        let decoded = decode_kernel_op_id(encoded);
+        assert_eq!(decoded, Some(op));
     }
 }

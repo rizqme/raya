@@ -46,24 +46,34 @@ impl<'a> Interpreter<'a> {
                 ))
             }
         };
-        let kernel_op_id =
-            crate::compiler::ir::encode_kernel_op_id(crate::compiler::ir::KernelOp::VmNative(
-                native_id,
-            ));
+        let kernel_op = if native_id >= 0x8000 {
+            crate::compiler::ir::KernelOp::Builtin(
+                crate::compiler::builtins::BuiltinOp::Native(native_id),
+            )
+        } else {
+            crate::compiler::ir::KernelOp::VmNative(native_id)
+        };
+        let kernel_op_id = crate::compiler::ir::encode_kernel_op_id(kernel_op);
         let code = [
             (kernel_op_id & 0x00FF) as u8,
             ((kernel_op_id >> 8) & 0x00FF) as u8,
             arg_count_u8,
         ];
         let mut native_ip = 0usize;
-        self.exec_native_ops(
+        let result = self.exec_native_ops(
             stack,
             &mut native_ip,
             &code,
             module,
             task,
             Opcode::KernelCall,
-        )
+        );
+
+        if matches!(result, OpcodeResult::Continue) {
+            self.sync_boxed_date_setter_result(stack, receiver, native_id);
+        }
+
+        result
     }
 
     pub(crate) fn exec_call_ops(

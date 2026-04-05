@@ -8,6 +8,9 @@ use crate::compiler::native_id::{
     CHANNEL_CAPACITY, CHANNEL_CLOSE, CHANNEL_IS_CLOSED, CHANNEL_LENGTH, CHANNEL_NEW,
     CHANNEL_RECEIVE, CHANNEL_SEND, CHANNEL_TRY_RECEIVE, CHANNEL_TRY_SEND,
 };
+use crate::compiler::builtins::{
+    BuiltinLiteral, BuiltinOp, BuiltinRegistry, BuiltinSurfaceMemberDescriptor,
+};
 use crate::compiler::{Compiler, Module, Opcode};
 use crate::parser::ast::visitor::{walk_module, Visitor};
 use crate::parser::ast::{
@@ -20,7 +23,10 @@ use crate::parser::checker::{
 };
 use crate::parser::{Parser, TypeContext};
 use crate::semantics::SemanticProfile;
-use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
+use crate::vm::builtin::{
+    array_buffer, atomics, buffer, data_view, date, error as builtin_error, event_emitter, map,
+    mutex, regexp, set, typed_array, url, weak_map, weak_ref, weak_set,
+};
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{ExecutionResult, OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
@@ -35,8 +41,8 @@ use crate::vm::object::{
     layout_id_from_ordered_names, ArgumentsDataProperty, ArgumentsIndexedProperty,
     ArgumentsObjectData, Array, BindingState, BindingStorageKind, Buffer, CallableKind,
     ChannelObject, Class, DateObject, DynProp, EnvBinding, EnvRecordKind, ExoticKind,
-    GeneratorStateData, LayoutId, MapObject, Object, RayaBigInt, RayaString, RefCell, RegExpObject,
-    SetObject, SlotMeta, TypeHandle,
+    GeneratorStateData, LayoutId, MapObject, Object, RayaBigInt, RayaString, RefCell,
+    RegExpObject, SetObject, SlotMeta, TypeHandle, WeakMapObject, WeakRefObject, WeakSetObject,
 };
 use crate::vm::scheduler::{PromiseReaction, PromiseReactionKind, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -56,12 +62,18 @@ pub(crate) const NON_OBJECT_DESCRIPTOR_METADATA_KEY: &str = "__dynamic_descripto
 const CALLABLE_VIRTUAL_VALUE_METADATA_KEY: &str = "__callable_virtual_value";
 const CALLABLE_VIRTUAL_DELETED_METADATA_KEY: &str = "__callable_virtual_deleted";
 const FIXED_PROPERTY_DELETED_METADATA_KEY: &str = "__fixed_property_deleted";
+const BUILTIN_PROTOTYPE_SURFACE_SEEDING_METADATA_KEY: &str = "__builtin_prototype_surface_seeding";
 const OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY: &str = "__object_prototype_override__";
 const OBJECT_EXTENSIBLE_METADATA_KEY: &str = "__object_extensible__";
 const FIELD_PRESENT_MASK_KEY: &str = "__field_present_mask__";
 const WELL_KNOWN_SYMBOL_METADATA_KEY: &str = "__well_known_symbol__";
+const GLOBAL_SYMBOL_REGISTRY_METADATA_KEY: &str = "__global_symbol_registry__";
+const GLOBAL_SYMBOL_KEY_METADATA_KEY: &str = "__global_symbol_key__";
 const ITERATOR_RUNTIME_METADATA_KEY: &str = "__iterator_runtime__";
 const SUPER_THIS_INITIALIZED_KEY: &str = "__super_this_initialized__";
+const EVENT_EMITTER_LISTENERS_METADATA_KEY: &str = "__event_emitter_listeners__";
+const EVENT_EMITTER_ONCE_LISTENERS_METADATA_KEY: &str = "__event_emitter_once_listeners__";
+const EVENT_EMITTER_STATE_METADATA_KEY: &str = "__event_emitter_state__";
 static DYNAMIC_JS_FUNCTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Map descriptor field names to bit positions for the presence bitmask.
@@ -74,6 +86,70 @@ fn descriptor_field_bit(field_name: &str) -> u32 {
         "get" => 1 << 4,
         "set" => 1 << 5,
         _ => 0,
+    }
+}
+
+fn builtin_global_is_namespace(name: &str) -> bool {
+    matches!(
+        name,
+        "Math" | "Reflect" | "JSON" | "Atomics" | "Intl" | "Temporal" | "globalThis"
+    )
+}
+
+fn builtin_runtime_parent_name(class_name: &str) -> Option<&'static str> {
+    match class_name {
+        "Array" | "Function" | "String" | "Number" | "Boolean" | "Symbol" | "Promise"
+        | "Map" | "Set" | "RegExp" | "Date" | "Buffer" | "Mutex" | "Channel"
+        | "Iterator" | "Proxy"
+        | "EventEmitter" | "ArrayBuffer" | "SharedArrayBuffer" | "DataView" | "TypedArray"
+        | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry"
+        | "DisposableStack" | "AsyncDisposableStack" | "AsyncIterator"
+        | "Generator" | "AsyncGenerator"
+        | "Error" => Some("Object"),
+        "GeneratorFunction" | "AsyncGeneratorFunction" | "AsyncFunction" => Some("Function"),
+        "Uint8Array"
+        | "Uint8ClampedArray"
+        | "Int8Array"
+        | "Uint16Array"
+        | "Int16Array"
+        | "Int32Array"
+        | "Uint32Array"
+        | "Float32Array"
+        | "Float16Array"
+        | "Float64Array"
+        | "BigInt64Array"
+        | "BigUint64Array" => Some("TypedArray"),
+        _ => builtin_error_superclass_name(class_name),
+    }
+}
+
+fn builtin_native_alias_id_from_op(op: BuiltinOp) -> Option<u16> {
+    match op {
+        BuiltinOp::Native(native_id) => Some(native_id),
+        BuiltinOp::HostHandle(kind) => match kind {
+            crate::semantics::HostHandleOpKind::ChannelConstructor => Some(CHANNEL_NEW),
+            crate::semantics::HostHandleOpKind::ChannelSend => Some(CHANNEL_SEND),
+            crate::semantics::HostHandleOpKind::ChannelReceive => Some(CHANNEL_RECEIVE),
+            crate::semantics::HostHandleOpKind::ChannelTrySend => Some(CHANNEL_TRY_SEND),
+            crate::semantics::HostHandleOpKind::ChannelTryReceive => Some(CHANNEL_TRY_RECEIVE),
+            crate::semantics::HostHandleOpKind::ChannelClose => Some(CHANNEL_CLOSE),
+            crate::semantics::HostHandleOpKind::ChannelIsClosed => Some(CHANNEL_IS_CLOSED),
+            crate::semantics::HostHandleOpKind::ChannelLength => Some(CHANNEL_LENGTH),
+            crate::semantics::HostHandleOpKind::ChannelCapacity => Some(CHANNEL_CAPACITY),
+            crate::semantics::HostHandleOpKind::MutexTryLock => Some(mutex::TRY_LOCK),
+            crate::semantics::HostHandleOpKind::MutexIsLocked => Some(mutex::IS_LOCKED),
+            crate::semantics::HostHandleOpKind::TaskIsDone => {
+                Some(crate::compiler::native_id::TASK_IS_DONE)
+            }
+            crate::semantics::HostHandleOpKind::TaskIsCancelled => {
+                Some(crate::compiler::native_id::TASK_IS_CANCELLED)
+            }
+            crate::semantics::HostHandleOpKind::TaskCancel => None,
+            crate::semantics::HostHandleOpKind::MutexConstructor
+            | crate::semantics::HostHandleOpKind::MutexLock
+            | crate::semantics::HostHandleOpKind::MutexUnlock => None,
+        },
+        _ => None,
     }
 }
 
@@ -608,10 +684,208 @@ impl<'a> Interpreter<'a> {
     const GENERATOR_SIGNAL_KIND_KEY: &'static str = "__raya_generator_signal_kind__";
     const GENERATOR_SIGNAL_VALUE_KEY: &'static str = "__raya_generator_signal_value__";
 
-    fn alloc_bound_native_value(&self, receiver: Value, native_id: u16) -> Value {
+    pub(in crate::vm::interpreter) fn alloc_bound_native_value(
+        &self,
+        receiver: Value,
+        native_id: u16,
+    ) -> Value {
         let method = Object::new_bound_native(receiver, native_id);
         let method_ptr = self.gc.lock().allocate(method);
         unsafe { Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("bound native ptr")) }
+    }
+
+    pub(in crate::vm::interpreter) fn alloc_unbound_native_value(&self, native_id: u16) -> Value {
+        self.alloc_bound_native_value(Value::undefined(), native_id)
+    }
+
+    fn alloc_array_value_from_values(&self, values: &[Value]) -> Value {
+        let mut array = Array::new(0, 0);
+        for value in values {
+            array.push(*value);
+        }
+        let gc_ptr = self.gc.lock().allocate(array);
+        unsafe { Value::from_ptr(NonNull::new(gc_ptr.as_ptr()).expect("array ptr")) }
+    }
+
+    fn seed_native_method_values(
+        &self,
+        target: Value,
+        methods: &[(&str, u16)],
+    ) -> Result<(), VmError> {
+        for (name, native_id) in methods {
+            let value = self.alloc_unbound_native_value(*native_id);
+            self.define_data_property_on_target(target, name, value, true, false, true)?;
+        }
+        Ok(())
+    }
+
+    fn hidden_string_property_value(&self, target: Value, key: &str) -> Option<String> {
+        self.get_field_value_by_name(target, key)
+            .and_then(|value| unsafe { value.as_ptr::<RayaString>() })
+            .map(|ptr| unsafe { &*ptr.as_ptr() }.data.clone())
+    }
+
+    fn hidden_number_property_value(&self, target: Value, key: &str) -> Option<f64> {
+        self.get_field_value_by_name(target, key)
+            .and_then(|value| value.as_f64().or_else(|| value.as_i32().map(|v| v as f64)))
+    }
+
+    fn source_has_leading_hashbang(&self, source: &str) -> bool {
+        source
+            .trim_start_matches(|ch: char| {
+                matches!(
+                    ch,
+                    '\u{0009}' | '\u{000B}' | '\u{000C}' | '\u{0020}' | '\n' | '\r'
+                )
+            })
+            .starts_with("#!")
+    }
+
+    fn alloc_temporal_value(
+        &self,
+        class_name: &str,
+        hidden_fields: &[(&str, Value)],
+        to_string_native_id: u16,
+    ) -> Result<Value, VmError> {
+        let value = self.alloc_plain_object()?;
+        for (name, field_value) in hidden_fields {
+            self.define_data_property_on_target(value, name, *field_value, true, false, false)?;
+        }
+        self.seed_native_method_values(value, &[("toString", to_string_native_id)])?;
+        let _ = class_name;
+        Ok(value)
+    }
+
+    fn hidden_array_property_values(&self, target: Value, key: &str) -> Vec<Value> {
+        let Some(array_value) = self.get_field_value_by_name(target, key) else {
+            return Vec::new();
+        };
+        let Some(array_ptr) = checked_array_ptr(array_value) else {
+            return Vec::new();
+        };
+        let array = unsafe { &*array_ptr.as_ptr() };
+        let mut values = Vec::with_capacity(array.len());
+        for index in 0..array.len() {
+            if let Some(value) = array.get(index) {
+                values.push(value);
+            }
+        }
+        values
+    }
+
+    fn coerce_reflection_target_object(&mut self, target: Value) -> Result<Value, VmError> {
+        if target.is_null() || target.is_undefined() {
+            return Err(VmError::TypeError(
+                "Cannot convert undefined or null to object".to_string(),
+            ));
+        }
+        if target.is_ptr() {
+            return Ok(target);
+        }
+        if let Some(boxed) = self.box_js_this_primitive(target)? {
+            return Ok(boxed);
+        }
+        Ok(target)
+    }
+
+    fn object_keys_result_value(&mut self, target: Value) -> Result<Value, VmError> {
+        let target = self.coerce_reflection_target_object(target)?;
+        let values = self
+            .js_own_property_names(target)
+            .into_iter()
+            .filter(|name| self.is_property_enumerable(target, name))
+            .map(|name| self.alloc_string_value(name))
+            .collect::<Vec<_>>();
+        Ok(self.alloc_array_value_from_values(&values))
+    }
+
+    fn event_emitter_listener_namespace(once: bool) -> &'static str {
+        if once {
+            EVENT_EMITTER_ONCE_LISTENERS_METADATA_KEY
+        } else {
+            EVENT_EMITTER_LISTENERS_METADATA_KEY
+        }
+    }
+
+    fn event_emitter_assert_receiver(&self, receiver: Value) -> Result<(), VmError> {
+        if checked_object_ptr(receiver).is_some() {
+            return Ok(());
+        }
+        Err(VmError::TypeError(
+            "EventEmitter method called on incompatible receiver".to_string(),
+        ))
+    }
+
+    fn event_emitter_listener_values(
+        &self,
+        target: Value,
+        event_name: &str,
+        once: bool,
+    ) -> Vec<Value> {
+        let Some(array_value) = self
+            .metadata
+            .lock()
+            .get_metadata_property(Self::event_emitter_listener_namespace(once), target, event_name)
+        else {
+            return Vec::new();
+        };
+        let Some(array_ptr) = checked_array_ptr(array_value) else {
+            return Vec::new();
+        };
+        let array = unsafe { &*array_ptr.as_ptr() };
+        let mut values = Vec::with_capacity(array.len());
+        for index in 0..array.len() {
+            if let Some(value) = array.get(index) {
+                values.push(value);
+            }
+        }
+        values
+    }
+
+    fn set_event_emitter_listener_values(
+        &self,
+        target: Value,
+        event_name: &str,
+        once: bool,
+        values: &[Value],
+    ) {
+        let namespace = Self::event_emitter_listener_namespace(once);
+        let mut metadata = self.metadata.lock();
+        if values.is_empty() {
+            let _ = metadata.delete_metadata_property(namespace, target, event_name);
+            return;
+        }
+        metadata.define_metadata_property(
+            namespace.to_string(),
+            self.alloc_array_value_from_values(values),
+            target,
+            event_name.to_string(),
+        );
+    }
+
+    fn clear_event_emitter_listener_values(&self, target: Value, event_name: &str, once: bool) {
+        let _ = self.metadata.lock().delete_metadata_property(
+            Self::event_emitter_listener_namespace(once),
+            target,
+            event_name,
+        );
+    }
+
+    fn event_emitter_max_listeners(&self, target: Value) -> i32 {
+        self.metadata
+            .lock()
+            .get_metadata_property(EVENT_EMITTER_STATE_METADATA_KEY, target, "maxListeners")
+            .and_then(|value| value.as_i32().or_else(|| value.as_i64().map(|v| v as i32)))
+            .unwrap_or(10)
+    }
+
+    fn set_event_emitter_max_listeners(&self, target: Value, max_listeners: i32) {
+        self.metadata.lock().define_metadata_property(
+            EVENT_EMITTER_STATE_METADATA_KEY.to_string(),
+            Value::i32(max_listeners),
+            target,
+            "maxListeners".to_string(),
+        );
     }
 
     fn record_test262_async_callback_success(&self) {
@@ -694,7 +968,7 @@ impl<'a> Interpreter<'a> {
             completion: Value::undefined(),
             completion_emitted: false,
         }));
-        if !is_async {
+        {
             let dyn_props = iterator.ensure_dyn_props();
             dyn_props.insert(
                 self.intern_prop_key("next"),
@@ -733,7 +1007,11 @@ impl<'a> Interpreter<'a> {
                 ),
             );
             dyn_props.insert(
-                self.intern_prop_key("Symbol.iterator"),
+                self.intern_prop_key(if is_async {
+                    "Symbol.asyncIterator"
+                } else {
+                    "Symbol.iterator"
+                }),
                 DynProp::data_with_attrs(
                     self.alloc_bound_native_value(
                         Value::null(),
@@ -752,20 +1030,23 @@ impl<'a> Interpreter<'a> {
         let iterator_value =
             unsafe { Value::from_ptr(NonNull::new(iterator_ptr.as_ptr()).expect("iterator ptr")) };
 
-        if !is_async {
-            if let Some(obj_ptr) = checked_object_ptr(iterator_value) {
-                let iterator = unsafe { &mut *obj_ptr.as_ptr() };
-                if let Some(dyn_props) = iterator.dyn_props_mut() {
-                    for key in ["next", "return", "throw", "Symbol.iterator"] {
-                        if let Some(prop) = dyn_props.get_mut(self.intern_prop_key(key)) {
-                            let native_id = match key {
-                                "next" => crate::compiler::native_id::OBJECT_GENERATOR_NEXT,
-                                "return" => crate::compiler::native_id::OBJECT_GENERATOR_RETURN,
-                                "throw" => crate::compiler::native_id::OBJECT_GENERATOR_THROW,
-                                _ => crate::compiler::native_id::OBJECT_GENERATOR_ITERATOR,
-                            };
-                            prop.value = self.alloc_bound_native_value(iterator_value, native_id);
-                        }
+        if let Some(obj_ptr) = checked_object_ptr(iterator_value) {
+            let iterator = unsafe { &mut *obj_ptr.as_ptr() };
+            if let Some(dyn_props) = iterator.dyn_props_mut() {
+                let iterator_symbol_key = if is_async {
+                    "Symbol.asyncIterator"
+                } else {
+                    "Symbol.iterator"
+                };
+                for key in ["next", "return", "throw", iterator_symbol_key] {
+                    if let Some(prop) = dyn_props.get_mut(self.intern_prop_key(key)) {
+                        let native_id = match key {
+                            "next" => crate::compiler::native_id::OBJECT_GENERATOR_NEXT,
+                            "return" => crate::compiler::native_id::OBJECT_GENERATOR_RETURN,
+                            "throw" => crate::compiler::native_id::OBJECT_GENERATOR_THROW,
+                            _ => crate::compiler::native_id::OBJECT_GENERATOR_ITERATOR,
+                        };
+                        prop.value = self.alloc_bound_native_value(iterator_value, native_id);
                     }
                 }
             }
@@ -1620,6 +1901,17 @@ impl<'a> Interpreter<'a> {
         Ok(promise_value)
     }
 
+    fn invoke_unbound_native_sync(
+        &mut self,
+        native_id: u16,
+        args: &[Value],
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        let callable = self.alloc_unbound_native_value(native_id);
+        self.invoke_callable_sync(callable, args, caller_task, caller_module)
+    }
+
     fn generator_resume_completion(
         &self,
         value: Value,
@@ -1692,6 +1984,7 @@ impl<'a> Interpreter<'a> {
         };
         self.builtin_global_value(family_name)
             .and_then(|ctor| self.constructor_prototype_value(ctor))
+            .or_else(|| self.intrinsic_class_prototype_value(family_name))
     }
 
     fn generator_instance_prototype_for_function(
@@ -2209,6 +2502,15 @@ impl<'a> Interpreter<'a> {
         unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).expect("string ptr")) }
     }
 
+    fn alloc_builtin_literal_value(&self, literal: BuiltinLiteral) -> Value {
+        match literal {
+            BuiltinLiteral::String(value) => self.alloc_string_value(value),
+            BuiltinLiteral::Bool(value) => Value::bool(value),
+            BuiltinLiteral::I32(value) => Value::i32(value),
+            BuiltinLiteral::F64(value) => Value::f64(value),
+        }
+    }
+
     pub(in crate::vm::interpreter) fn alloc_builtin_error_value(
         &self,
         class_name: &str,
@@ -2251,7 +2553,7 @@ impl<'a> Interpreter<'a> {
             "name",
             name_value,
             true,
-            false,
+            true,
             true,
         );
         let _ = self.define_data_property_on_target(
@@ -2259,10 +2561,36 @@ impl<'a> Interpreter<'a> {
             "message",
             message_value,
             true,
-            false,
+            true,
+            true,
+        );
+        let _ = self.define_data_property_on_target(
+            object_value,
+            "stack",
+            self.alloc_string_value(String::new()),
+            true,
+            true,
             true,
         );
 
+        object_value
+    }
+
+    fn alloc_builtin_error_with_code_value(
+        &self,
+        class_name: &str,
+        code: &str,
+        message: &str,
+    ) -> Value {
+        let object_value = self.alloc_builtin_error_value(class_name, message);
+        let _ = self.define_data_property_on_target(
+            object_value,
+            "code",
+            self.alloc_string_value(code),
+            true,
+            false,
+            true,
+        );
         object_value
     }
 
@@ -2277,6 +2605,25 @@ impl<'a> Interpreter<'a> {
             let exception = self.alloc_builtin_error_value(class_name, &message);
             task.set_exception(exception);
         }
+        match class_name {
+            "TypeError" => VmError::TypeError(message),
+            "SyntaxError" => VmError::SyntaxError(message),
+            "RangeError" => VmError::RangeError(message),
+            "ReferenceError" => VmError::ReferenceError(message),
+            _ => VmError::RuntimeError(message),
+        }
+    }
+
+    fn raise_task_builtin_error_with_code(
+        &self,
+        task: &Arc<Task>,
+        class_name: &str,
+        code: &str,
+        message: impl Into<String>,
+    ) -> VmError {
+        let message = message.into();
+        let exception = self.alloc_builtin_error_with_code_value(class_name, code, &message);
+        task.set_exception(exception);
         match class_name {
             "TypeError" => VmError::TypeError(message),
             "SyntaxError" => VmError::SyntaxError(message),
@@ -2373,12 +2720,23 @@ impl<'a> Interpreter<'a> {
             .read()
             .get_class_by_name(class_name)
             .map(|class| class.id)?;
+        let required_names = required_fields
+            .iter()
+            .map(|field_name| (*field_name).to_string())
+            .collect::<Vec<_>>();
 
-        if self
-            .nominal_allocation(id)
-            .is_some_and(|(_, field_count)| field_count < required_fields.len())
-        {
-            self.set_nominal_field_count(id, required_fields.len());
+        match self.nominal_allocation(id) {
+            Some((layout_id, field_count)) => {
+                self.register_structural_layout_shape(layout_id, &required_names);
+                if field_count < required_fields.len() {
+                    self.set_nominal_field_count(id, required_fields.len());
+                }
+            }
+            None => {
+                let layout_id = self.allocate_nominal_layout_id();
+                self.register_nominal_layout(id, layout_id, required_fields.len(), Some(class_name.to_string()));
+                self.register_structural_layout_shape(layout_id, &required_names);
+            }
         }
 
         let mut metadata = self.class_metadata.write();
@@ -2513,7 +2871,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn construct_builtin_array(
+    pub(in crate::vm::interpreter) fn construct_builtin_array(
         &mut self,
         new_target: Value,
         args: &[Value],
@@ -2550,6 +2908,147 @@ impl<'a> Interpreter<'a> {
         }
 
         Ok(array_value)
+    }
+
+    fn usize_as_runtime_number(&self, value: usize) -> Value {
+        if value <= i32::MAX as usize {
+            Value::i32(value as i32)
+        } else {
+            Value::f64(value as f64)
+        }
+    }
+
+    fn alloc_zero_filled_numeric_array_value(&self, len: usize) -> Result<Value, VmError> {
+        let mut array = Array::new(0, len);
+        for index in 0..len {
+            array
+                .set(index, Value::i32(0))
+                .map_err(VmError::RuntimeError)?;
+        }
+        let array_ptr = self.gc.lock().allocate(array);
+        Ok(unsafe { Value::from_ptr(NonNull::new(array_ptr.as_ptr()).expect("array ptr")) })
+    }
+
+    fn alloc_array_buffer_like_value(
+        &self,
+        class_name: &str,
+        byte_length: usize,
+    ) -> Result<Value, VmError> {
+        let nominal_type_id = self.ensure_builtin_runtime_class(class_name).ok_or_else(|| {
+            VmError::RuntimeError(format!("Builtin class '{}' not found", class_name))
+        })?;
+        let value = self.alloc_nominal_instance_value(nominal_type_id)?;
+        let bytes = self.alloc_zero_filled_numeric_array_value(byte_length)?;
+        self.define_data_property_on_target(value, "_bytes", bytes, true, false, false)?;
+        self.define_data_property_on_target(
+            value,
+            "byteLength",
+            self.usize_as_runtime_number(byte_length),
+            false,
+            false,
+            false,
+        )?;
+        Ok(value)
+    }
+
+    fn array_buffer_bytes_array_ptr(&self, buffer: Value) -> Option<NonNull<Array>> {
+        let bytes = self.own_exotic_state_value(buffer, "_bytes")?;
+        checked_array_ptr(bytes)
+    }
+
+    fn set_array_buffer_byte(
+        &self,
+        buffer: Value,
+        offset: usize,
+        byte: u8,
+    ) -> Result<(), VmError> {
+        let array_ptr = self.array_buffer_bytes_array_ptr(buffer).ok_or_else(|| {
+            VmError::RuntimeError("ArrayBuffer backing bytes are not initialized".to_string())
+        })?;
+        let array = unsafe { &mut *array_ptr.as_ptr() };
+        array
+            .set(offset, Value::i32(byte as i32))
+            .map_err(VmError::RuntimeError)
+    }
+
+    fn alloc_typed_array_like_value(
+        &self,
+        class_name: &str,
+        buffer: Value,
+        byte_offset: usize,
+        length: usize,
+        length_tracking: bool,
+    ) -> Result<Value, VmError> {
+        let nominal_type_id = self.ensure_builtin_runtime_class(class_name).ok_or_else(|| {
+            VmError::RuntimeError(format!("Builtin class '{}' not found", class_name))
+        })?;
+        let value = self.alloc_nominal_instance_value(nominal_type_id)?;
+        let bytes_per_element = self.typed_array_bytes_per_element(class_name).max(1) as usize;
+        let byte_length = length.saturating_mul(bytes_per_element);
+        self.define_data_property_on_target(value, "_buffer", buffer, true, false, false)?;
+        self.define_data_property_on_target(
+            value,
+            "_byteOffset",
+            self.usize_as_runtime_number(byte_offset),
+            true,
+            false,
+            false,
+        )?;
+        self.define_data_property_on_target(
+            value,
+            "_byteLength",
+            self.usize_as_runtime_number(byte_length),
+            true,
+            false,
+            false,
+        )?;
+        self.define_data_property_on_target(
+            value,
+            "_fixedLength",
+            self.usize_as_runtime_number(length),
+            true,
+            false,
+            false,
+        )?;
+        self.define_data_property_on_target(
+            value,
+            "_lengthTracking",
+            Value::bool(length_tracking),
+            true,
+            false,
+            false,
+        )?;
+        Ok(value)
+    }
+
+    fn alloc_data_view_value(
+        &self,
+        buffer: Value,
+        byte_offset: usize,
+        byte_length: usize,
+    ) -> Result<Value, VmError> {
+        let nominal_type_id = self.ensure_builtin_runtime_class("DataView").ok_or_else(|| {
+            VmError::RuntimeError("Builtin class 'DataView' not found".to_string())
+        })?;
+        let value = self.alloc_nominal_instance_value(nominal_type_id)?;
+        self.define_data_property_on_target(value, "buffer", buffer, false, false, false)?;
+        self.define_data_property_on_target(
+            value,
+            "byteOffset",
+            self.usize_as_runtime_number(byte_offset),
+            false,
+            false,
+            false,
+        )?;
+        self.define_data_property_on_target(
+            value,
+            "byteLength",
+            self.usize_as_runtime_number(byte_length),
+            false,
+            false,
+            false,
+        )?;
+        Ok(value)
     }
 
     pub(in crate::vm::interpreter) fn construct_value_with_new_target(
@@ -2618,6 +3117,243 @@ impl<'a> Interpreter<'a> {
             .is_some_and(|builtin| builtin.raw() == constructor.raw())
         {
             return self.construct_builtin_object(new_target, task, module);
+        }
+
+        if let Some(global_name) = self.builtin_global_name_for_value(constructor) {
+            if matches!(
+                global_name.as_str(),
+                "BigInt" | "Boolean" | "Number" | "String" | "Symbol"
+            ) {
+                if let Some(value) = self.try_construct_boxed_primitive(constructor, args, task, module)?
+                {
+                    return Ok(value);
+                }
+            }
+
+            match global_name.as_str() {
+                "Map" => return self.invoke_unbound_native_sync(map::NEW, args, task, module),
+                "Set" => return self.invoke_unbound_native_sync(set::NEW, args, task, module),
+                "RegExp" => {
+                    return self.invoke_unbound_native_sync(regexp::NEW, args, task, module)
+                }
+                "Buffer" => {
+                    return self.invoke_unbound_native_sync(buffer::NEW, args, task, module)
+                }
+                "ArrayBuffer" => {
+                    return self.invoke_unbound_native_sync(array_buffer::NEW, args, task, module)
+                }
+                "SharedArrayBuffer" => {
+                    return self.invoke_unbound_native_sync(
+                        array_buffer::SHARED_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "DataView" => {
+                    return self.invoke_unbound_native_sync(data_view::NEW, args, task, module)
+                }
+                "TypedArray" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::GENERIC_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Uint8Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::UINT8_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Uint8ClampedArray" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::UINT8_CLAMPED_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Int8Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::INT8_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Uint16Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::UINT16_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Int16Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::INT16_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Int32Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::INT32_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Uint32Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::UINT32_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Float32Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::FLOAT32_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Float16Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::FLOAT16_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Float64Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::FLOAT64_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "BigInt64Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::BIGINT64_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "BigUint64Array" => {
+                    return self.invoke_unbound_native_sync(
+                        typed_array::BIGUINT64_NEW,
+                        args,
+                        task,
+                        module,
+                    )
+                }
+                "Channel" => {
+                    return self.invoke_unbound_native_sync(CHANNEL_NEW, args, task, module)
+                }
+                "Mutex" => {
+                    let (mutex_id, _) = self.mutex_registry.create_mutex();
+                    return Ok(Value::i64(mutex_id.as_u64() as i64));
+                }
+                "Date" => {
+                    let mut arg_array = Array::new(0, 0);
+                    for value in args {
+                        arg_array.push(*value);
+                    }
+                    let array_ptr = self.gc.lock().allocate(arg_array);
+                    let arg_list = unsafe {
+                        Value::from_ptr(
+                            std::ptr::NonNull::new(array_ptr.as_ptr()).expect("date arg list"),
+                        )
+                    };
+                    let primitive =
+                        self.invoke_unbound_native_sync(date::CONSTRUCT, &[arg_list], task, module)?;
+                    return self.alloc_boxed_primitive_object(constructor, "Date", primitive);
+                }
+                "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
+                | "URIError" | "EvalError" | "InternalError" | "AggregateError" => {
+                    let (message_arg, options_arg) = if global_name == "AggregateError" {
+                        (
+                            args.get(1).copied().unwrap_or(Value::undefined()),
+                            args.get(2).copied().unwrap_or(Value::undefined()),
+                        )
+                    } else {
+                        (
+                            args.first().copied().unwrap_or(Value::undefined()),
+                            args.get(1).copied().unwrap_or(Value::undefined()),
+                        )
+                    };
+                    let message = match message_arg {
+                        value if value.is_null() || value.is_undefined() => String::new(),
+                        value => self.js_function_argument_to_string(value, task, module)?,
+                    };
+                    let object_value = self.alloc_builtin_error_value(&global_name, &message);
+                    if !options_arg.is_null() && !options_arg.is_undefined() {
+                        if let Some(cause_value) = self.get_field_value_by_name(options_arg, "cause")
+                        {
+                            self.define_data_property_on_target(
+                                object_value,
+                                "cause",
+                                cause_value,
+                                true,
+                                true,
+                                true,
+                            )?;
+                        }
+                    }
+                    if global_name == "AggregateError" {
+                        let errors_value = args
+                            .first()
+                            .copied()
+                            .unwrap_or_else(|| self.alloc_array_value_from_values(&[]));
+                        self.define_data_property_on_target(
+                            object_value,
+                            "errors",
+                            errors_value,
+                            true,
+                            true,
+                            true,
+                        )?;
+                    }
+                    return Ok(object_value);
+                }
+                "SuppressedError" => {
+                    let message = match args.get(2).copied().unwrap_or(Value::undefined()) {
+                        value if value.is_null() || value.is_undefined() => String::new(),
+                        value => self.js_function_argument_to_string(value, task, module)?,
+                    };
+                    let object_value = self.alloc_builtin_error_value("SuppressedError", &message);
+                    let error_value = args.first().copied().unwrap_or(Value::undefined());
+                    let suppressed_value = args.get(1).copied().unwrap_or(Value::undefined());
+                    self.define_data_property_on_target(
+                        object_value,
+                        "error",
+                        error_value,
+                        true,
+                        true,
+                        true,
+                    )?;
+                    self.define_data_property_on_target(
+                        object_value,
+                        "suppressed",
+                        suppressed_value,
+                        true,
+                        true,
+                        true,
+                    )?;
+                    return Ok(object_value);
+                }
+                _ => {}
+            }
         }
 
         if let Some(family) = self
@@ -2991,7 +3727,8 @@ impl<'a> Interpreter<'a> {
             }
             // Error constructors: calling without `new` behaves as `new`
             "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
-            | "URIError" | "EvalError" | "AggregateError" => self
+            | "URIError" | "EvalError" | "InternalError" | "AggregateError"
+            | "SuppressedError" => self
                 .construct_value_with_new_target(callable, callable, args, task, module)
                 .map(Some),
             // RegExp(pattern, flags) without `new` behaves as `new`
@@ -3064,7 +3801,8 @@ impl<'a> Interpreter<'a> {
     ) -> Option<()> {
         let name = match class_name {
             "Error" | "AggregateError" | "EvalError" | "RangeError" | "ReferenceError"
-            | "SyntaxError" | "TypeError" | "URIError" => class_name,
+            | "SyntaxError" | "TypeError" | "URIError" | "InternalError"
+            | "SuppressedError" => class_name,
             _ => return Some(()),
         };
 
@@ -3277,6 +4015,21 @@ impl<'a> Interpreter<'a> {
                 .is_some_and(|builtin| builtin.raw() == value.raw())
             {
                 return Some(name);
+            }
+        }
+        if let Some(nominal_type_id) = self.constructor_nominal_type_id(value) {
+            let classes = self.classes.read();
+            if let Some(class_name) = classes
+                .get_class(nominal_type_id)
+                .map(|class| class.name.as_str())
+            {
+                if let Some(name) = CALLABLE_CONSTRUCTORS
+                    .iter()
+                    .copied()
+                    .find(|candidate| *candidate == class_name)
+                {
+                    return Some(name);
+                }
             }
         }
         None
@@ -6482,6 +7235,11 @@ impl<'a> Interpreter<'a> {
                 | crate::compiler::native_id::OBJECT_DEFINE_CLASS_PROPERTY
                 | crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
                 | crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES
+                | crate::compiler::native_id::OBJECT_KEYS
+                | crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF
+                | crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_SYMBOLS
+                | crate::compiler::native_id::ITERATOR_FROM_ARRAY
+                | crate::compiler::native_id::REFLECT_GET_FIELD_NAMES
                 | crate::compiler::native_id::OBJECT_DELETE_PROPERTY
                 | crate::compiler::native_id::OBJECT_DELETE_PROPERTY_STRICT
                 | crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF
@@ -6506,9 +7264,60 @@ impl<'a> Interpreter<'a> {
                 | crate::compiler::native_id::CRYPTO_GENERATE_KEY_PAIR
                 | crate::compiler::native_id::CRYPTO_HKDF
                 | crate::compiler::native_id::CRYPTO_PBKDF2
+                | crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE
+                | crate::compiler::native_id::JSON_PARSE
+                | crate::compiler::native_id::JSON_STRINGIFY
+                | crate::compiler::native_id::OBJECT_SAME_VALUE
+                | crate::compiler::native_id::ARRAY_FROM
+                | crate::vm::builtin::array::FROM
+                | crate::vm::builtin::promise::REJECT_NOW
+                | crate::vm::builtin::promise::ADOPT
+                | crate::compiler::native_id::TASK_ALL
+                | crate::compiler::native_id::TASK_RACE
+                | CHANNEL_NEW
+                | buffer::NEW
+                | array_buffer::NEW
+                | array_buffer::SHARED_NEW
+                | map::NEW
+                | set::NEW
+                | regexp::NEW
+                | date::CONSTRUCT
+                | data_view::NEW
+                | typed_array::GENERIC_NEW
+                | typed_array::UINT8_NEW
+                | typed_array::UINT8_CLAMPED_NEW
+                | typed_array::INT8_NEW
+                | typed_array::UINT16_NEW
+                | typed_array::INT16_NEW
+                | typed_array::INT32_NEW
+                | typed_array::UINT32_NEW
+                | typed_array::FLOAT32_NEW
+                | typed_array::FLOAT16_NEW
+                | typed_array::FLOAT64_NEW
+                | typed_array::BIGINT64_NEW
+                | typed_array::BIGUINT64_NEW
+                | crate::vm::builtin::reflect::CREATE_PROXY
         ) && !(crate::compiler::native_id::REFLECT_DEFINE_METADATA
             ..=crate::compiler::native_id::REFLECT_CLONE)
             .contains(&native_id)
+            && !crate::vm::builtin::is_math_method(native_id)
+            && !matches!(
+                native_id,
+                date::NOW
+                    | date::PARSE
+                    | url::ENCODE
+                    | url::DECODE
+                    | crate::vm::builtin::number::PARSE_INT
+                    | crate::vm::builtin::number::PARSE_FLOAT
+                    | crate::vm::builtin::number::IS_NAN
+                    | crate::vm::builtin::number::IS_FINITE
+                    | atomics::LOAD
+                    | atomics::STORE
+                    | atomics::ADD
+                    | atomics::COMPARE_EXCHANGE
+                    | atomics::WAIT
+                    | builtin_error::CREATE_RANGE_ERROR
+            )
     }
 
     pub(in crate::vm::interpreter) fn native_callable_uses_builtin_this_coercion(
@@ -6525,6 +7334,11 @@ impl<'a> Interpreter<'a> {
         receiver: Value,
         native_id: u16,
     ) -> Result<Value, VmError> {
+        if crate::vm::builtin::is_date_method(native_id) {
+            if let Some(primitive) = self.boxed_primitive_internal_value(receiver, "Date") {
+                return Ok(primitive);
+            }
+        }
         if !self.native_callable_uses_builtin_this_coercion(native_id) {
             return Ok(receiver);
         }
@@ -6536,6 +7350,45 @@ impl<'a> Interpreter<'a> {
         // Boxing is only needed for user-defined methods on primitives,
         // which are not dispatched through this path.
         Ok(receiver)
+    }
+
+    pub(in crate::vm::interpreter) fn date_native_timestamp_arg(&self, value: Value) -> i64 {
+        let value = self
+            .boxed_primitive_internal_value(value, "Date")
+            .unwrap_or(value);
+        value
+            .as_f64()
+            .or_else(|| value.as_i64().map(|v| v as f64))
+            .or_else(|| value.as_i32().map(|v| v as f64))
+            .unwrap_or(0.0) as i64
+    }
+
+    pub(in crate::vm::interpreter) fn sync_boxed_date_receiver_value(
+        &self,
+        receiver: Value,
+        updated_value: Value,
+    ) {
+        if self.boxed_primitive_internal_value(receiver, "Date").is_none() {
+            return;
+        }
+        let _ = self.set_boxed_primitive_internal_value(receiver, "Date", updated_value);
+    }
+
+    pub(in crate::vm::interpreter) fn sync_boxed_date_setter_result(
+        &self,
+        stack: &Stack,
+        receiver: Value,
+        native_id: u16,
+    ) {
+        if !crate::vm::builtin::is_date_setter(native_id) {
+            return;
+        }
+        if self.boxed_primitive_internal_value(receiver, "Date").is_none() {
+            return;
+        }
+        if let Ok(updated_value) = stack.peek() {
+            self.sync_boxed_date_receiver_value(receiver, updated_value);
+        }
     }
 
     fn intrinsic_callable_function_info(&self, target: Value) -> Option<(String, usize)> {
@@ -6593,6 +7446,34 @@ impl<'a> Interpreter<'a> {
                         crate::compiler::native_id::FUNCTION_CALL_HELPER => 1,
                         crate::compiler::native_id::FUNCTION_APPLY_HELPER => 2,
                         crate::compiler::native_id::FUNCTION_BIND_HELPER => 1,
+                        crate::compiler::native_id::ARRAY_FROM
+                        | crate::vm::builtin::array::FROM => 1,
+                        crate::compiler::native_id::OBJECT_HAS_OWN_PROPERTY => 1,
+                        crate::compiler::native_id::OBJECT_PROPERTY_IS_ENUMERABLE => 1,
+                        crate::compiler::native_id::OBJECT_KEYS => 1,
+                        crate::compiler::native_id::INTL_NUMBER_FORMAT => 2,
+                        crate::compiler::native_id::INTL_DATE_TIME_FORMAT => 2,
+                        crate::compiler::native_id::INTL_FORMATTER_FORMAT => 1,
+                        crate::compiler::native_id::INTL_FORMATTER_RESOLVED_OPTIONS => 0,
+                        crate::compiler::native_id::DISPOSABLE_STACK_NEW => 0,
+                        crate::compiler::native_id::DISPOSABLE_STACK_DEFER => 1,
+                        crate::compiler::native_id::DISPOSABLE_STACK_DISPOSE => 0,
+                        crate::compiler::native_id::DISPOSABLE_STACK_MOVE => 0,
+                        crate::compiler::native_id::ASYNC_DISPOSABLE_STACK_NEW => 0,
+                        crate::compiler::native_id::ASYNC_DISPOSABLE_STACK_DEFER => 1,
+                        crate::compiler::native_id::ASYNC_DISPOSABLE_STACK_DISPOSE_ASYNC => 0,
+                        crate::compiler::native_id::FINALIZATION_REGISTRY_NEW => 1,
+                        crate::compiler::native_id::FINALIZATION_REGISTRY_REGISTER => 3,
+                        crate::compiler::native_id::FINALIZATION_REGISTRY_UNREGISTER => 1,
+                        crate::compiler::native_id::FINALIZATION_REGISTRY_CLEANUP_SOME => 1,
+                        crate::compiler::native_id::SYMBOL_FOR => 1,
+                        crate::compiler::native_id::SYMBOL_KEY_FOR => 1,
+                        crate::compiler::native_id::SYMBOL_ITERATOR => 0,
+                        crate::compiler::native_id::SYMBOL_TO_STRING_TAG => 0,
+                        crate::compiler::native_id::SYMBOL_TO_STRING => 0,
+                        crate::compiler::native_id::SYMBOL_VALUE_OF => 0,
+                        crate::compiler::native_id::ITERATOR_FROM_ARRAY => 1,
+                        crate::compiler::native_id::ITERATOR_TO_ARRAY => 0,
                         _ => 0,
                     };
                     return Some((visible_name, arity));
@@ -7490,21 +8371,46 @@ impl<'a> Interpreter<'a> {
         let arguments_value =
             unsafe { Value::from_ptr(NonNull::new(object_ptr.as_ptr()).expect("arguments ptr")) };
 
-        if let Some(array_ctor) = self.builtin_global_value("Array") {
-            if let Some(array_prototype) = self.constructor_prototype_value(array_ctor) {
-                if let Some(iterator) = self
-                    .get_field_value_by_name(array_prototype, "Symbol.iterator")
-                    .or_else(|| self.get_field_value_by_name(array_prototype, "values"))
-                {
-                    let _ = self.define_data_property_on_target(
-                        arguments_value,
-                        "Symbol.iterator",
-                        iterator,
-                        true,
-                        false,
-                        true,
-                    );
+        let array_iterator = {
+            let prototype_iterator = self
+                .ensure_builtin_global_value("Array", task)?
+                .and_then(|constructor| {
+                    self.constructor_prototype_value(constructor)
+                })
+                .and_then(|prototype| {
+                    self.ensure_published_builtin_prototype_member(prototype, "values");
+                    self.ensure_published_builtin_prototype_member(prototype, "Symbol.iterator");
+                    self.get_own_js_property_value_by_name(prototype, "Symbol.iterator")
+                        .or_else(|| self.get_own_js_property_value_by_name(prototype, "values"))
+                });
+
+            if prototype_iterator.is_some() {
+                prototype_iterator
+            } else {
+                let empty_array = self.alloc_array_value_from_values(&[]);
+                match self.well_known_symbol_property_value(
+                    empty_array,
+                    "Symbol.iterator",
+                    task,
+                    module,
+                )? {
+                    Some(iterator) => Some(iterator),
+                    None => self.get_property_value_via_js_semantics_with_context(
+                        empty_array,
+                        "values",
+                        task,
+                        module,
+                    )?,
                 }
+            }
+        };
+        if let Some(iterator) = array_iterator {
+            if let Some(arguments_ptr) = checked_object_ptr(arguments_value) {
+                let arguments = unsafe { &mut *arguments_ptr.as_ptr() };
+                arguments.ensure_dyn_props().insert(
+                    self.intern_prop_key("Symbol.iterator"),
+                    DynProp::data_with_attrs(iterator, true, false, true),
+                );
             }
         }
 
@@ -8447,163 +9353,167 @@ impl<'a> Interpreter<'a> {
         slots.insert(name.to_string(), slot);
     }
 
-    fn refresh_initialized_builtin_exports(&self, module: &Arc<Module>) {
-        let Some(layout) = self.module_layouts.read().get(&module.checksum).cloned() else {
-            return;
+    fn ensure_builtin_runtime_class(&self, class_name: &str) -> Option<usize> {
+        match class_name {
+            "Object" => return Some(self.ensure_object_class_layout().0),
+            "Buffer" => return Some(self.ensure_buffer_class_layout().0),
+            "Symbol" => return Some(self.ensure_symbol_class_layout().0),
+            _ => {}
+        }
+
+        if let Some(id) = self
+            .classes
+            .read()
+            .get_class_by_name(class_name)
+            .map(|class| class.id)
+        {
+            if Self::builtin_error_layout_fields(class_name).is_some() {
+                self.ensure_builtin_error_class_layout(class_name);
+            }
+            return Some(id);
+        }
+
+        let parent_id = builtin_runtime_parent_name(class_name)
+            .and_then(|parent_name| self.ensure_builtin_runtime_class(parent_name));
+        let field_count = Self::builtin_error_layout_fields(class_name)
+            .map(|fields| fields.len())
+            .unwrap_or(0);
+        let class = if let Some(parent_id) = parent_id {
+            Class::with_parent(0, class_name.to_string(), field_count, parent_id)
+        } else {
+            Class::new(0, class_name.to_string(), field_count)
+        };
+        let id = if let Some(layout_names) = Self::builtin_error_layout_fields(class_name) {
+            self.register_runtime_class_with_layout_names(class, Some(layout_names))
+        } else {
+            self.register_runtime_class(class)
+        };
+        if Self::builtin_error_layout_fields(class_name).is_some() {
+            self.ensure_builtin_error_class_layout(class_name);
+        }
+        Some(id)
+    }
+
+    fn seed_rust_builtin_static_surface(
+        &self,
+        target: Value,
+        type_name: &str,
+    ) -> Result<(), VmError> {
+        let registry = BuiltinRegistry::shared();
+        let Some(descriptor) = registry.type_descriptor(type_name) else {
+            return Ok(());
         };
 
-        for export in &module.exports {
-            if !matches!(export.symbol_type, crate::compiler::SymbolType::Constant) {
-                continue;
-            }
-            let slot = layout.global_base
-                + export
-                    .runtime_global_slot
-                    .map(|slot| slot as usize)
-                    .unwrap_or(export.index);
-            let Some(value) = self.globals_by_index.read().get(slot).copied() else {
+        for (name, binding) in &descriptor.static_methods {
+            let BuiltinSurfaceMemberDescriptor::Bound(binding) = binding else {
                 continue;
             };
-            if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
-                eprintln!(
-                    "[builtin-init] refresh module={} export={} slot={} value={:#x}",
-                    module.metadata.name,
-                    export.name,
-                    slot,
-                    value.raw()
-                );
-            }
-            if value.is_null() || value.is_undefined() {
+            let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
                 continue;
-            }
-            if let Some(runtime_slot) = export.runtime_global_slot {
-                let module_slot = layout.global_base + runtime_slot as usize;
-                {
-                    let mut globals = self.globals_by_index.write();
-                    if module_slot >= globals.len() {
-                        globals.resize(module_slot + 1, Value::null());
-                    }
-                    globals[module_slot] = value;
-                }
-                self.builtin_global_slots
-                    .write()
-                    .insert(export.name.clone(), module_slot);
-            } else {
-                self.store_builtin_global_value(&export.name, value);
-            }
+            };
+            let value = self.alloc_unbound_native_value(native_id);
+            self.define_data_property_on_target(target, name, value, true, false, true)?;
         }
-    }
 
-    fn lookup_builtin_export_module(&self, name: &str) -> Option<Arc<Module>> {
-        let module = self
-            .module_registry
-            .read()
-            .all_modules()
-            .into_iter()
-            .find(|module| {
-                (module.metadata.name.starts_with("__raya_builtin__/")
-                    || module.metadata.name.contains("builtins/")
-                    || module
-                        .metadata
-                        .source_file
-                        .as_deref()
-                        .is_some_and(|path: &str| path.contains("builtins/")))
-                    && module.exports.iter().any(|export| export.name == name)
-            });
-        if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
-            eprintln!(
-                "[builtin-init] lookup name={} module={}",
+        for (name, binding) in &descriptor.static_properties {
+            let BuiltinSurfaceMemberDescriptor::Bound(binding) = binding else {
+                continue;
+            };
+            let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
+                continue;
+            };
+            let getter = self.alloc_unbound_native_value(native_id);
+            self.define_accessor_property_on_target(
+                target,
                 name,
-                module
-                    .as_ref()
-                    .map(|module| module.metadata.name.as_str())
-                    .unwrap_or("<none>")
-            );
+                getter,
+                Value::undefined(),
+                false,
+                true,
+            )?;
         }
-        module
+
+        if type_name == "Math" {
+            for (name, value) in [
+                ("PI", Value::f64(std::f64::consts::PI)),
+                ("E", Value::f64(std::f64::consts::E)),
+            ] {
+                if self.resolve_own_property_shape(target, name).is_none() {
+                    self.define_data_property_on_target(target, name, value, false, false, false)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
-    fn ensure_module_top_level_initialized(
-        &mut self,
-        module: Arc<Module>,
-        caller_task: &Arc<Task>,
-    ) -> Result<(), VmError> {
-        if self
-            .module_layouts
-            .read()
-            .get(&module.checksum)
-            .is_some_and(|layout| layout.initialized)
-        {
-            return Ok(());
-        }
-
-        let Some(main_fn_id) = module
-            .functions
-            .iter()
-            .rposition(|function| function.name == "main")
-        else {
-            if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
-                eprintln!("[builtin-init] module={} has no main", module.metadata.name);
-            }
-            if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
-                layout.initialized = true;
-            }
-            return Ok(());
+    fn materialize_builtin_namespace_value(&mut self, name: &str) -> Result<Option<Value>, VmError> {
+        let value = if name == "globalThis" {
+            self.alloc_plain_object()?
+        } else {
+            let value = self.alloc_plain_object()?;
+            self.seed_rust_builtin_static_surface(value, name)?;
+            value
         };
+        self.store_builtin_global_value(name, value);
+        Ok(Some(value))
+    }
 
-        if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
-            eprintln!(
-                "[builtin-init] running module={} main_fn_id={}",
-                module.metadata.name, main_fn_id
-            );
-        }
-        if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
-            layout.initialized = true;
-        }
-        let init_task = Arc::new(Task::new(
-            main_fn_id,
-            module.clone(),
-            Some(caller_task.id()),
-        ));
-        self.tasks.write().insert(init_task.id(), init_task.clone());
-        match self.run(&init_task) {
-            ExecutionResult::Completed(value) => {
-                init_task.complete(value);
-                self.refresh_initialized_builtin_exports(&module);
-                if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
-                    eprintln!(
-                        "[builtin-init] completed module={} result={:#x}",
-                        module.metadata.name,
-                        value.raw()
-                    );
-                }
-                if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
-                    layout.initialized = true;
-                }
-                Ok(())
+    fn materialize_builtin_constructor_value(
+        &mut self,
+        name: &str,
+    ) -> Result<Option<Value>, VmError> {
+        let nominal_type_id = match name {
+            "Boolean" | "Number" | "String" | "Function" | "Object" | "Array" | "Promise"
+            | "Symbol" | "Map" | "Set" | "RegExp" | "Buffer" | "Date" | "Mutex"
+            | "Channel" | "Error" | "AggregateError" | "TypeError" | "RangeError"
+            | "ReferenceError" | "SyntaxError" | "URIError" | "EvalError" => {
+                self.ensure_builtin_runtime_class(name)
             }
-            ExecutionResult::Suspended(reason) => {
-                if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
-                    layout.initialized = false;
-                }
-                init_task.suspend(reason);
-                Err(VmError::RuntimeError(
-                    "Builtin module initialization suspended unexpectedly".to_string(),
+            _ => self.ensure_builtin_runtime_class(name),
+        };
+        let Some(nominal_type_id) = nominal_type_id else {
+            return Ok(None);
+        };
+        let value = self
+            .constructor_value_for_nominal_type(nominal_type_id)
+            .ok_or_else(|| {
+                VmError::RuntimeError(format!(
+                    "failed to materialize builtin constructor '{}'",
+                    name
                 ))
-            }
-            ExecutionResult::Failed(error) => {
-                if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
-                    layout.initialized = false;
-                }
-                init_task.fail();
-                if !caller_task.has_exception() {
-                    if let Some(exception) = init_task.current_exception() {
-                        caller_task.set_exception(exception);
-                    }
-                }
-                Err(error)
-            }
+            })?;
+        self.store_builtin_global_value(name, value);
+        let type_name = BuiltinRegistry::shared()
+            .global_descriptor(name)
+            .map(|descriptor| descriptor.backing_type_name)
+            .unwrap_or(name);
+        self.seed_rust_builtin_static_surface(value, type_name)?;
+        if let Some(prototype) = self.create_prototype_for_class_by_name(name, value) {
+            self.seed_rust_builtin_prototype_surface(prototype, name)?;
         }
+        Ok(Some(value))
+    }
+
+    fn materialize_builtin_function_value(
+        &mut self,
+        name: &str,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(descriptor) = BuiltinRegistry::shared().global_descriptor(name) else {
+            return Ok(None);
+        };
+        let Some(binding) = descriptor.binding else {
+            return Ok(None);
+        };
+        let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
+            return Err(VmError::RuntimeError(format!(
+                "builtin global '{}' does not map to a callable native",
+                name
+            )));
+        };
+        let value = self.alloc_unbound_native_value(native_id);
+        self.store_builtin_global_value(name, value);
+        Ok(Some(value))
     }
 
     fn ensure_builtin_global_value(
@@ -8616,20 +9526,7 @@ impl<'a> Interpreter<'a> {
             self.finalize_materialized_builtin_object(name, value)?;
             return Ok(current);
         }
-
-        let Some(module) = self.lookup_builtin_export_module(name) else {
-            return self.materialize_missing_builtin_constant(name, caller_task);
-        };
-        self.ensure_module_top_level_initialized(module, caller_task)?;
-        let refreshed = self
-            .builtin_global_value(name)
-            .filter(|value| !value.is_null() && !value.is_undefined());
-        if let Some(value) = refreshed {
-            self.finalize_materialized_builtin_object(name, value)?;
-            Ok(refreshed)
-        } else {
-            self.materialize_missing_builtin_constant(name, caller_task)
-        }
+        self.materialize_missing_builtin_constant(name, caller_task)
     }
 
     fn materialize_missing_builtin_constant(
@@ -8637,39 +9534,24 @@ impl<'a> Interpreter<'a> {
         name: &str,
         caller_task: &Arc<Task>,
     ) -> Result<Option<Value>, VmError> {
-        let value = match name {
-            "globalThis" => {
-                let value = self.alloc_plain_object()?;
-                self.store_builtin_global_value("globalThis", value);
-                value
+        let value = if builtin_global_is_namespace(name) {
+            self.materialize_builtin_namespace_value(name)?
+        } else if let Some(descriptor) = BuiltinRegistry::shared().global_descriptor(name) {
+            if let Some(literal) = descriptor.literal {
+                let value = self.alloc_builtin_literal_value(literal);
+                self.store_builtin_global_value(name, value);
+                Some(value)
+            } else if descriptor.symbol_type == crate::compiler::SymbolType::Function {
+                self.materialize_builtin_function_value(name)?
+            } else {
+                self.materialize_builtin_constructor_value(name)?
             }
-            "Math" => {
-                let Some(nominal_type_id) = self
-                    .classes
-                    .read()
-                    .get_class_by_name("__NodeCompatMath")
-                    .map(|class| class.id)
-                else {
-                    return Ok(None);
-                };
-                let value = self.alloc_nominal_instance_value(nominal_type_id)?;
-                self.store_builtin_global_value("Math", value);
-                value
-            }
-            "Reflect" => {
-                let Some(nominal_type_id) = self
-                    .classes
-                    .read()
-                    .get_class_by_name("__NodeCompatReflect")
-                    .map(|class| class.id)
-                else {
-                    return Ok(None);
-                };
-                let value = self.alloc_nominal_instance_value(nominal_type_id)?;
-                self.store_builtin_global_value("Reflect", value);
-                value
-            }
-            _ => return Ok(None),
+        } else {
+            None
+        };
+
+        let Some(value) = value else {
+            return Ok(None);
         };
 
         self.finalize_materialized_builtin_object(name, value)?;
@@ -8772,16 +9654,26 @@ impl<'a> Interpreter<'a> {
             })
     }
 
-    fn intrinsic_class_prototype_value(&self, class_name: &str) -> Option<Value> {
-        let lookup_name = {
-            let classes = self.classes.read();
-            if classes.get_class_by_name(class_name).is_some() {
-                class_name.to_string()
-            } else {
-                boxed_primitive_helper_class_name(class_name)?.to_string()
-            }
+    pub(in crate::vm::interpreter) fn intrinsic_class_prototype_value(
+        &self,
+        class_name: &str,
+    ) -> Option<Value> {
+        let lookup_name = if self
+            .classes
+            .read()
+            .get_class_by_name(class_name)
+            .is_some()
+            || self.ensure_builtin_runtime_class(class_name).is_some()
+        {
+            class_name.to_string()
+        } else {
+            let helper = boxed_primitive_helper_class_name(class_name)?;
+            let _ = self.ensure_builtin_runtime_class(helper);
+            helper.to_string()
         };
-        let ntid = self.classes.read().get_class_by_name(&lookup_name)?.id;
+        let ntid = self
+            .ensure_builtin_runtime_class(&lookup_name)
+            .or_else(|| self.classes.read().get_class_by_name(&lookup_name).map(|class| class.id))?;
         if let Some(existing) = self
             .classes
             .read()
@@ -8890,6 +9782,8 @@ impl<'a> Interpreter<'a> {
                 class_module.clone(),
                 &prototype_members,
             )?;
+            self.seed_rust_builtin_prototype_surface(proto_val, class_name)
+                .ok()?;
             self.repair_intrinsic_prototype_parent(class_name, proto_val);
             return Some(proto_val);
         }
@@ -8917,6 +9811,8 @@ impl<'a> Interpreter<'a> {
                 class_module.clone(),
                 &prototype_members,
             )?;
+            self.seed_rust_builtin_prototype_surface(existing, class_name)
+                .ok()?;
             self.repair_intrinsic_prototype_parent(class_name, existing);
             return Some(existing);
         }
@@ -8997,8 +9893,179 @@ impl<'a> Interpreter<'a> {
             class_module,
             &prototype_members,
         )?;
+        self.seed_rust_builtin_prototype_surface(prototype_val, class_name)
+            .ok()?;
+        match class_name {
+            "GeneratorFunction" => {
+                if let Some(generator_prototype) = self.default_generator_instance_prototype(false)
+                {
+                    self.define_data_property_on_target(
+                        prototype_val,
+                        "prototype",
+                        generator_prototype,
+                        true,
+                        false,
+                        true,
+                    )
+                    .ok()?;
+                }
+            }
+            "AsyncGeneratorFunction" => {
+                if let Some(generator_prototype) = self.default_generator_instance_prototype(true)
+                {
+                    self.define_data_property_on_target(
+                        prototype_val,
+                        "prototype",
+                        generator_prototype,
+                        true,
+                        false,
+                        true,
+                    )
+                    .ok()?;
+                }
+            }
+            _ => {}
+        }
 
         Some(prototype_val)
+    }
+
+    fn seed_rust_builtin_prototype_surface(
+        &self,
+        prototype_val: Value,
+        class_name: &str,
+    ) -> Result<(), VmError> {
+        let registry = BuiltinRegistry::shared();
+        let Some(descriptor) = registry.type_descriptor(class_name) else {
+            return Ok(());
+        };
+        let mut method_values = Vec::new();
+
+        for (name, binding) in &descriptor.instance_methods {
+            let BuiltinSurfaceMemberDescriptor::Bound(binding) = binding else {
+                continue;
+            };
+            let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
+                continue;
+            };
+            let value = self.alloc_unbound_native_value(native_id);
+            self.define_data_property_on_target(prototype_val, name, value, true, false, true)?;
+            method_values.push(((*name).to_string(), value));
+        }
+
+        for (name, binding) in &descriptor.instance_properties {
+            let BuiltinSurfaceMemberDescriptor::Bound(binding) = binding else {
+                continue;
+            };
+            let Some(native_id) = builtin_native_alias_id_from_op(binding.op) else {
+                continue;
+            };
+            let getter = self.alloc_unbound_native_value(native_id);
+            self.define_accessor_property_on_target(
+                prototype_val,
+                name,
+                getter,
+                Value::undefined(),
+                false,
+                true,
+            )?;
+        }
+
+        self.define_prototype_symbol_aliases(class_name, prototype_val, &method_values)
+            .ok_or_else(|| {
+                VmError::RuntimeError(format!(
+                    "failed to define prototype symbol aliases for {}",
+                    class_name
+                ))
+            })?;
+
+        match class_name {
+            "GeneratorFunction" => {
+                if let Some(generator_prototype) = self.default_generator_instance_prototype(false)
+                {
+                    self.define_data_property_on_target(
+                        prototype_val,
+                        "prototype",
+                        generator_prototype,
+                        true,
+                        false,
+                        true,
+                    )?;
+                }
+            }
+            "AsyncGeneratorFunction" => {
+                if let Some(generator_prototype) = self.default_generator_instance_prototype(true)
+                {
+                    self.define_data_property_on_target(
+                        prototype_val,
+                        "prototype",
+                        generator_prototype,
+                        true,
+                        false,
+                        true,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn ensure_published_builtin_prototype_member(&self, target: Value, key: &str) {
+        if self
+            .metadata
+            .lock()
+            .get_metadata_property(BUILTIN_PROTOTYPE_SURFACE_SEEDING_METADATA_KEY, target, key)
+            .is_some_and(|value| value.is_truthy())
+        {
+            return;
+        }
+        let registry = BuiltinRegistry::shared();
+        for (global_name, global_descriptor) in registry.global_descriptors() {
+            let type_name = global_descriptor.backing_type_name;
+            let Some(type_descriptor) = registry.type_descriptor(type_name) else {
+                continue;
+            };
+            let needs_member = type_descriptor.instance_methods.contains_key(key)
+                || type_descriptor.instance_properties.contains_key(key)
+                || (key == "Symbol.iterator"
+                    && matches!(type_name, "Array" | "Map" | "Set" | "String"));
+            if !needs_member {
+                continue;
+            }
+            let Some(constructor) = self.builtin_global_value(global_name) else {
+                continue;
+            };
+            let prototype = self
+                .cached_callable_virtual_property_value(constructor, "prototype")
+                .or_else(|| {
+                    self.constructor_nominal_type_id(constructor).and_then(|nominal_type_id| {
+                        let classes = self.classes.read();
+                        classes
+                            .get_class(nominal_type_id)
+                            .and_then(|class| class.prototype_value)
+                    })
+                });
+            let Some(prototype) = prototype else {
+                continue;
+            };
+            if prototype.raw() == target.raw() {
+                self.metadata.lock().define_metadata_property(
+                    BUILTIN_PROTOTYPE_SURFACE_SEEDING_METADATA_KEY.to_string(),
+                    Value::bool(true),
+                    target,
+                    key.to_string(),
+                );
+                let _ = self.seed_rust_builtin_prototype_surface(target, type_name);
+                let _ = self.metadata.lock().delete_metadata_property(
+                    BUILTIN_PROTOTYPE_SURFACE_SEEDING_METADATA_KEY,
+                    target,
+                    key,
+                );
+                break;
+            }
+        }
     }
 
     fn hydrate_class_prototype_members(
@@ -9182,7 +10249,8 @@ impl<'a> Interpreter<'a> {
         if self.promise_handle_from_value(value).is_some() {
             let prototype = self
                 .builtin_global_value("Promise")
-                .and_then(|ctor| self.constructor_prototype_value(ctor));
+                .and_then(|ctor| self.constructor_prototype_value(ctor))
+                .or_else(|| self.intrinsic_class_prototype_value("Promise"));
             if debug_proto_resolve {
                 eprintln!(
                     "[proto-of] value={:#x} task-promise -> {:?}",
@@ -9236,9 +10304,14 @@ impl<'a> Interpreter<'a> {
                 .and_then(|family| self.builtin_global_value(family))
                 .and_then(|ctor| self.constructor_prototype_value(ctor))
                 .or_else(|| {
+                    self.callable_function_family_name(value)
+                        .and_then(|family| self.intrinsic_class_prototype_value(family))
+                })
+                .or_else(|| {
                     self.builtin_global_value("Function")
                         .and_then(|ctor| self.constructor_prototype_value(ctor))
-                });
+                })
+                .or_else(|| self.intrinsic_class_prototype_value("Function"));
             if debug_proto_resolve {
                 eprintln!(
                     "[proto-of] value={:#x} callable -> {:?}",
@@ -9852,6 +10925,41 @@ impl<'a> Interpreter<'a> {
             return None;
         }
         self.get_own_field_value_by_name(value, "__primitiveValue")
+    }
+
+    fn set_boxed_primitive_internal_value(
+        &self,
+        value: Value,
+        kind: &str,
+        primitive_value: Value,
+    ) -> Result<bool, VmError> {
+        let Some(kind_value) = self.get_own_field_value_by_name(value, "__boxedPrimitiveKind")
+        else {
+            return Ok(false);
+        };
+        let Some(actual_kind) = primitive_to_js_string(kind_value) else {
+            return Ok(false);
+        };
+        if actual_kind != kind {
+            return Ok(false);
+        }
+        let mut field_index = None;
+        if let Some(obj_ptr) = checked_object_ptr(value) {
+            if let Some(index) = self.get_field_index_for_value(value, "__primitiveValue") {
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                obj.set_field(index, primitive_value)
+                    .map_err(VmError::RuntimeError)?;
+                field_index = Some(index);
+            }
+        }
+        self.metadata.lock().define_metadata_property(
+            NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
+            primitive_value,
+            value,
+            "__primitiveValue".to_string(),
+        );
+        self.set_fixed_property_deleted(value, "__primitiveValue", false);
+        Ok(field_index.is_some())
     }
 
     fn alloc_boxed_primitive_object(
@@ -10619,8 +11727,9 @@ impl<'a> Interpreter<'a> {
         constructor_value: Value,
     ) -> Option<Value> {
         let lookup_name = {
-            let classes = self.classes.read();
-            if classes.get_class_by_name(class_name).is_some() {
+            if self.classes.read().get_class_by_name(class_name).is_some()
+                || self.ensure_builtin_runtime_class(class_name).is_some()
+            {
                 class_name.to_string()
             } else {
                 boxed_primitive_helper_class_name(class_name)?.to_string()
@@ -10679,11 +11788,24 @@ impl<'a> Interpreter<'a> {
         if self.callable_virtual_property_deleted(target, key) {
             return None;
         }
-        if key == "prototype" {
-            if let Some(value) = self.cached_callable_virtual_property_value(target, key) {
-                return Some(value);
+        if let Some(co_ptr) = checked_callable_ptr(target) {
+            let co = unsafe { &*co_ptr.as_ptr() };
+            if let Some(ref dp) = co.dyn_props {
+                if let Some(prop) = dp.get(self.intern_prop_key(key)) {
+                    return Some(prop.value);
+                }
             }
-            let proto = self.constructor_prototype_value(target)?;
+        }
+        if key == "prototype" {
+            let proto = if self.constructor_nominal_type_id(target).is_some()
+                || self.builtin_global_name_for_value(target).is_some()
+            {
+                self.constructor_prototype_value(target)?
+            } else if let Some(value) = self.cached_callable_virtual_property_value(target, key) {
+                value
+            } else {
+                self.constructor_prototype_value(target)?
+            };
             // Ensure prototype has nominal_type_id for vtable method lookup
             if let Some(proto_ptr) = checked_object_ptr(proto) {
                 let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
@@ -10694,6 +11816,29 @@ impl<'a> Interpreter<'a> {
                 }
             }
             return Some(proto);
+        }
+        if key == "constructor" {
+            if let Some(value) = self
+                .callable_function_family_name(target)
+                .and_then(|family| {
+                    self.ambient_global_value_sync(family).or_else(|| {
+                        self.ensure_builtin_runtime_class(family)
+                            .and_then(|nominal_type_id| {
+                                self.constructor_value_for_nominal_type(nominal_type_id)
+                            })
+                    })
+                })
+                .or_else(|| {
+                    self.ambient_global_value_sync("Function").or_else(|| {
+                        self.ensure_builtin_runtime_class("Function")
+                            .and_then(|nominal_type_id| {
+                                self.constructor_value_for_nominal_type(nominal_type_id)
+                            })
+                    })
+                })
+            {
+                return Some(value);
+            }
         }
         if let Some(value) = self.number_constructor_intrinsic_value(target, key) {
             return Some(value);
@@ -11326,6 +12471,15 @@ impl<'a> Interpreter<'a> {
         }
         let body_source = parts.pop().unwrap_or_default();
         let params_source = parts.join(",");
+        if self.source_has_leading_hashbang(&params_source)
+            || self.source_has_leading_hashbang(&body_source)
+        {
+            return Err(self.raise_task_builtin_error(
+                task,
+                "SyntaxError",
+                "Dynamic function source may not start with a hashbang comment",
+            ));
+        }
         if debug_dynamic_function {
             eprintln!(
                 "[dynamic-fn] alloc:sources params={:?} body={:?}",
@@ -12175,7 +13329,10 @@ impl<'a> Interpreter<'a> {
         if let Some(value) = self.callable_virtual_property_value(obj_val, field_name) {
             return Some(value);
         }
-        if self.is_typed_array_like_value(obj_val) {
+        let typed_array_index = parse_js_array_index_name(field_name);
+        if (field_name == "length" || typed_array_index.is_some())
+            && self.is_typed_array_like_value(obj_val)
+        {
             if field_name == "length" {
                 let len = self.typed_array_live_length_direct(obj_val)?;
                 return Some(if len <= i32::MAX as usize {
@@ -12184,7 +13341,7 @@ impl<'a> Interpreter<'a> {
                     Value::f64(len as f64)
                 });
             }
-            if let Some(index) = parse_js_array_index_name(field_name) {
+            if let Some(index) = typed_array_index {
                 let len = self.typed_array_live_length_direct(obj_val)?;
                 if index >= len {
                     return None;
@@ -12311,7 +13468,11 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn get_own_js_property_value_by_name(&self, target: Value, key: &str) -> Option<Value> {
+    pub(in crate::vm::interpreter::opcodes) fn get_own_js_property_value_by_name(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<Value> {
         self.get_own_js_property_value_by_name_on_target(target, key)
             .or_else(|| {
                 let public_target = self.public_property_target(target);
@@ -12371,34 +13532,9 @@ impl<'a> Interpreter<'a> {
     }
 
     fn typed_array_has_instance_backing(&self, target: Value) -> bool {
-        let Some(obj_ptr) = checked_object_ptr(target) else {
-            return false;
-        };
-        let obj = unsafe { &*obj_ptr.as_ptr() };
-        let class_metadata = self.class_metadata.read();
-        let classes = self.classes.read();
-
-        ["_buffer", "_byteOffset", "_byteLength"]
+        ["buffer", "byteOffset", "byteLength"]
             .iter()
-            .all(|field_name| {
-                let mut nominal_type_id = obj.nominal_type_id_usize();
-                while let Some(current_id) = nominal_type_id {
-                    if let Some(index) = class_metadata
-                        .get(current_id)
-                        .and_then(|meta| meta.get_field_index(field_name))
-                    {
-                        return index < obj.field_count() && obj.get_field(index).is_some();
-                    }
-                    nominal_type_id = classes
-                        .get_class(current_id)
-                        .and_then(|class| class.parent_id);
-                }
-
-                self.structural_field_slot_index_for_object(obj, field_name)
-                    .is_some_and(|index| {
-                        index < obj.field_count() && obj.get_field(index).is_some()
-                    })
-            })
+            .all(|field_name| self.typed_array_backing_field_value(target, field_name).is_some())
     }
 
     fn is_typed_array_like_value(&self, target: Value) -> bool {
@@ -12465,6 +13601,13 @@ impl<'a> Interpreter<'a> {
             && !name.starts_with(SYMBOL_KEY_PREFIX)
             && name != SUPER_THIS_INITIALIZED_KEY
             && name != FIELD_PRESENT_MASK_KEY
+    }
+
+    fn is_typed_array_internal_backing_property_name(name: &str) -> bool {
+        matches!(
+            name,
+            "_buffer" | "_byteOffset" | "_byteLength" | "_fixedLength" | "_lengthTracking"
+        )
     }
 
     fn invoke_proxy_property_trap_with_context(
@@ -12917,6 +14060,224 @@ impl<'a> Interpreter<'a> {
         value.as_f64().map(|f| f as u8)
     }
 
+    fn array_buffer_byte_length(&self, buffer: Value) -> Option<usize> {
+        self.own_exotic_state_value(buffer, "byteLength")
+            .and_then(|value| self.numeric_value_as_usize(value))
+    }
+
+    fn typed_array_construct_from_args(
+        &mut self,
+        class_name: &str,
+        args: &[Value],
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        let bytes_per_element = self.typed_array_bytes_per_element(class_name).max(1) as usize;
+        let source = args.first().copied().unwrap_or(Value::i32(0));
+        if source.is_null() || source.is_undefined() {
+            let buffer = self.alloc_array_buffer_like_value("ArrayBuffer", 0)?;
+            return self.alloc_typed_array_like_value(class_name, buffer, 0, 0, false);
+        }
+        if source.as_i32().is_some() || source.as_f64().is_some() {
+            let length = self.js_usize_arg_with_context(source, task, module)?;
+            let byte_length = length.saturating_mul(bytes_per_element);
+            let buffer = self.alloc_array_buffer_like_value("ArrayBuffer", byte_length)?;
+            return self.alloc_typed_array_like_value(class_name, buffer, 0, length, false);
+        }
+        if self
+            .nominal_class_name_for_value(source)
+            .as_deref()
+            .is_some_and(|name| matches!(name, "ArrayBuffer" | "SharedArrayBuffer"))
+        {
+            let byte_length = self.array_buffer_byte_length(source).unwrap_or(0);
+            let length = byte_length / bytes_per_element;
+            return self.alloc_typed_array_like_value(class_name, source, 0, length, false);
+        }
+        let values = if checked_array_ptr(source).is_some() {
+            Some(self.collect_apply_arguments(source, task, module)?)
+        } else if let Some(iterator) = self.try_get_iterator_from_value(source, task, module)? {
+            let mut collected = Vec::new();
+            loop {
+                let next_result = match self.iterator_step_result(iterator, task, module) {
+                    Ok(Some(result)) => result,
+                    Ok(None) => break,
+                    Err(error) => {
+                        let _ = self.iterator_close(iterator, task, module);
+                        return Err(error);
+                    }
+                };
+                match self.iterator_result_value(next_result, task, module) {
+                    Ok(value) => collected.push(value),
+                    Err(error) => {
+                        let _ = self.iterator_close(iterator, task, module);
+                        return Err(error);
+                    }
+                }
+            }
+            Some(collected)
+        } else if self.js_value_supports_extensibility(source) {
+            Some(self.collect_apply_arguments(source, task, module)?)
+        } else {
+            None
+        };
+        if let Some(values) = values {
+            let byte_length = values.len().saturating_mul(bytes_per_element);
+            let buffer = self.alloc_array_buffer_like_value("ArrayBuffer", byte_length)?;
+            let typed_array =
+                self.alloc_typed_array_like_value(class_name, buffer, 0, values.len(), false)?;
+            for (index, value) in values.into_iter().enumerate() {
+                self.typed_array_set_value_direct_with_context(
+                    typed_array,
+                    index,
+                    value,
+                    task,
+                    module,
+                )?;
+            }
+            return Ok(typed_array);
+        }
+        Err(self.raise_task_builtin_error(
+            task,
+            "TypeError",
+            format!("{class_name} constructor expects a length or ArrayBuffer-like source"),
+        ))
+    }
+
+    fn typed_array_set_value_direct_with_context(
+        &mut self,
+        target: Value,
+        index: usize,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<(), VmError> {
+        let Some(len) = self.typed_array_live_length_direct(target) else {
+            return Ok(());
+        };
+        if index >= len {
+            return Ok(());
+        }
+        let class_name = self
+            .typed_array_runtime_class_name(target)
+            .ok_or_else(|| VmError::TypeError("TypedArray receiver is not initialized".to_string()))?;
+        let buffer = self
+            .typed_array_backing_field_value(target, "buffer")
+            .ok_or_else(|| VmError::TypeError("TypedArray buffer is missing".to_string()))?;
+        let byte_offset = self
+            .typed_array_backing_field_value(target, "byteOffset")
+            .and_then(|value| self.numeric_value_as_usize(value))
+            .unwrap_or(0);
+        let base = byte_offset + index * self.typed_array_bytes_per_element(&class_name) as usize;
+        let number = self.js_to_number_with_context(value, caller_task, caller_module)?;
+        match class_name.as_str() {
+            "Uint8Array" | "TypedArray" => {
+                self.set_array_buffer_byte(buffer, base, number as i64 as u8)?;
+            }
+            "Uint8ClampedArray" => {
+                let clamped = number.round().clamp(0.0, 255.0) as u8;
+                self.set_array_buffer_byte(buffer, base, clamped)?;
+            }
+            "Int8Array" => {
+                self.set_array_buffer_byte(buffer, base, (number as i64 as i8) as u8)?;
+            }
+            "Uint16Array" => {
+                for (offset, byte) in (number as i64 as u16).to_le_bytes().into_iter().enumerate() {
+                    self.set_array_buffer_byte(buffer, base + offset, byte)?;
+                }
+            }
+            "Int16Array" => {
+                for (offset, byte) in (number as i64 as i16).to_le_bytes().into_iter().enumerate() {
+                    self.set_array_buffer_byte(buffer, base + offset, byte)?;
+                }
+            }
+            "Int32Array" => {
+                for (offset, byte) in (number as i64 as i32).to_le_bytes().into_iter().enumerate() {
+                    self.set_array_buffer_byte(buffer, base + offset, byte)?;
+                }
+            }
+            "Uint32Array" => {
+                for (offset, byte) in (number as i128 as u32).to_le_bytes().into_iter().enumerate() {
+                    self.set_array_buffer_byte(buffer, base + offset, byte)?;
+                }
+            }
+            "Float32Array" => {
+                for (offset, byte) in (number as f32).to_le_bytes().into_iter().enumerate() {
+                    self.set_array_buffer_byte(buffer, base + offset, byte)?;
+                }
+            }
+            "Float16Array" => {
+                for (offset, byte) in (number.round() as i64 as i16 as u16)
+                    .to_le_bytes()
+                    .into_iter()
+                    .enumerate()
+                {
+                    self.set_array_buffer_byte(buffer, base + offset, byte)?;
+                }
+            }
+            "Float64Array" => {
+                for (offset, byte) in number.to_le_bytes().into_iter().enumerate() {
+                    self.set_array_buffer_byte(buffer, base + offset, byte)?;
+                }
+            }
+            "BigInt64Array" => {
+                for (offset, byte) in (number as i64).to_le_bytes().into_iter().enumerate() {
+                    self.set_array_buffer_byte(buffer, base + offset, byte)?;
+                }
+            }
+            "BigUint64Array" => {
+                for (offset, byte) in (number as i128 as u64).to_le_bytes().into_iter().enumerate()
+                {
+                    self.set_array_buffer_byte(buffer, base + offset, byte)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn data_view_storage(&self, target: Value) -> Result<(Value, usize, usize), VmError> {
+        let buffer = self
+            .get_own_js_property_value_by_name(target, "buffer")
+            .ok_or_else(|| VmError::TypeError("DataView buffer is missing".to_string()))?;
+        let byte_offset = self
+            .get_own_js_property_value_by_name(target, "byteOffset")
+            .and_then(|value| self.numeric_value_as_usize(value))
+            .unwrap_or(0);
+        let byte_length = self
+            .get_own_js_property_value_by_name(target, "byteLength")
+            .and_then(|value| self.numeric_value_as_usize(value))
+            .unwrap_or(0);
+        Ok((buffer, byte_offset, byte_length))
+    }
+
+    fn data_view_validate_access(
+        &self,
+        target: Value,
+        offset: usize,
+        width: usize,
+        little_endian: Option<bool>,
+        task: &Arc<Task>,
+    ) -> Result<(Value, usize), VmError> {
+        if matches!(little_endian, Some(false)) {
+            return Err(self.raise_task_builtin_error_with_code(
+                task,
+                "Error",
+                "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR",
+                "Big-endian DataView operations are not implemented",
+            ));
+        }
+        let (buffer, byte_offset, byte_length) = self.data_view_storage(target)?;
+        if offset.saturating_add(width) > byte_length {
+            return Err(self.raise_task_builtin_error_with_code(
+                task,
+                "RangeError",
+                "ERR_OUT_OF_RANGE",
+                "DataView access is out of range",
+            ));
+        }
+        Ok((buffer, byte_offset + offset))
+    }
+
     fn typed_array_index_value_direct(&self, target: Value, index: usize) -> Option<Value> {
         let debug_typed_array = std::env::var("RAYA_DEBUG_TYPED_ARRAY_PROP").is_ok();
         let len = self.typed_array_live_length_direct(target)?;
@@ -12959,14 +14320,20 @@ impl<'a> Interpreter<'a> {
                     .map(|byte| Value::i32(byte as i32))
             }
             "Int8Array" => {
-                let inner = self.own_exotic_state_value(target, "_u8")?;
-                let value = self.typed_array_index_value_direct(inner, index)?;
-                let raw = value.as_i32()?;
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
+                let raw = self.array_buffer_byte_at(buffer, byte_offset + index)? as i32;
                 Some(Value::i32(if raw > 127 { raw - 256 } else { raw }))
             }
             "Uint8ClampedArray" => {
-                let inner = self.own_exotic_state_value(target, "_u8")?;
-                self.typed_array_index_value_direct(inner, index)
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
+                self.array_buffer_byte_at(buffer, byte_offset + index)
+                    .map(|byte| Value::i32(byte as i32))
             }
             "Uint16Array" => {
                 let buffer = self.typed_array_backing_field_value(target, "buffer")?;
@@ -12979,9 +14346,15 @@ impl<'a> Interpreter<'a> {
                 Some(Value::i32(b0 | (b1 << 8)))
             }
             "Int16Array" => {
-                let inner = self.own_exotic_state_value(target, "_u16")?;
-                let value = self.typed_array_index_value_direct(inner, index)?;
-                let raw = value.as_i32()?;
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
+                let base = byte_offset + (index << 1);
+                let raw = i16::from_le_bytes([
+                    self.array_buffer_byte_at(buffer, base)?,
+                    self.array_buffer_byte_at(buffer, base + 1)?,
+                ]) as i32;
                 Some(Value::i32(if raw > 32767 { raw - 65536 } else { raw }))
             }
             "Int32Array" => {
@@ -12999,30 +14372,47 @@ impl<'a> Interpreter<'a> {
                 Some(Value::i32(i32::from_le_bytes(bytes)))
             }
             "Uint32Array" => {
-                let inner = self.own_exotic_state_value(target, "_i32")?;
-                let value = self.typed_array_index_value_direct(inner, index)?;
-                let raw = value.as_i32()?;
-                if raw < 0 {
-                    Some(Value::f64(raw as f64 + 4294967296.0))
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
+                let base = byte_offset + (index << 2);
+                let raw = u32::from_le_bytes([
+                    self.array_buffer_byte_at(buffer, base)?,
+                    self.array_buffer_byte_at(buffer, base + 1)?,
+                    self.array_buffer_byte_at(buffer, base + 2)?,
+                    self.array_buffer_byte_at(buffer, base + 3)?,
+                ]);
+                if raw <= i32::MAX as u32 {
+                    Some(Value::i32(raw as i32))
                 } else {
-                    Some(Value::i32(raw))
+                    Some(Value::f64(raw as f64))
                 }
             }
             "Float32Array" => {
-                let inner = self.own_exotic_state_value(target, "_i32")?;
-                let value = self.typed_array_index_value_direct(inner, index)?;
-                value
-                    .as_i32()
-                    .map(|raw| Value::f64(raw as f64))
-                    .or(Some(value))
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
+                let base = byte_offset + (index << 2);
+                Some(Value::f64(f32::from_le_bytes([
+                    self.array_buffer_byte_at(buffer, base)?,
+                    self.array_buffer_byte_at(buffer, base + 1)?,
+                    self.array_buffer_byte_at(buffer, base + 2)?,
+                    self.array_buffer_byte_at(buffer, base + 3)?,
+                ]) as f64))
             }
             "Float16Array" => {
-                let inner = self.own_exotic_state_value(target, "_u16")?;
-                let value = self.typed_array_index_value_direct(inner, index)?;
-                value
-                    .as_i32()
-                    .map(|raw| Value::f64(raw as f64))
-                    .or(Some(value))
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
+                let base = byte_offset + (index << 1);
+                let raw = u16::from_le_bytes([
+                    self.array_buffer_byte_at(buffer, base)?,
+                    self.array_buffer_byte_at(buffer, base + 1)?,
+                ]);
+                Some(Value::f64(raw as f64))
             }
             "Float64Array" => {
                 let buffer = self.typed_array_backing_field_value(target, "buffer")?;
@@ -13043,8 +14433,22 @@ impl<'a> Interpreter<'a> {
                 Some(Value::f64(f64::from_le_bytes(bytes)))
             }
             "BigInt64Array" | "BigUint64Array" => {
-                let inner = self.own_exotic_state_value(target, "_f64")?;
-                self.typed_array_index_value_direct(inner, index)
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
+                let base = byte_offset + (index << 3);
+                let raw = u64::from_le_bytes([
+                    self.array_buffer_byte_at(buffer, base)?,
+                    self.array_buffer_byte_at(buffer, base + 1)?,
+                    self.array_buffer_byte_at(buffer, base + 2)?,
+                    self.array_buffer_byte_at(buffer, base + 3)?,
+                    self.array_buffer_byte_at(buffer, base + 4)?,
+                    self.array_buffer_byte_at(buffer, base + 5)?,
+                    self.array_buffer_byte_at(buffer, base + 6)?,
+                    self.array_buffer_byte_at(buffer, base + 7)?,
+                ]);
+                Some(Value::f64(raw as f64))
             }
             "TypedArray" => {
                 let buffer = self.typed_array_backing_field_value(target, "buffer")?;
@@ -13172,7 +14576,14 @@ impl<'a> Interpreter<'a> {
                 return Ok(Some(true));
             }
         }
-        Ok(Some(false))
+        self.typed_array_set_value_direct_with_context(
+            target,
+            index,
+            value,
+            caller_task,
+            caller_module,
+        )?;
+        Ok(Some(true))
     }
 
     fn typed_array_backing_field_value(&self, target: Value, field_name: &str) -> Option<Value> {
@@ -13381,6 +14792,9 @@ impl<'a> Interpreter<'a> {
     }
 
     fn own_nominal_method_value(&self, target: Value, key: &str) -> Option<Value> {
+        if self.builtin_registry_claims_instance_member(target, key) {
+            return None;
+        }
         let obj_ptr = checked_object_ptr(target)?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
         let method_slot = obj.nominal_type_id_usize().and_then(|ntid| {
@@ -13432,6 +14846,24 @@ impl<'a> Interpreter<'a> {
                 })
         })?;
         self.bound_method_value_for_slot(target, method_slot).ok()
+    }
+
+    fn builtin_registry_claims_instance_member(&self, target: Value, key: &str) -> bool {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return false;
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let Some(ntid) = obj.nominal_type_id_usize() else {
+            return false;
+        };
+        let classes = self.classes.read();
+        let Some(class) = classes.get_class(ntid) else {
+            return false;
+        };
+        let Some(descriptor) = BuiltinRegistry::shared().type_descriptor(&class.name) else {
+            return false;
+        };
+        descriptor.instance_methods.contains_key(key) || descriptor.instance_properties.contains_key(key)
     }
 
     pub(in crate::vm::interpreter) fn nominal_instance_uses_runtime_publication(
@@ -13862,6 +15294,12 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> Option<JsOwnPropertyShape> {
+        if self.metadata_descriptor_property(target, key).is_none()
+            && self.metadata_data_property_value(target, key).is_none()
+            && self.ordinary_own_property(target, key).is_none()
+        {
+            self.ensure_published_builtin_prototype_member(target, key);
+        }
         if let Some(kind) = self.exotic_adapter_kind(target) {
             if let Some(shape) = self.exotic_own_property_shape(kind, target, key) {
                 return Some(shape);
@@ -14294,6 +15732,9 @@ impl<'a> Interpreter<'a> {
                 if self.nominal_instance_uses_runtime_publication(obj_val) {
                     return None;
                 }
+                if self.builtin_registry_claims_instance_member(obj_val, field_name) {
+                    return None;
+                }
                 if let Some(method_slot) =
                     self.nominal_method_slot_by_name(nominal_type_id, field_name)
                 {
@@ -14342,6 +15783,9 @@ impl<'a> Interpreter<'a> {
             let classes = self.classes.read();
             if let Some(class) = classes.get_class(ntid) {
                 if class.runtime_instance_publication {
+                    return false;
+                }
+                if self.builtin_registry_claims_instance_member(target, key) {
                     return false;
                 }
                 let has_own_accessor = class.prototype_members.iter().any(|member| {
@@ -14508,6 +15952,12 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
+        if key == "constructor" && checked_callable_ptr(target).is_some() {
+            let ctor_name = self.callable_function_family_name(target).unwrap_or("Function");
+            if let Some(value) = self.ensure_builtin_global_value(ctor_name, caller_task)? {
+                return Ok(Some(value));
+            }
+        }
         if let Some(value) =
             self.try_proxy_get_property_with_invariants(target, key, caller_task, caller_module)?
         {
@@ -15473,7 +16923,10 @@ impl<'a> Interpreter<'a> {
         None
     }
 
-    fn map_handle_from_value(&self, value: Value) -> Result<u64, VmError> {
+    pub(in crate::vm::interpreter) fn map_handle_from_value(
+        &self,
+        value: Value,
+    ) -> Result<u64, VmError> {
         if let Some(handle) = Self::decode_u64_handle(value) {
             return Ok(handle);
         }
@@ -15490,7 +16943,10 @@ impl<'a> Interpreter<'a> {
             .ok_or_else(|| VmError::RuntimeError("Map.mapPtr is not a valid handle".to_string()))
     }
 
-    fn set_handle_from_value(&self, value: Value) -> Result<u64, VmError> {
+    pub(in crate::vm::interpreter) fn set_handle_from_value(
+        &self,
+        value: Value,
+    ) -> Result<u64, VmError> {
         if let Some(handle) = Self::decode_u64_handle(value) {
             return Ok(handle);
         }
@@ -15505,6 +16961,78 @@ impl<'a> Interpreter<'a> {
             .ok_or_else(|| VmError::RuntimeError("Set.setPtr is missing".to_string()))?;
         Self::decode_u64_handle(raw)
             .ok_or_else(|| VmError::RuntimeError("Set.setPtr is not a valid handle".to_string()))
+    }
+
+    fn weak_map_handle_from_value(&self, value: Value) -> Result<u64, VmError> {
+        if let Some(handle) = Self::decode_u64_handle(value) {
+            return Ok(handle);
+        }
+        if let Some(raw) = self.get_own_js_property_value_by_name(value, "weakMapPtr") {
+            return Self::decode_u64_handle(raw).ok_or_else(|| {
+                VmError::RuntimeError("WeakMap.weakMapPtr is not a valid handle".to_string())
+            });
+        }
+        let obj_ptr = unsafe { value.as_ptr::<Object>() }.ok_or_else(|| {
+            VmError::TypeError("Expected WeakMap object or weak map handle".to_string())
+        })?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let field_index = self
+            .get_field_index_for_value(value, "weakMapPtr")
+            .ok_or_else(|| VmError::RuntimeError("WeakMap field 'weakMapPtr' not found".to_string()))?;
+        let raw = obj
+            .get_field(field_index)
+            .ok_or_else(|| VmError::RuntimeError("WeakMap.weakMapPtr is missing".to_string()))?;
+        Self::decode_u64_handle(raw).ok_or_else(|| {
+            VmError::RuntimeError("WeakMap.weakMapPtr is not a valid handle".to_string())
+        })
+    }
+
+    fn weak_set_handle_from_value(&self, value: Value) -> Result<u64, VmError> {
+        if let Some(handle) = Self::decode_u64_handle(value) {
+            return Ok(handle);
+        }
+        if let Some(raw) = self.get_own_js_property_value_by_name(value, "weakSetPtr") {
+            return Self::decode_u64_handle(raw).ok_or_else(|| {
+                VmError::RuntimeError("WeakSet.weakSetPtr is not a valid handle".to_string())
+            });
+        }
+        let obj_ptr = unsafe { value.as_ptr::<Object>() }.ok_or_else(|| {
+            VmError::TypeError("Expected WeakSet object or weak set handle".to_string())
+        })?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let field_index = self
+            .get_field_index_for_value(value, "weakSetPtr")
+            .ok_or_else(|| VmError::RuntimeError("WeakSet field 'weakSetPtr' not found".to_string()))?;
+        let raw = obj
+            .get_field(field_index)
+            .ok_or_else(|| VmError::RuntimeError("WeakSet.weakSetPtr is missing".to_string()))?;
+        Self::decode_u64_handle(raw).ok_or_else(|| {
+            VmError::RuntimeError("WeakSet.weakSetPtr is not a valid handle".to_string())
+        })
+    }
+
+    fn weak_ref_handle_from_value(&self, value: Value) -> Result<u64, VmError> {
+        if let Some(handle) = Self::decode_u64_handle(value) {
+            return Ok(handle);
+        }
+        if let Some(raw) = self.get_own_js_property_value_by_name(value, "weakRefPtr") {
+            return Self::decode_u64_handle(raw).ok_or_else(|| {
+                VmError::RuntimeError("WeakRef.weakRefPtr is not a valid handle".to_string())
+            });
+        }
+        let obj_ptr = unsafe { value.as_ptr::<Object>() }.ok_or_else(|| {
+            VmError::TypeError("Expected WeakRef object or weak ref handle".to_string())
+        })?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let field_index = self
+            .get_field_index_for_value(value, "weakRefPtr")
+            .ok_or_else(|| VmError::RuntimeError("WeakRef field 'weakRefPtr' not found".to_string()))?;
+        let raw = obj
+            .get_field(field_index)
+            .ok_or_else(|| VmError::RuntimeError("WeakRef.weakRefPtr is missing".to_string()))?;
+        Self::decode_u64_handle(raw).ok_or_else(|| {
+            VmError::RuntimeError("WeakRef.weakRefPtr is not a valid handle".to_string())
+        })
     }
 
     pub(in crate::vm::interpreter) fn regexp_handle_from_value(
@@ -16300,7 +17828,11 @@ impl<'a> Interpreter<'a> {
                     collector.push(index.to_string());
                 }
 
-                collector.extend(self.ordinary_dynamic_own_property_keys(target));
+                collector.extend(
+                    self.ordinary_dynamic_own_property_keys(target)
+                        .into_iter()
+                        .filter(|name| !Self::is_typed_array_internal_backing_property_name(name)),
+                );
                 collector.extend(self.metadata_backed_property_names(target));
             }
         }
@@ -16562,6 +18094,42 @@ impl<'a> Interpreter<'a> {
             canonical_name,
         );
         Ok(value)
+    }
+
+    fn intern_global_symbol_value(&self, key: &str) -> Result<Value, VmError> {
+        let symbol_ctor = self.builtin_global_value("Symbol").unwrap_or(Value::null());
+        if let Some(cached) = self.metadata.lock().get_metadata_property(
+            GLOBAL_SYMBOL_REGISTRY_METADATA_KEY,
+            symbol_ctor,
+            key,
+        ) {
+            return Ok(cached);
+        }
+
+        let value = self.alloc_symbol_object(key)?;
+        let key_value = self.alloc_string_value(key);
+        let mut metadata = self.metadata.lock();
+        metadata.define_metadata_property(
+            GLOBAL_SYMBOL_REGISTRY_METADATA_KEY.to_string(),
+            value,
+            symbol_ctor,
+            key.to_string(),
+        );
+        metadata.define_metadata_property(
+            GLOBAL_SYMBOL_KEY_METADATA_KEY.to_string(),
+            key_value,
+            value,
+            "key".to_string(),
+        );
+        Ok(value)
+    }
+
+    fn global_symbol_key_for_value(&self, value: Value) -> Option<String> {
+        self.metadata
+            .lock()
+            .get_metadata_property(GLOBAL_SYMBOL_KEY_METADATA_KEY, value, "key")
+            .and_then(|raw| unsafe { raw.as_ptr::<RayaString>() })
+            .map(|ptr| unsafe { &*ptr.as_ptr() }.data.clone())
     }
 
     pub(in crate::vm::interpreter) fn cached_iterator_next_method(
@@ -16877,6 +18445,71 @@ impl<'a> Interpreter<'a> {
         module: &Module,
     ) -> Option<OpcodeResult> {
         match native_id {
+            id if id == crate::compiler::native_id::OBJECT_CREATE => {
+                if args.is_empty() || args.len() > 2 {
+                    return Some(OpcodeResult::Error(VmError::TypeError(
+                        "Object.create requires 1-2 arguments".to_string(),
+                    )));
+                }
+                let prototype = args[0];
+                if !prototype.is_null() && !self.is_js_object_value(prototype) {
+                    return Some(OpcodeResult::Error(VmError::TypeError(
+                        "Object.create prototype must be an object or null".to_string(),
+                    )));
+                }
+                let target = match self.alloc_plain_object() {
+                    Ok(value) => value,
+                    Err(error) => return Some(OpcodeResult::Error(error)),
+                };
+                self.set_explicit_object_prototype(target, prototype);
+
+                if let Some(descriptors_obj) = args.get(1).copied() {
+                    if !descriptors_obj.is_null() && !descriptors_obj.is_undefined() {
+                        if let Some(desc_ptr) = unsafe { descriptors_obj.as_ptr::<Object>() } {
+                            let desc_obj = unsafe { &*desc_ptr.as_ptr() };
+                            let field_names = desc_obj
+                                .nominal_type_id_usize()
+                                .and_then(|nominal_type_id| {
+                                    let metadata = self.class_metadata.read();
+                                    metadata
+                                        .get(nominal_type_id)
+                                        .map(|m| m.field_names.clone())
+                                        .filter(|names| !names.is_empty())
+                                })
+                                .or_else(|| self.layout_field_names_for_object(desc_obj))
+                                .unwrap_or_default();
+                            for (idx, field_name) in field_names.into_iter().enumerate() {
+                                if field_name.is_empty() {
+                                    continue;
+                                }
+                                if let Some(descriptor_val) = desc_obj.get_field(idx) {
+                                    if let Err(error) =
+                                        self.apply_descriptor_to_target_with_context(
+                                            target,
+                                            &field_name,
+                                            descriptor_val,
+                                            task,
+                                            module,
+                                        )
+                                    {
+                                        return Some(OpcodeResult::Error(error));
+                                    }
+                                }
+                            }
+                        } else {
+                            return Some(OpcodeResult::Error(VmError::TypeError(
+                                "Object.create descriptors must be an object".to_string(),
+                            )));
+                        }
+                    }
+                }
+
+                Some(
+                    stack
+                        .push(target)
+                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue),
+                )
+            }
             id if id == crate::compiler::native_id::OBJECT_DEFINE_PROPERTY => {
                 if args.len() < 3 {
                     return Some(OpcodeResult::Error(VmError::TypeError(
@@ -16958,6 +18591,22 @@ impl<'a> Interpreter<'a> {
                         },
                         Err(error) => return Some(OpcodeResult::Error(error)),
                     },
+                };
+                Some(
+                    stack
+                        .push(value)
+                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue),
+                )
+            }
+            id if id == crate::compiler::native_id::OBJECT_KEYS => {
+                if args.is_empty() {
+                    return Some(OpcodeResult::Error(VmError::TypeError(
+                        "Object.keys requires 1 argument".to_string(),
+                    )));
+                }
+                let value = match self.object_keys_result_value(args[0]) {
+                    Ok(value) => value,
+                    Err(error) => return Some(OpcodeResult::Error(error)),
                 };
                 Some(
                     stack
@@ -17173,6 +18822,77 @@ impl<'a> Interpreter<'a> {
                 Some(
                     stack
                         .push(iterator)
+                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue),
+                )
+            }
+            id if id == crate::compiler::native_id::ITERATOR_FROM_ARRAY => {
+                if args.len() != 1 {
+                    return Some(OpcodeResult::Error(VmError::TypeError(
+                        "Iterator.fromArray requires 1 argument".to_string(),
+                    )));
+                }
+                let iterator = match self.array_iterator_object(
+                    args[0],
+                    crate::vm::interpreter::handlers::array::ArrayIteratorKind::Value,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return Some(OpcodeResult::Error(error)),
+                };
+                Some(
+                    stack
+                        .push(iterator)
+                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue),
+                )
+            }
+            id if id == crate::compiler::native_id::ARRAY_FROM
+                || id == crate::vm::builtin::array::FROM =>
+            {
+                if !(1..=3).contains(&args.len()) {
+                    return Some(OpcodeResult::Error(VmError::TypeError(
+                        format!("Array.from expects 1-3 arguments, got {}", args.len()),
+                    )));
+                }
+                let constructor = self
+                    .builtin_global_value("Array")
+                    .unwrap_or(Value::undefined());
+                let map_fn_provided = args.len() >= 2;
+                let map_fn = if map_fn_provided {
+                    args[1]
+                } else {
+                    Value::undefined()
+                };
+                let this_arg = args.get(2).copied();
+                let array = match self.array_from_runtime_call(
+                    constructor,
+                    args[0],
+                    map_fn_provided,
+                    map_fn,
+                    this_arg,
+                    task,
+                    module,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return Some(OpcodeResult::Error(error)),
+                };
+                Some(
+                    stack
+                        .push(array)
+                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue),
+                )
+            }
+            id if id == crate::compiler::native_id::ITERATOR_TO_ARRAY => {
+                if args.len() != 1 {
+                    return Some(OpcodeResult::Error(VmError::TypeError(
+                        "Iterator.toArray requires 0 arguments".to_string(),
+                    )));
+                }
+                let array = self.alloc_array_value_from_values(&[]);
+                if let Err(error) = self.append_iterable_to_array(array, args[0], task, module) {
+                    return Some(OpcodeResult::Error(error));
+                }
+                Some(
+                    stack
+                        .push(array)
                         .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue),
                 )
             }
@@ -17473,7 +19193,6 @@ impl<'a> Interpreter<'a> {
                         "Unknown KernelCall op id {kernel_op_id:#06x}"
                     )));
                 };
-
                 fn dispatch_native_kernel(
                     this: &mut Interpreter<'_>,
                     stack: &mut Stack,
@@ -17482,20 +19201,38 @@ impl<'a> Interpreter<'a> {
                     native_id: u16,
                     native_argc: u8,
                 ) -> OpcodeResult {
+                    let boxed_date_receiver = if crate::vm::builtin::is_date_setter(native_id) {
+                        stack
+                            .depth()
+                            .checked_sub(native_argc as usize)
+                            .and_then(|pos| stack.peek_at(pos).ok())
+                            .filter(|receiver| {
+                                this.boxed_primitive_internal_value(*receiver, "Date")
+                                    .is_some()
+                            })
+                    } else {
+                        None
+                    };
                     let fake_code = [
                         (native_id & 0x00FF) as u8,
                         ((native_id >> 8) & 0x00FF) as u8,
                         native_argc,
                     ];
                     let mut nested_ip = 0usize;
-                    this.exec_native_ops(
+                    let result = this.exec_native_ops(
                         stack,
                         &mut nested_ip,
                         &fake_code,
                         module,
                         task,
                         Opcode::Nop,
-                    )
+                    );
+                    if matches!(result, OpcodeResult::Continue) {
+                        if let Some(receiver) = boxed_date_receiver {
+                            this.sync_boxed_date_setter_result(stack, receiver, native_id);
+                        }
+                    }
+                    result
                 }
 
                 fn dispatch_type_kernel(
@@ -17844,7 +19581,7 @@ impl<'a> Interpreter<'a> {
                                 stack,
                                 module,
                                 task,
-                                crate::compiler::native_id::FUNCTION_CALL_HELPER,
+                                crate::compiler::native_id::FUNCTION_APPLY_HELPER,
                                 3,
                             )
                         }
@@ -18354,6 +20091,108 @@ impl<'a> Interpreter<'a> {
                             Err(e) => return OpcodeResult::Error(e),
                         };
                         if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::SYMBOL_ITERATOR => {
+                        if !args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Symbol.iterator expects 0 arguments".to_string(),
+                            ));
+                        }
+                        let value = match self.intern_well_known_symbol_value("iterator") {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::SYMBOL_TO_STRING_TAG => {
+                        if !args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Symbol.toStringTag expects 0 arguments".to_string(),
+                            ));
+                        }
+                        let value = match self.intern_well_known_symbol_value("toStringTag") {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::SYMBOL_FOR => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Symbol.for requires 1 argument".to_string(),
+                            ));
+                        }
+                        let key = match self.js_function_argument_to_string(args[0], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = match self.intern_global_symbol_value(&key) {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::SYMBOL_KEY_FOR => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Symbol.keyFor requires 1 argument".to_string(),
+                            ));
+                        }
+                        if !self.is_symbol_value(args[0]) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Symbol.keyFor expects a Symbol".to_string(),
+                            ));
+                        }
+                        let value = self
+                            .global_symbol_key_for_value(args[0])
+                            .map(|key| self.alloc_string_value(&key))
+                            .unwrap_or(Value::undefined());
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::SYMBOL_TO_STRING
+                        || id == crate::compiler::native_id::SYMBOL_VALUE_OF =>
+                    {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Symbol method requires a receiver".to_string(),
+                            ));
+                        }
+                        if !self.is_symbol_value(args[0]) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Symbol method receiver must be a Symbol".to_string(),
+                            ));
+                        }
+                        let key = self
+                            .get_field_value_by_name(args[0], "key")
+                            .and_then(|value| unsafe { value.as_ptr::<RayaString>() })
+                            .map(|ptr| unsafe { &*ptr.as_ptr() }.data.clone())
+                            .unwrap_or_default();
+                        let result = if id == crate::compiler::native_id::SYMBOL_TO_STRING {
+                            self.alloc_string_value(&format!("Symbol({key})"))
+                        } else {
+                            self.alloc_string_value(&key)
+                        };
+                        if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
@@ -18993,6 +20832,82 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    id if id == crate::compiler::native_id::OBJECT_HAS_OWN_PROPERTY => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.hasOwnProperty requires 1 argument".to_string(),
+                            ));
+                        }
+                        let target = if self.is_js_object_value(args[0]) {
+                            args[0]
+                        } else if let Some(boxed) = match self.box_js_this_primitive(args[0]) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        } {
+                            boxed
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.hasOwnProperty called on null or undefined".to_string(),
+                            ));
+                        };
+                        let (Some(key_str), _) = (match self.property_key_parts_with_context(
+                            args[1],
+                            "Object.hasOwnProperty",
+                            task,
+                            module,
+                        ) {
+                            Ok(parts) => parts,
+                            Err(error) => return OpcodeResult::Error(error),
+                        }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot convert property key to string".to_string(),
+                            ));
+                        };
+                        let result = self.has_own_property_via_js_semantics(target, &key_str);
+                        if let Err(error) = stack.push(Value::bool(result)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_PROPERTY_IS_ENUMERABLE => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.propertyIsEnumerable requires 1 argument".to_string(),
+                            ));
+                        }
+                        let target = if self.is_js_object_value(args[0]) {
+                            args[0]
+                        } else if let Some(boxed) = match self.box_js_this_primitive(args[0]) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        } {
+                            boxed
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.propertyIsEnumerable called on null or undefined"
+                                    .to_string(),
+                            ));
+                        };
+                        let (Some(key_str), _) = (match self.property_key_parts_with_context(
+                            args[1],
+                            "Object.propertyIsEnumerable",
+                            task,
+                            module,
+                        ) {
+                            Ok(parts) => parts,
+                            Err(error) => return OpcodeResult::Error(error),
+                        }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot convert property key to string".to_string(),
+                            ));
+                        };
+                        let result = self.has_own_property_via_js_semantics(target, &key_str)
+                            && self.is_property_enumerable(target, &key_str);
+                        if let Err(error) = stack.push(Value::bool(result)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
 
                     id if id == crate::compiler::native_id::OBJECT_BIND_SCRIPT_GLOBAL => {
                         if args.len() != 2 && args.len() != 3 {
@@ -19349,6 +21264,33 @@ impl<'a> Interpreter<'a> {
                                     type_info,
                                     args.len()
                                 );
+                                if let Some(receiver) = args.get(1).copied() {
+                                    let receiver_type = if receiver.is_null() {
+                                        "null"
+                                    } else if receiver.is_undefined() {
+                                        "undefined"
+                                    } else if self.promise_handle_from_value(receiver).is_some() {
+                                        "PromiseHandle"
+                                    } else if let Some(obj_ptr) = checked_object_ptr(receiver) {
+                                        let obj = unsafe { &*obj_ptr.as_ptr() };
+                                        if obj.generator_state.is_some() {
+                                            "GeneratorObject"
+                                        } else if obj.is_callable() {
+                                            "Object(callable)"
+                                        } else {
+                                            "Object"
+                                        }
+                                    } else if checked_array_ptr(receiver).is_some() {
+                                        "Array"
+                                    } else {
+                                        "other"
+                                    };
+                                    eprintln!(
+                                        "[CALL_HELPER] receiver={:#x} receiver_type={}",
+                                        receiver.raw(),
+                                        receiver_type
+                                    );
+                                }
                                 let current_func_id = task.current_func_id();
                                 let current_func_name = module
                                     .functions
@@ -19380,10 +21322,7 @@ impl<'a> Interpreter<'a> {
                         }
                         let this_arg = args.get(1).copied().unwrap_or(Value::undefined());
                         let rest_args = if args.len() >= 3 {
-                            match self.collect_apply_arguments(args[2], task, module) {
-                                Ok(values) => values,
-                                Err(_) => args[2..].to_vec(),
-                            }
+                            args[2..].to_vec()
                         } else {
                             Vec::new()
                         };
@@ -19416,12 +21355,9 @@ impl<'a> Interpreter<'a> {
                                 };
                                 if let Some(ref cd) = co.callable {
                                     match &cd.kind {
-                                        CallableKind::BoundNative {
-                                            native_id,
-                                            receiver,
-                                        } => {
+                                        CallableKind::BoundNative { native_id, .. } => {
                                             return self.exec_bound_native_method_call(
-                                                stack, *receiver, *native_id, rest_args, module,
+                                                stack, this_arg, *native_id, rest_args, module,
                                                 task,
                                             );
                                         }
@@ -19475,12 +21411,9 @@ impl<'a> Interpreter<'a> {
                                 };
                                 if let Some(ref cd) = co.callable {
                                     match &cd.kind {
-                                        CallableKind::BoundNative {
-                                            native_id,
-                                            receiver,
-                                        } => {
+                                        CallableKind::BoundNative { native_id, .. } => {
                                             return self.exec_bound_native_method_call(
-                                                stack, *receiver, *native_id, apply_args, module,
+                                                stack, this_arg, *native_id, apply_args, module,
                                                 task,
                                             );
                                         }
@@ -19521,10 +21454,7 @@ impl<'a> Interpreter<'a> {
                         }
                         let this_arg = args.get(1).copied().unwrap_or(Value::undefined());
                         let bound_args = if args.len() >= 3 {
-                            match self.collect_apply_arguments(args[2], task, module) {
-                                Ok(values) => values,
-                                Err(error) => return OpcodeResult::Error(error),
-                            }
+                            args[2..].to_vec()
                         } else {
                             Vec::new()
                         };
@@ -19891,6 +21821,21 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::vm::builtin::array::NEW => {
+                        let new_target = self
+                            .builtin_global_value("Array")
+                            .unwrap_or(Value::undefined());
+                        let value =
+                            match self.construct_builtin_array(new_target, &args, task, module) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     // Buffer native calls
                     id if id == buffer::NEW => {
                         let size = match self.js_usize_arg_with_context(args[0], task, module) {
@@ -20223,6 +22168,579 @@ impl<'a> Interpreter<'a> {
 
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == array_buffer::NEW || id == array_buffer::SHARED_NEW => {
+                        let byte_length = if args.is_empty() {
+                            0
+                        } else {
+                            match self.js_usize_arg_with_context(args[0], task, module) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        };
+                        let class_name = if id == array_buffer::SHARED_NEW {
+                            "SharedArrayBuffer"
+                        } else {
+                            "ArrayBuffer"
+                        };
+                        let value = match self.alloc_array_buffer_like_value(class_name, byte_length)
+                        {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == array_buffer::SLICE => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "ArrayBuffer.slice requires a receiver".to_string(),
+                            ));
+                        }
+                        let buffer = args[0];
+                        let total_len = self.array_buffer_byte_length(buffer).unwrap_or(0);
+                        let start = if arg_count >= 2 {
+                            match self.js_usize_arg_with_context(args[1], task, module) {
+                                Ok(value) => value.min(total_len),
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            0
+                        };
+                        let end = if arg_count >= 3 {
+                            match self.js_usize_arg_with_context(args[2], task, module) {
+                                Ok(value) => value.min(total_len),
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            total_len
+                        };
+                        let slice_len = end.saturating_sub(start);
+                        let class_name = self
+                            .nominal_class_name_for_value(buffer)
+                            .unwrap_or_else(|| "ArrayBuffer".to_string());
+                        let sliced =
+                            match self.alloc_array_buffer_like_value(class_name.as_str(), slice_len)
+                            {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                        for index in 0..slice_len {
+                            let byte = self.array_buffer_byte_at(buffer, start + index).unwrap_or(0);
+                            if let Err(error) =
+                                self.set_array_buffer_byte(sliced, index, byte)
+                            {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        if let Err(error) = stack.push(sliced) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == array_buffer::BYTE_LENGTH => {
+                        let byte_length = args
+                            .first()
+                            .and_then(|value| self.array_buffer_byte_length(*value))
+                            .unwrap_or(0);
+                        if let Err(error) = stack.push(self.usize_as_runtime_number(byte_length)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == data_view::NEW => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "DataView constructor requires a buffer".to_string(),
+                            ));
+                        }
+                        let buffer = args[0];
+                        if !self
+                            .nominal_class_name_for_value(buffer)
+                            .as_deref()
+                            .is_some_and(|name| matches!(name, "ArrayBuffer" | "SharedArrayBuffer"))
+                        {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                "DataView constructor expects an ArrayBuffer-like value",
+                            ));
+                        }
+                        let total_len = self.array_buffer_byte_length(buffer).unwrap_or(0);
+                        let byte_offset = if arg_count >= 2 {
+                            match self.js_usize_arg_with_context(args[1], task, module) {
+                                Ok(value) => value.min(total_len),
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            0
+                        };
+                        let byte_length = if arg_count >= 3 {
+                            match self.js_usize_arg_with_context(args[2], task, module) {
+                                Ok(value) => value.min(total_len.saturating_sub(byte_offset)),
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            total_len.saturating_sub(byte_offset)
+                        };
+                        let value =
+                            match self.alloc_data_view_value(buffer, byte_offset, byte_length) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == data_view::BUFFER
+                        || id == data_view::BYTE_LENGTH
+                        || id == data_view::BYTE_OFFSET =>
+                    {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "DataView accessor requires a receiver".to_string(),
+                            ));
+                        }
+                        let key = match id {
+                            id if id == data_view::BUFFER => "buffer",
+                            id if id == data_view::BYTE_LENGTH => "byteLength",
+                            _ => "byteOffset",
+                        };
+                        let value = self
+                            .get_own_js_property_value_by_name(args[0], key)
+                            .unwrap_or(Value::undefined());
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if matches!(
+                        id,
+                        typed_array::GENERIC_NEW
+                            | typed_array::UINT8_NEW
+                            | typed_array::UINT8_CLAMPED_NEW
+                            | typed_array::INT8_NEW
+                            | typed_array::UINT16_NEW
+                            | typed_array::INT16_NEW
+                            | typed_array::INT32_NEW
+                            | typed_array::UINT32_NEW
+                            | typed_array::FLOAT32_NEW
+                            | typed_array::FLOAT16_NEW
+                            | typed_array::FLOAT64_NEW
+                            | typed_array::BIGINT64_NEW
+                            | typed_array::BIGUINT64_NEW
+                    ) =>
+                    {
+                        let class_name = match id {
+                            id if id == typed_array::GENERIC_NEW => "TypedArray",
+                            id if id == typed_array::UINT8_NEW => "Uint8Array",
+                            id if id == typed_array::UINT8_CLAMPED_NEW => "Uint8ClampedArray",
+                            id if id == typed_array::INT8_NEW => "Int8Array",
+                            id if id == typed_array::UINT16_NEW => "Uint16Array",
+                            id if id == typed_array::INT16_NEW => "Int16Array",
+                            id if id == typed_array::INT32_NEW => "Int32Array",
+                            id if id == typed_array::UINT32_NEW => "Uint32Array",
+                            id if id == typed_array::FLOAT32_NEW => "Float32Array",
+                            id if id == typed_array::FLOAT16_NEW => "Float16Array",
+                            id if id == typed_array::FLOAT64_NEW => "Float64Array",
+                            id if id == typed_array::BIGINT64_NEW => "BigInt64Array",
+                            _ => "BigUint64Array",
+                        };
+                        let value = match self
+                            .typed_array_construct_from_args(class_name, &args, task, module)
+                        {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == typed_array::GET => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "TypedArray.get requires an index".to_string(),
+                            ));
+                        }
+                        let index = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = match self
+                            .typed_array_index_value_with_context(args[0], index, task, module)
+                        {
+                            Ok(Some(value)) => value,
+                            Ok(None) => Value::undefined(),
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == typed_array::SET => {
+                        if args.len() < 3 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "TypedArray.set requires an index and value".to_string(),
+                            ));
+                        }
+                        let index = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = self.typed_array_set_value_direct_with_context(
+                            args[0], index, args[2], task, module,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(Value::null()) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if matches!(
+                        id,
+                        typed_array::BUFFER
+                            | typed_array::BYTE_LENGTH
+                            | typed_array::BYTE_OFFSET
+                            | typed_array::LENGTH
+                    ) =>
+                    {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "TypedArray accessor requires a receiver".to_string(),
+                            ));
+                        }
+                        let key = match id {
+                            id if id == typed_array::BUFFER => "buffer",
+                            id if id == typed_array::BYTE_LENGTH => "byteLength",
+                            id if id == typed_array::BYTE_OFFSET => "byteOffset",
+                            _ => "length",
+                        };
+                        let value = match self
+                            .typed_array_own_property_value_with_context(args[0], key, task, module)
+                        {
+                            Ok(Some(value)) => value,
+                            Ok(None) => Value::undefined(),
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if matches!(
+                        id,
+                        data_view::GET_UINT8
+                            | data_view::SET_UINT8
+                            | data_view::GET_INT8
+                            | data_view::SET_INT8
+                            | data_view::GET_INT32
+                            | data_view::SET_INT32
+                            | data_view::GET_UINT32
+                            | data_view::SET_UINT32
+                            | data_view::GET_FLOAT64
+                            | data_view::SET_FLOAT64
+                    ) =>
+                    {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "DataView method requires an offset".to_string(),
+                            ));
+                        }
+                        let offset = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let little_endian = match id {
+                            id if matches!(
+                                id,
+                                data_view::GET_INT32
+                                    | data_view::SET_INT32
+                                    | data_view::GET_UINT32
+                                    | data_view::SET_UINT32
+                                    | data_view::GET_FLOAT64
+                                    | data_view::SET_FLOAT64
+                            ) =>
+                            {
+                                let arg_index = if matches!(
+                                    id,
+                                    data_view::SET_INT32
+                                        | data_view::SET_UINT32
+                                        | data_view::SET_FLOAT64
+                                ) {
+                                    3
+                                } else {
+                                    2
+                                };
+                                if arg_count > arg_index {
+                                    Some(args[arg_index].is_truthy())
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        let width = match id {
+                            id if matches!(id, data_view::GET_UINT8 | data_view::SET_UINT8 | data_view::GET_INT8 | data_view::SET_INT8) => 1,
+                            id if matches!(id, data_view::GET_INT32 | data_view::SET_INT32 | data_view::GET_UINT32 | data_view::SET_UINT32) => 4,
+                            _ => 8,
+                        };
+                        let (buffer, absolute) = match self.data_view_validate_access(
+                            args[0],
+                            offset,
+                            width,
+                            little_endian,
+                            task,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        match id {
+                            id if id == data_view::GET_UINT8 => {
+                                if let Err(error) = stack.push(Value::i32(
+                                    self.array_buffer_byte_at(buffer, absolute).unwrap_or(0) as i32,
+                                )) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            id if id == data_view::SET_UINT8 => {
+                                let value = match self.js_i32_arg_with_context(args[2], task, module) {
+                                    Ok(value) => value as u8,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                if let Err(error) = self.set_array_buffer_byte(buffer, absolute, value) {
+                                    return OpcodeResult::Error(error);
+                                }
+                                if let Err(error) = stack.push(Value::null()) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            id if id == data_view::GET_INT8 => {
+                                let raw = self.array_buffer_byte_at(buffer, absolute).unwrap_or(0) as i32;
+                                let value = if raw > 127 { raw - 256 } else { raw };
+                                if let Err(error) = stack.push(Value::i32(value)) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            id if id == data_view::SET_INT8 => {
+                                let value = match self.js_i32_arg_with_context(args[2], task, module) {
+                                    Ok(value) => value as i8 as u8,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                if let Err(error) = self.set_array_buffer_byte(buffer, absolute, value) {
+                                    return OpcodeResult::Error(error);
+                                }
+                                if let Err(error) = stack.push(Value::null()) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            id if id == data_view::GET_INT32 => {
+                                let value = i32::from_le_bytes([
+                                    self.array_buffer_byte_at(buffer, absolute).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 1).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 2).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 3).unwrap_or(0),
+                                ]);
+                                if let Err(error) = stack.push(Value::i32(value)) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            id if id == data_view::SET_INT32 => {
+                                let value = match self.js_i32_arg_with_context(args[2], task, module) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                for (delta, byte) in value.to_le_bytes().into_iter().enumerate() {
+                                    if let Err(error) = self.set_array_buffer_byte(buffer, absolute + delta, byte) {
+                                        return OpcodeResult::Error(error);
+                                    }
+                                }
+                                if let Err(error) = stack.push(Value::null()) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            id if id == data_view::GET_UINT32 => {
+                                let value = u32::from_le_bytes([
+                                    self.array_buffer_byte_at(buffer, absolute).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 1).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 2).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 3).unwrap_or(0),
+                                ]);
+                                if let Err(error) = stack.push(if value <= i32::MAX as u32 {
+                                    Value::i32(value as i32)
+                                } else {
+                                    Value::f64(value as f64)
+                                }) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            id if id == data_view::SET_UINT32 => {
+                                let value = match self.js_to_number_with_context(args[2], task, module) {
+                                    Ok(value) => value as i128 as u32,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                for (delta, byte) in value.to_le_bytes().into_iter().enumerate() {
+                                    if let Err(error) = self.set_array_buffer_byte(buffer, absolute + delta, byte) {
+                                        return OpcodeResult::Error(error);
+                                    }
+                                }
+                                if let Err(error) = stack.push(Value::null()) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            id if id == data_view::GET_FLOAT64 => {
+                                let value = f64::from_le_bytes([
+                                    self.array_buffer_byte_at(buffer, absolute).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 1).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 2).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 3).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 4).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 5).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 6).unwrap_or(0),
+                                    self.array_buffer_byte_at(buffer, absolute + 7).unwrap_or(0),
+                                ]);
+                                if let Err(error) = stack.push(Value::f64(value)) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            _ => {
+                                let value = match self.js_to_number_with_context(args[2], task, module) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                for (delta, byte) in value.to_le_bytes().into_iter().enumerate() {
+                                    if let Err(error) = self.set_array_buffer_byte(buffer, absolute + delta, byte) {
+                                        return OpcodeResult::Error(error);
+                                    }
+                                }
+                                if let Err(error) = stack.push(Value::null()) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if matches!(
+                        id,
+                        atomics::LOAD
+                            | atomics::STORE
+                            | atomics::ADD
+                            | atomics::COMPARE_EXCHANGE
+                            | atomics::WAIT
+                    ) =>
+                    {
+                        if id == atomics::WAIT {
+                            return OpcodeResult::Error(self.raise_task_builtin_error_with_code(
+                                task,
+                                "Error",
+                                "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR",
+                                "Atomics.wait is not implemented",
+                            ));
+                        }
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Atomics method expects a typed array and index".to_string(),
+                            ));
+                        }
+                        let view = args[0];
+                        if self.typed_array_runtime_class_name(view).as_deref() != Some("Int32Array")
+                        {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                "Atomics currently expects an Int32Array receiver",
+                            ));
+                        }
+                        let index = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let current = match self
+                            .typed_array_index_value_with_context(view, index, task, module)
+                        {
+                            Ok(Some(value)) => value.as_i32().unwrap_or(0),
+                            Ok(None) => 0,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let result = match id {
+                            id if id == atomics::LOAD => current,
+                            id if id == atomics::STORE => {
+                                let value = match self.js_i32_arg_with_context(args[2], task, module) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                if let Err(error) = self.typed_array_set_value_direct_with_context(
+                                    view, index, Value::i32(value), task, module,
+                                ) {
+                                    return OpcodeResult::Error(error);
+                                }
+                                value
+                            }
+                            id if id == atomics::ADD => {
+                                let delta = match self.js_i32_arg_with_context(args[2], task, module) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                let new_value = current.wrapping_add(delta);
+                                if let Err(error) = self.typed_array_set_value_direct_with_context(
+                                    view, index, Value::i32(new_value), task, module,
+                                ) {
+                                    return OpcodeResult::Error(error);
+                                }
+                                current
+                            }
+                            _ => {
+                                let expected = match self.js_i32_arg_with_context(args[2], task, module) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                let replacement = match self.js_i32_arg_with_context(args[3], task, module) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                if current == expected {
+                                    if let Err(error) = self.typed_array_set_value_direct_with_context(
+                                        view, index, Value::i32(replacement), task, module,
+                                    ) {
+                                        return OpcodeResult::Error(error);
+                                    }
+                                }
+                                current
+                            }
+                        };
+                        if let Err(error) = stack.push(Value::i32(result)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == builtin_error::CREATE_RANGE_ERROR => {
+                        let code = if let Some(value) = args.first().copied() {
+                            match value_as_string(value) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            String::new()
+                        };
+                        let message = if let Some(value) = args.get(1).copied() {
+                            match value_as_string(value) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            String::new()
+                        };
+                        let error_value =
+                            self.alloc_builtin_error_with_code_value("RangeError", &code, &message);
+                        if let Err(error) = stack.push(error_value) {
+                            return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
                     }
@@ -20845,6 +23363,280 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    // WeakMap native calls
+                    id if id == weak_map::NEW => {
+                        let weak_map = WeakMapObject::new();
+                        let handle = self.allocate_pinned_handle(weak_map);
+                        let nominal_type_id = match self.ensure_builtin_runtime_class("WeakMap") {
+                            Some(id) => id,
+                            None => {
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "Builtin class 'WeakMap' not found".to_string(),
+                                ))
+                            }
+                        };
+                        let value = match self.alloc_nominal_instance_value(nominal_type_id) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = self.define_data_property_on_target(
+                            value,
+                            "weakMapPtr",
+                            Value::u64(handle),
+                            true,
+                            false,
+                            false,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == weak_map::GET => {
+                        let handle = match self.weak_map_handle_from_value(args[0]) {
+                            Ok(handle) => handle,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let key = args.get(1).copied().unwrap_or(Value::undefined());
+                        let map_ptr = handle as *const WeakMapObject;
+                        if map_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid weak map handle".to_string(),
+                            ));
+                        }
+                        let map = unsafe { &*map_ptr };
+                        let value = map.get(key).unwrap_or(Value::undefined());
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == weak_map::SET => {
+                        let key = args.get(1).copied().unwrap_or(Value::undefined());
+                        if !self.js_value_supports_extensibility(key) {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                "WeakMap.set key must be an object",
+                            ));
+                        }
+                        let handle = match self.weak_map_handle_from_value(args[0]) {
+                            Ok(handle) => handle,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = args.get(2).copied().unwrap_or(Value::undefined());
+                        let map_ptr = handle as *mut WeakMapObject;
+                        if map_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid weak map handle".to_string(),
+                            ));
+                        }
+                        let map = unsafe { &mut *map_ptr };
+                        if !map.set(key, value) {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                "WeakMap.set key must be an object",
+                            ));
+                        }
+                        if let Err(error) = stack.push(args[0]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == weak_map::HAS => {
+                        let handle = match self.weak_map_handle_from_value(args[0]) {
+                            Ok(handle) => handle,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let key = args.get(1).copied().unwrap_or(Value::undefined());
+                        let map_ptr = handle as *const WeakMapObject;
+                        if map_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid weak map handle".to_string(),
+                            ));
+                        }
+                        let map = unsafe { &*map_ptr };
+                        if let Err(error) = stack.push(Value::bool(map.has(key))) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == weak_map::DELETE => {
+                        let handle = match self.weak_map_handle_from_value(args[0]) {
+                            Ok(handle) => handle,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let key = args.get(1).copied().unwrap_or(Value::undefined());
+                        let map_ptr = handle as *mut WeakMapObject;
+                        if map_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid weak map handle".to_string(),
+                            ));
+                        }
+                        let map = unsafe { &mut *map_ptr };
+                        if let Err(error) = stack.push(Value::bool(map.delete(key))) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    // WeakSet native calls
+                    id if id == weak_set::NEW => {
+                        let weak_set = WeakSetObject::new();
+                        let handle = self.allocate_pinned_handle(weak_set);
+                        let nominal_type_id = match self.ensure_builtin_runtime_class("WeakSet") {
+                            Some(id) => id,
+                            None => {
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "Builtin class 'WeakSet' not found".to_string(),
+                                ))
+                            }
+                        };
+                        let value = match self.alloc_nominal_instance_value(nominal_type_id) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = self.define_data_property_on_target(
+                            value,
+                            "weakSetPtr",
+                            Value::u64(handle),
+                            true,
+                            false,
+                            false,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == weak_set::ADD => {
+                        let value = args.get(1).copied().unwrap_or(Value::undefined());
+                        if !self.js_value_supports_extensibility(value) {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                "WeakSet.add value must be an object",
+                            ));
+                        }
+                        let handle = match self.weak_set_handle_from_value(args[0]) {
+                            Ok(handle) => handle,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let set_ptr = handle as *mut WeakSetObject;
+                        if set_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid weak set handle".to_string(),
+                            ));
+                        }
+                        let set = unsafe { &mut *set_ptr };
+                        if !set.add(value) {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                "WeakSet.add value must be an object",
+                            ));
+                        }
+                        if let Err(error) = stack.push(args[0]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == weak_set::HAS => {
+                        let handle = match self.weak_set_handle_from_value(args[0]) {
+                            Ok(handle) => handle,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = args.get(1).copied().unwrap_or(Value::undefined());
+                        let set_ptr = handle as *const WeakSetObject;
+                        if set_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid weak set handle".to_string(),
+                            ));
+                        }
+                        let set = unsafe { &*set_ptr };
+                        if let Err(error) = stack.push(Value::bool(set.has(value))) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == weak_set::DELETE => {
+                        let handle = match self.weak_set_handle_from_value(args[0]) {
+                            Ok(handle) => handle,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = args.get(1).copied().unwrap_or(Value::undefined());
+                        let set_ptr = handle as *mut WeakSetObject;
+                        if set_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid weak set handle".to_string(),
+                            ));
+                        }
+                        let set = unsafe { &mut *set_ptr };
+                        if let Err(error) = stack.push(Value::bool(set.delete(value))) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    // WeakRef native calls
+                    id if id == weak_ref::NEW => {
+                        let target = args.first().copied().unwrap_or(Value::undefined());
+                        if !self.js_value_supports_extensibility(target) {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                "WeakRef constructor requires an object target",
+                            ));
+                        }
+                        let weak_ref = WeakRefObject::new(target);
+                        let handle = self.allocate_pinned_handle(weak_ref);
+                        let nominal_type_id = match self.ensure_builtin_runtime_class("WeakRef") {
+                            Some(id) => id,
+                            None => {
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "Builtin class 'WeakRef' not found".to_string(),
+                                ))
+                            }
+                        };
+                        let value = match self.alloc_nominal_instance_value(nominal_type_id) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = self.define_data_property_on_target(
+                            value,
+                            "weakRefPtr",
+                            Value::u64(handle),
+                            true,
+                            false,
+                            false,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == weak_ref::DEREF => {
+                        let handle = match self.weak_ref_handle_from_value(args[0]) {
+                            Ok(handle) => handle,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let weak_ref_ptr = handle as *const WeakRefObject;
+                        if weak_ref_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Invalid weak ref handle".to_string(),
+                            ));
+                        }
+                        let weak_ref = unsafe { &*weak_ref_ptr };
+                        if let Err(error) = stack.push(weak_ref.deref()) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
                     id if id == crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE => {
                         let should_unpack_apply_args = args.len() == 1
                             && (checked_array_ptr(args[0]).is_some()
@@ -20881,6 +23673,682 @@ impl<'a> Interpreter<'a> {
                         };
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::TEMPORAL_INSTANT => {
+                        let epoch_ms = match self
+                            .js_to_number_with_context(native_arg(&args, 0), task, module)
+                        {
+                            Ok(value) => value.trunc() as i64,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = match self.alloc_temporal_value(
+                            "TemporalInstant",
+                            &[("__temporalEpochMs", Value::f64(epoch_ms as f64))],
+                            crate::compiler::native_id::TEMPORAL_INSTANT_TO_STRING,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::TEMPORAL_PLAIN_DATE => {
+                        let year = match self
+                            .js_to_number_with_context(native_arg(&args, 0), task, module)
+                        {
+                            Ok(value) => value.trunc() as i32,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let month = match self
+                            .js_to_number_with_context(native_arg(&args, 1), task, module)
+                        {
+                            Ok(value) => value.trunc() as i32,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let day = match self
+                            .js_to_number_with_context(native_arg(&args, 2), task, module)
+                        {
+                            Ok(value) => value.trunc() as i32,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = match self.alloc_temporal_value(
+                            "TemporalPlainDate",
+                            &[
+                                ("__temporalYear", Value::i32(year)),
+                                ("__temporalMonth", Value::i32(month)),
+                                ("__temporalDay", Value::i32(day)),
+                            ],
+                            crate::compiler::native_id::TEMPORAL_PLAIN_DATE_TO_STRING,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::TEMPORAL_PLAIN_TIME => {
+                        let hour = match self
+                            .js_to_number_with_context(native_arg(&args, 0), task, module)
+                        {
+                            Ok(value) => value.trunc() as i32,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let minute = match self
+                            .js_to_number_with_context(native_arg(&args, 1), task, module)
+                        {
+                            Ok(value) => value.trunc() as i32,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let second = match self
+                            .js_to_number_with_context(native_arg(&args, 2), task, module)
+                        {
+                            Ok(value) => value.trunc() as i32,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let millisecond = match self
+                            .js_to_number_with_context(native_arg(&args, 3), task, module)
+                        {
+                            Ok(value) => value.trunc() as i32,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = match self.alloc_temporal_value(
+                            "TemporalPlainTime",
+                            &[
+                                ("__temporalHour", Value::i32(hour)),
+                                ("__temporalMinute", Value::i32(minute)),
+                                ("__temporalSecond", Value::i32(second)),
+                                ("__temporalMillisecond", Value::i32(millisecond)),
+                            ],
+                            crate::compiler::native_id::TEMPORAL_PLAIN_TIME_TO_STRING,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::TEMPORAL_ZONED_DATE_TIME => {
+                        let epoch_ms = match self
+                            .js_to_number_with_context(native_arg(&args, 0), task, module)
+                        {
+                            Ok(value) => value.trunc() as i64,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let time_zone =
+                            match self.js_function_argument_to_string(native_arg(&args, 1), task, module) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                        let value = match self.alloc_temporal_value(
+                            "TemporalZonedDateTime",
+                            &[
+                                ("__temporalEpochMs", Value::f64(epoch_ms as f64)),
+                                ("__temporalTimeZone", self.alloc_string_value(&time_zone)),
+                            ],
+                            crate::compiler::native_id::TEMPORAL_ZONED_DATE_TIME_TO_STRING,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::TEMPORAL_INSTANT_TO_STRING => {
+                        let epoch_ms = self
+                            .hidden_number_property_value(native_arg(&args, 0), "__temporalEpochMs")
+                            .unwrap_or(0.0) as i64;
+                        let rendered =
+                            crate::vm::object::DateObject::from_timestamp(epoch_ms).to_iso_string();
+                        if let Err(error) = stack.push(self.alloc_string_value(rendered)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::TEMPORAL_PLAIN_DATE_TO_STRING => {
+                        let year = self
+                            .hidden_number_property_value(native_arg(&args, 0), "__temporalYear")
+                            .unwrap_or(0.0) as i32;
+                        let month = self
+                            .hidden_number_property_value(native_arg(&args, 0), "__temporalMonth")
+                            .unwrap_or(0.0) as i32;
+                        let day = self
+                            .hidden_number_property_value(native_arg(&args, 0), "__temporalDay")
+                            .unwrap_or(0.0) as i32;
+                        let rendered = format!("{year:04}-{month:02}-{day:02}");
+                        if let Err(error) = stack.push(self.alloc_string_value(rendered)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::TEMPORAL_PLAIN_TIME_TO_STRING => {
+                        let hour = self
+                            .hidden_number_property_value(native_arg(&args, 0), "__temporalHour")
+                            .unwrap_or(0.0) as i32;
+                        let minute = self
+                            .hidden_number_property_value(native_arg(&args, 0), "__temporalMinute")
+                            .unwrap_or(0.0) as i32;
+                        let second = self
+                            .hidden_number_property_value(native_arg(&args, 0), "__temporalSecond")
+                            .unwrap_or(0.0) as i32;
+                        let millisecond = self
+                            .hidden_number_property_value(
+                                native_arg(&args, 0),
+                                "__temporalMillisecond",
+                            )
+                            .unwrap_or(0.0) as i32;
+                        let rendered =
+                            format!("{hour:02}:{minute:02}:{second:02}.{millisecond:03}");
+                        if let Err(error) = stack.push(self.alloc_string_value(rendered)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::TEMPORAL_ZONED_DATE_TIME_TO_STRING => {
+                        let epoch_ms = self
+                            .hidden_number_property_value(native_arg(&args, 0), "__temporalEpochMs")
+                            .unwrap_or(0.0) as i64;
+                        let time_zone = self
+                            .hidden_string_property_value(native_arg(&args, 0), "__temporalTimeZone")
+                            .unwrap_or_else(|| "UTC".to_string());
+                        let base = crate::vm::object::DateObject::from_timestamp(epoch_ms)
+                            .to_iso_string()
+                            .trim_end_matches('Z')
+                            .to_string();
+                        let rendered = format!("{base}+00:00[{time_zone}]");
+                        if let Err(error) = stack.push(self.alloc_string_value(rendered)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::INTL_NUMBER_FORMAT
+                        || id == crate::compiler::native_id::INTL_DATE_TIME_FORMAT =>
+                    {
+                        let locale = match args.first().copied().unwrap_or(Value::undefined()) {
+                            value if value.is_null() || value.is_undefined() => "en-US".to_string(),
+                            value => match self.js_function_argument_to_string(value, task, module) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            },
+                        };
+                        let formatter = match self.alloc_plain_object() {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let kind = if id == crate::compiler::native_id::INTL_NUMBER_FORMAT {
+                            "number"
+                        } else {
+                            "datetime"
+                        };
+                        for (key, value) in [
+                            ("__intlKind", self.alloc_string_value(kind)),
+                            ("__intlLocale", self.alloc_string_value(&locale)),
+                        ] {
+                            if let Err(error) =
+                                self.define_data_property_on_target(formatter, key, value, true, false, true)
+                            {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        if let Err(error) = self.seed_native_method_values(
+                            formatter,
+                            &[
+                                ("format", crate::compiler::native_id::INTL_FORMATTER_FORMAT),
+                                (
+                                    "resolvedOptions",
+                                    crate::compiler::native_id::INTL_FORMATTER_RESOLVED_OPTIONS,
+                                ),
+                            ],
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(formatter) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::INTL_FORMATTER_FORMAT => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Intl formatter format requires a receiver".to_string(),
+                            ));
+                        }
+                        let kind = self
+                            .hidden_string_property_value(args[0], "__intlKind")
+                            .unwrap_or_else(|| "number".to_string());
+                        let input = args.get(1).copied().unwrap_or(Value::undefined());
+                        let formatted = if kind == "datetime" {
+                            let timestamp = self.date_native_timestamp_arg(input);
+                            let date = DateObject::from_timestamp(timestamp);
+                            self.alloc_string_value(&date.to_iso_string())
+                        } else {
+                            let value =
+                                match self.js_function_argument_to_string(input, task, module) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                            self.alloc_string_value(&value)
+                        };
+                        if let Err(error) = stack.push(formatted) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::INTL_FORMATTER_RESOLVED_OPTIONS => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Intl formatter resolvedOptions requires a receiver".to_string(),
+                            ));
+                        }
+                        let options = match self.alloc_plain_object() {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let locale = self
+                            .hidden_string_property_value(args[0], "__intlLocale")
+                            .unwrap_or_else(|| "en-US".to_string());
+                        if let Err(error) = self.define_data_property_on_target(
+                            options,
+                            "locale",
+                            self.alloc_string_value(&locale),
+                            true,
+                            true,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(options) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::DISPOSABLE_STACK_NEW
+                        || id == crate::compiler::native_id::ASYNC_DISPOSABLE_STACK_NEW =>
+                    {
+                        let stack_value = match self.alloc_plain_object() {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = self.define_data_property_on_target(
+                            stack_value,
+                            "__callbacks",
+                            self.alloc_array_value_from_values(&[]),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = self.define_data_property_on_target(
+                            stack_value,
+                            "__disposed",
+                            Value::bool(false),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        let methods = if id == crate::compiler::native_id::DISPOSABLE_STACK_NEW {
+                            vec![
+                                ("defer", crate::compiler::native_id::DISPOSABLE_STACK_DEFER),
+                                ("dispose", crate::compiler::native_id::DISPOSABLE_STACK_DISPOSE),
+                                ("move", crate::compiler::native_id::DISPOSABLE_STACK_MOVE),
+                            ]
+                        } else {
+                            vec![
+                                (
+                                    "defer",
+                                    crate::compiler::native_id::ASYNC_DISPOSABLE_STACK_DEFER,
+                                ),
+                                (
+                                    "disposeAsync",
+                                    crate::compiler::native_id::ASYNC_DISPOSABLE_STACK_DISPOSE_ASYNC,
+                                ),
+                            ]
+                        };
+                        if let Err(error) = self.seed_native_method_values(stack_value, &methods) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(stack_value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::DISPOSABLE_STACK_DEFER
+                        || id == crate::compiler::native_id::ASYNC_DISPOSABLE_STACK_DEFER =>
+                    {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "DisposableStack.defer requires 1 argument".to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        let callback = args[1];
+                        if !Self::is_callable_value(callback) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "DisposableStack.defer callback must be callable".to_string(),
+                            ));
+                        }
+                        let mut callbacks =
+                            self.hidden_array_property_values(receiver, "__callbacks");
+                        callbacks.push(callback);
+                        if let Err(error) = self.define_data_property_on_target(
+                            receiver,
+                            "__callbacks",
+                            self.alloc_array_value_from_values(&callbacks),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::DISPOSABLE_STACK_DISPOSE
+                        || id == crate::compiler::native_id::ASYNC_DISPOSABLE_STACK_DISPOSE_ASYNC =>
+                    {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "DisposableStack dispose method requires a receiver".to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        let callbacks = self.hidden_array_property_values(receiver, "__callbacks");
+                        if let Err(error) = self.define_data_property_on_target(
+                            receiver,
+                            "__callbacks",
+                            self.alloc_array_value_from_values(&[]),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = self.define_data_property_on_target(
+                            receiver,
+                            "__disposed",
+                            Value::bool(true),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        for callback in callbacks.into_iter().rev() {
+                            if let Err(error) = self.invoke_callable_sync_with_this(
+                                callback,
+                                Some(Value::undefined()),
+                                &[],
+                                task,
+                                module,
+                            ) {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        if let Err(error) = stack.push(Value::undefined()) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::DISPOSABLE_STACK_MOVE => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "DisposableStack.move requires a receiver".to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        let callbacks = self.hidden_array_property_values(receiver, "__callbacks");
+                        if let Err(error) = self.define_data_property_on_target(
+                            receiver,
+                            "__callbacks",
+                            self.alloc_array_value_from_values(&[]),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        let moved = match self.alloc_plain_object() {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = self.define_data_property_on_target(
+                            moved,
+                            "__callbacks",
+                            self.alloc_array_value_from_values(&callbacks),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = self.define_data_property_on_target(
+                            moved,
+                            "__disposed",
+                            Value::bool(false),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = self.seed_native_method_values(
+                            moved,
+                            &[
+                                ("defer", crate::compiler::native_id::DISPOSABLE_STACK_DEFER),
+                                ("dispose", crate::compiler::native_id::DISPOSABLE_STACK_DISPOSE),
+                                ("move", crate::compiler::native_id::DISPOSABLE_STACK_MOVE),
+                            ],
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(moved) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::FINALIZATION_REGISTRY_NEW => {
+                        if args.is_empty() || !Self::is_callable_value(args[0]) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "FinalizationRegistry requires a callable cleanup callback"
+                                    .to_string(),
+                            ));
+                        }
+                        let registry = match self.alloc_plain_object() {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = self.define_data_property_on_target(
+                            registry,
+                            "__cleanupCallback",
+                            args[0],
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = self.define_data_property_on_target(
+                            registry,
+                            "__entries",
+                            self.alloc_array_value_from_values(&[]),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = self.seed_native_method_values(
+                            registry,
+                            &[
+                                (
+                                    "register",
+                                    crate::compiler::native_id::FINALIZATION_REGISTRY_REGISTER,
+                                ),
+                                (
+                                    "unregister",
+                                    crate::compiler::native_id::FINALIZATION_REGISTRY_UNREGISTER,
+                                ),
+                                (
+                                    "cleanupSome",
+                                    crate::compiler::native_id::FINALIZATION_REGISTRY_CLEANUP_SOME,
+                                ),
+                            ],
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(registry) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::FINALIZATION_REGISTRY_REGISTER => {
+                        if args.len() < 3 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "FinalizationRegistry.register requires target and heldValue"
+                                    .to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        let held_value = args[2];
+                        let unregister_token = args.get(3).copied().unwrap_or(Value::undefined());
+                        let entry = match self.alloc_plain_object() {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        for (key, value) in [
+                            ("__heldValue", held_value),
+                            ("__token", unregister_token),
+                            ("__active", Value::bool(true)),
+                        ] {
+                            if let Err(error) =
+                                self.define_data_property_on_target(entry, key, value, true, false, true)
+                            {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        let mut entries = self.hidden_array_property_values(receiver, "__entries");
+                        entries.push(entry);
+                        if let Err(error) = self.define_data_property_on_target(
+                            receiver,
+                            "__entries",
+                            self.alloc_array_value_from_values(&entries),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(Value::undefined()) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::FINALIZATION_REGISTRY_UNREGISTER => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "FinalizationRegistry.unregister requires 1 argument".to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        let unregister_token = args[1];
+                        let mut removed = false;
+                        let mut remaining = Vec::new();
+                        for entry in self.hidden_array_property_values(receiver, "__entries") {
+                            let active = self
+                                .get_field_value_by_name(entry, "__active")
+                                .is_some_and(|value| value.is_truthy());
+                            let token = self
+                                .get_field_value_by_name(entry, "__token")
+                                .unwrap_or(Value::undefined());
+                            if active && token.raw() == unregister_token.raw() {
+                                removed = true;
+                                continue;
+                            }
+                            if active {
+                                remaining.push(entry);
+                            }
+                        }
+                        if let Err(error) = self.define_data_property_on_target(
+                            receiver,
+                            "__entries",
+                            self.alloc_array_value_from_values(&remaining),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(Value::bool(removed)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::FINALIZATION_REGISTRY_CLEANUP_SOME => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "FinalizationRegistry.cleanupSome requires a receiver"
+                                    .to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        let callback = match args.get(1).copied().unwrap_or(Value::undefined()) {
+                            value if value.is_null() || value.is_undefined() => self
+                                .get_field_value_by_name(receiver, "__cleanupCallback")
+                                .unwrap_or(Value::undefined()),
+                            value => value,
+                        };
+                        if !Self::is_callable_value(callback) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "FinalizationRegistry.cleanupSome callback must be callable"
+                                    .to_string(),
+                            ));
+                        }
+                        for entry in self.hidden_array_property_values(receiver, "__entries") {
+                            let active = self
+                                .get_field_value_by_name(entry, "__active")
+                                .is_some_and(|value| value.is_truthy());
+                            if !active {
+                                continue;
+                            }
+                            let held_value = self
+                                .get_field_value_by_name(entry, "__heldValue")
+                                .unwrap_or(Value::undefined());
+                            if let Err(error) = self.invoke_callable_sync_with_this(
+                                callback,
+                                Some(Value::undefined()),
+                                &[held_value],
+                                task,
+                                module,
+                            ) {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        if let Err(error) = self.define_data_property_on_target(
+                            receiver,
+                            "__entries",
+                            self.alloc_array_value_from_values(&[]),
+                            true,
+                            false,
+                            true,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(Value::undefined()) {
+                            return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
                     }
@@ -21492,6 +24960,21 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    id if id == crate::compiler::native_id::OBJECT_KEYS => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.keys requires 1 argument".to_string(),
+                            ));
+                        }
+                        let value = match self.object_keys_result_value(args[0]) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
                     id if id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_SYMBOLS => {
                         if args.is_empty() {
                             return OpcodeResult::Error(VmError::TypeError(
@@ -21723,6 +25206,76 @@ impl<'a> Interpreter<'a> {
                                 Err(error) => return OpcodeResult::Error(error),
                             };
                         if let Err(error) = stack.push(iterator) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::ITERATOR_FROM_ARRAY => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Iterator.fromArray requires 1 argument".to_string(),
+                            ));
+                        }
+                        let iterator = match self.array_iterator_object(
+                            args[0],
+                            crate::vm::interpreter::handlers::array::ArrayIteratorKind::Value,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(iterator) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::ARRAY_FROM
+                        || id == crate::vm::builtin::array::FROM =>
+                    {
+                        if !(1..=3).contains(&args.len()) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                format!("Array.from expects 1-3 arguments, got {}", args.len()),
+                            ));
+                        }
+                        let constructor = self
+                            .builtin_global_value("Array")
+                            .unwrap_or(Value::undefined());
+                        let map_fn_provided = args.len() >= 2;
+                        let map_fn = if map_fn_provided {
+                            args[1]
+                        } else {
+                            Value::undefined()
+                        };
+                        let this_arg = args.get(2).copied();
+                        let array = match self.array_from_runtime_call(
+                            constructor,
+                            args[0],
+                            map_fn_provided,
+                            map_fn,
+                            this_arg,
+                            task,
+                            module,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(array) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::ITERATOR_TO_ARRAY => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Iterator.toArray requires 0 arguments".to_string(),
+                            ));
+                        }
+                        let array = self.alloc_array_value_from_values(&[]);
+                        if let Err(error) =
+                            self.append_iterable_to_array(array, args[0], task, module)
+                        {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(array) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
@@ -22953,26 +26506,14 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::GET_TIME => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0);
+                        let timestamp = self.date_native_timestamp_arg(args[0]) as f64;
                         if let Err(e) = stack.push(Value::f64(timestamp)) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     id if id == date::GET_FULL_YEAR => {
-                        // args[0] is the timestamp in milliseconds (as f64 number)
-                        if std::env::var_os("RAYA_DEBUG_DATE").is_some() {
-                            eprintln!("DATE_GET_FULL_YEAR args[0]={:?}", args.first());
-                        }
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_full_year())) {
                             return OpcodeResult::Error(e);
@@ -22980,11 +26521,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::GET_MONTH => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_month())) {
                             return OpcodeResult::Error(e);
@@ -22992,11 +26529,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::GET_DATE => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_date())) {
                             return OpcodeResult::Error(e);
@@ -23004,11 +26537,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::GET_DAY => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_day())) {
                             return OpcodeResult::Error(e);
@@ -23016,14 +26545,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::GET_HOURS => {
-                        if std::env::var_os("RAYA_DEBUG_DATE").is_some() {
-                            eprintln!("DATE_GET_HOURS args[0]={:?}", args.first());
-                        }
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_hours())) {
                             return OpcodeResult::Error(e);
@@ -23031,14 +26553,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::GET_MINUTES => {
-                        if std::env::var_os("RAYA_DEBUG_DATE").is_some() {
-                            eprintln!("DATE_GET_MINUTES args[0]={:?}", args.first());
-                        }
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_minutes())) {
                             return OpcodeResult::Error(e);
@@ -23046,14 +26561,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::GET_SECONDS => {
-                        if std::env::var_os("RAYA_DEBUG_DATE").is_some() {
-                            eprintln!("DATE_GET_SECONDS args[0]={:?}", args.first());
-                        }
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_seconds())) {
                             return OpcodeResult::Error(e);
@@ -23061,14 +26569,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::GET_MILLISECONDS => {
-                        if std::env::var_os("RAYA_DEBUG_DATE").is_some() {
-                            eprintln!("DATE_GET_MILLISECONDS args[0]={:?}", args.first());
-                        }
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_milliseconds())) {
                             return OpcodeResult::Error(e);
@@ -23082,9 +26583,6 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::CONSTRUCT => {
-                        if std::env::var_os("RAYA_DEBUG_DATE").is_some() {
-                            eprintln!("DATE_CONSTRUCT raw args={:?}", args);
-                        }
                         let mut parts = if let Some(arg_list) = args.first().copied() {
                             match self.collect_apply_arguments(arg_list, task, module) {
                                 Ok(values) => values,
@@ -23093,9 +26591,6 @@ impl<'a> Interpreter<'a> {
                         } else {
                             Vec::new()
                         };
-                        if std::env::var_os("RAYA_DEBUG_DATE").is_some() {
-                            eprintln!("DATE_CONSTRUCT collected parts={:?}", parts);
-                        }
                         if !parts.is_empty() && self.js_value_supports_extensibility(parts[0]) {
                             parts.remove(0);
                         }
@@ -23151,141 +26646,132 @@ impl<'a> Interpreter<'a> {
                                 ) as f64
                             }
                         };
-                        if std::env::var_os("RAYA_DEBUG_DATE").is_some() {
-                            eprintln!("DATE_CONSTRUCT timestamp={timestamp:?}");
-                        }
                         if let Err(e) = stack.push(Value::f64(timestamp)) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     // Date setters: args[0]=timestamp, args[1]=new value, returns new timestamp as f64
+                    id if id == date::SET_TIME => {
+                        let value = match self.js_to_number_with_context(args[1], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let updated_value = Value::f64(value);
+                        self.sync_boxed_date_receiver_value(args[0], updated_value);
+                        if let Err(error) = stack.push(updated_value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
                     id if id == date::SET_FULL_YEAR => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let val = args[1]
                             .as_f64()
                             .or_else(|| args[1].as_i64().map(|v| v as f64))
                             .or_else(|| args[1].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
-                        if let Err(e) = stack.push(Value::f64(date.set_full_year(val) as f64)) {
+                        let updated_value = Value::f64(date.set_full_year(val) as f64);
+                        self.sync_boxed_date_receiver_value(args[0], updated_value);
+                        if let Err(e) = stack.push(updated_value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     id if id == date::SET_MONTH => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let val = args[1]
                             .as_f64()
                             .or_else(|| args[1].as_i64().map(|v| v as f64))
                             .or_else(|| args[1].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
-                        if let Err(e) = stack.push(Value::f64(date.set_month(val) as f64)) {
+                        let updated_value = Value::f64(date.set_month(val) as f64);
+                        self.sync_boxed_date_receiver_value(args[0], updated_value);
+                        if let Err(e) = stack.push(updated_value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     id if id == date::SET_DATE => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let val = args[1]
                             .as_f64()
                             .or_else(|| args[1].as_i64().map(|v| v as f64))
                             .or_else(|| args[1].as_i32().map(|v| v as f64))
                             .unwrap_or(1.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
-                        if let Err(e) = stack.push(Value::f64(date.set_date(val) as f64)) {
+                        let updated_value = Value::f64(date.set_date(val) as f64);
+                        self.sync_boxed_date_receiver_value(args[0], updated_value);
+                        if let Err(e) = stack.push(updated_value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     id if id == date::SET_HOURS => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let val = args[1]
                             .as_f64()
                             .or_else(|| args[1].as_i64().map(|v| v as f64))
                             .or_else(|| args[1].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
-                        if let Err(e) = stack.push(Value::f64(date.set_hours(val) as f64)) {
+                        let updated_value = Value::f64(date.set_hours(val) as f64);
+                        self.sync_boxed_date_receiver_value(args[0], updated_value);
+                        if let Err(e) = stack.push(updated_value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     id if id == date::SET_MINUTES => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let val = args[1]
                             .as_f64()
                             .or_else(|| args[1].as_i64().map(|v| v as f64))
                             .or_else(|| args[1].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
-                        if let Err(e) = stack.push(Value::f64(date.set_minutes(val) as f64)) {
+                        let updated_value = Value::f64(date.set_minutes(val) as f64);
+                        self.sync_boxed_date_receiver_value(args[0], updated_value);
+                        if let Err(e) = stack.push(updated_value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     id if id == date::SET_SECONDS => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let val = args[1]
                             .as_f64()
                             .or_else(|| args[1].as_i64().map(|v| v as f64))
                             .or_else(|| args[1].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
-                        if let Err(e) = stack.push(Value::f64(date.set_seconds(val) as f64)) {
+                        let updated_value = Value::f64(date.set_seconds(val) as f64);
+                        self.sync_boxed_date_receiver_value(args[0], updated_value);
+                        if let Err(e) = stack.push(updated_value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     id if id == date::SET_MILLISECONDS => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let val = args[1]
                             .as_f64()
                             .or_else(|| args[1].as_i64().map(|v| v as f64))
                             .or_else(|| args[1].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0) as i32;
                         let date = DateObject::from_timestamp(timestamp);
-                        if let Err(e) = stack.push(Value::f64(date.set_milliseconds(val) as f64)) {
+                        let updated_value = Value::f64(date.set_milliseconds(val) as f64);
+                        self.sync_boxed_date_receiver_value(args[0], updated_value);
+                        if let Err(e) = stack.push(updated_value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     // Date string formatting: args[0]=timestamp, returns string
                     id if id == date::TO_STRING => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         let s = RayaString::new(date.to_string_repr());
                         let gc_ptr = self.gc.lock().allocate(s);
@@ -23298,11 +26784,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::TO_ISO_STRING => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         let s = RayaString::new(date.to_iso_string());
                         let gc_ptr = self.gc.lock().allocate(s);
@@ -23315,11 +26797,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::TO_DATE_STRING => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         let s = RayaString::new(date.to_date_string());
                         let gc_ptr = self.gc.lock().allocate(s);
@@ -23332,11 +26810,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == date::TO_TIME_STRING => {
-                        let timestamp = args[0]
-                            .as_f64()
-                            .or_else(|| args[0].as_i64().map(|v| v as f64))
-                            .or_else(|| args[0].as_i32().map(|v| v as f64))
-                            .unwrap_or(0.0) as i64;
+                        let timestamp = self.date_native_timestamp_arg(args[0]);
                         let date = DateObject::from_timestamp(timestamp);
                         let s = RayaString::new(date.to_time_string());
                         let gc_ptr = self.gc.lock().allocate(s);
@@ -23365,6 +26839,289 @@ impl<'a> Interpreter<'a> {
                         };
                         if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == event_emitter::ON
+                        || id == event_emitter::ADD_LISTENER
+                        || id == event_emitter::ONCE =>
+                    {
+                        if args.len() < 3 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "EventEmitter listener registration requires event and listener"
+                                    .to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        if let Err(error) = self.event_emitter_assert_receiver(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        let event_name = match value_as_string(args[1]) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let listener = args[2];
+                        if !Self::is_callable_value(listener) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "EventEmitter listener must be callable".to_string(),
+                            ));
+                        }
+                        let once = id == event_emitter::ONCE;
+                        let mut listeners =
+                            self.event_emitter_listener_values(receiver, &event_name, once);
+                        listeners.push(listener);
+                        self.set_event_emitter_listener_values(
+                            receiver,
+                            &event_name,
+                            once,
+                            &listeners,
+                        );
+                        if let Err(error) = stack.push(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == event_emitter::OFF || id == event_emitter::REMOVE_LISTENER => {
+                        if args.len() < 3 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "EventEmitter listener removal requires event and listener"
+                                    .to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        if let Err(error) = self.event_emitter_assert_receiver(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        let event_name = match value_as_string(args[1]) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let listener = args[2];
+                        for once in [false, true] {
+                            let retained = self
+                                .event_emitter_listener_values(receiver, &event_name, once)
+                                .into_iter()
+                                .filter(|candidate| !value_same_value(*candidate, listener))
+                                .collect::<Vec<_>>();
+                            self.set_event_emitter_listener_values(
+                                receiver,
+                                &event_name,
+                                once,
+                                &retained,
+                            );
+                        }
+                        if let Err(error) = stack.push(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == event_emitter::EMIT => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "EventEmitter.emit requires an event name".to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        if let Err(error) = self.event_emitter_assert_receiver(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        let event_name = match value_as_string(args[1]) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let persistent = self.event_emitter_listener_values(receiver, &event_name, false);
+                        let once_listeners =
+                            self.event_emitter_listener_values(receiver, &event_name, true);
+                        if !once_listeners.is_empty() {
+                            self.clear_event_emitter_listener_values(receiver, &event_name, true);
+                        }
+                        let had_listeners = !persistent.is_empty() || !once_listeners.is_empty();
+                        if had_listeners {
+                            for listener in persistent
+                                .into_iter()
+                                .chain(once_listeners.into_iter())
+                            {
+                                if let Err(error) = self.invoke_callable_sync_with_this(
+                                    listener,
+                                    Some(receiver),
+                                    &args[2..],
+                                    task,
+                                    module,
+                                ) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                        }
+                        if let Err(error) = stack.push(Value::bool(had_listeners)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == event_emitter::LISTENERS => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "EventEmitter.listeners requires an event name".to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        if let Err(error) = self.event_emitter_assert_receiver(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        let event_name = match value_as_string(args[1]) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let mut listeners =
+                            self.event_emitter_listener_values(receiver, &event_name, false);
+                        listeners.extend(
+                            self.event_emitter_listener_values(receiver, &event_name, true),
+                        );
+                        let value = self.alloc_array_value_from_values(&listeners);
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == event_emitter::LISTENER_COUNT => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "EventEmitter.listenerCount requires an event name".to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        if let Err(error) = self.event_emitter_assert_receiver(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        let event_name = match value_as_string(args[1]) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let count = self
+                            .event_emitter_listener_values(receiver, &event_name, false)
+                            .len()
+                            + self
+                                .event_emitter_listener_values(receiver, &event_name, true)
+                                .len();
+                        if let Err(error) = stack.push(Value::i32(count as i32)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == event_emitter::EVENT_NAMES => {
+                        let receiver = args[0];
+                        if let Err(error) = self.event_emitter_assert_receiver(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        let mut names = BTreeSet::new();
+                        {
+                            let metadata = self.metadata.lock();
+                            names.extend(
+                                metadata
+                                    .get_property_keys_for_metadata(
+                                        receiver,
+                                        EVENT_EMITTER_LISTENERS_METADATA_KEY,
+                                    )
+                                    .into_iter(),
+                            );
+                            names.extend(
+                                metadata
+                                    .get_property_keys_for_metadata(
+                                        receiver,
+                                        EVENT_EMITTER_ONCE_LISTENERS_METADATA_KEY,
+                                    )
+                                    .into_iter(),
+                            );
+                        }
+                        let values = names
+                            .into_iter()
+                            .map(|name| self.alloc_string_value(name))
+                            .collect::<Vec<_>>();
+                        let value = self.alloc_array_value_from_values(&values);
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == event_emitter::SET_MAX_LISTENERS => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "EventEmitter.setMaxListeners requires a count".to_string(),
+                            ));
+                        }
+                        let receiver = args[0];
+                        if let Err(error) = self.event_emitter_assert_receiver(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        let max_listeners = args[1]
+                            .as_i32()
+                            .or_else(|| args[1].as_i64().map(|value| value as i32))
+                            .unwrap_or(0);
+                        if max_listeners < 0 {
+                            return OpcodeResult::Error(VmError::RangeError(
+                                "EventEmitter max listeners must be non-negative".to_string(),
+                            ));
+                        }
+                        self.set_event_emitter_max_listeners(receiver, max_listeners);
+                        if let Err(error) = stack.push(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == event_emitter::GET_MAX_LISTENERS => {
+                        let receiver = args[0];
+                        if let Err(error) = self.event_emitter_assert_receiver(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) =
+                            stack.push(Value::i32(self.event_emitter_max_listeners(receiver)))
+                        {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == event_emitter::REMOVE_ALL_LISTENERS => {
+                        let receiver = args[0];
+                        if let Err(error) = self.event_emitter_assert_receiver(receiver) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if args.len() >= 2 && !args[1].is_undefined() {
+                            let event_name = match value_as_string(args[1]) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                            self.clear_event_emitter_listener_values(receiver, &event_name, false);
+                            self.clear_event_emitter_listener_values(receiver, &event_name, true);
+                        } else {
+                            let keys = {
+                                let metadata = self.metadata.lock();
+                                let mut all = metadata
+                                    .get_property_keys_for_metadata(
+                                        receiver,
+                                        EVENT_EMITTER_LISTENERS_METADATA_KEY,
+                                    );
+                                all.extend(
+                                    metadata.get_property_keys_for_metadata(
+                                        receiver,
+                                        EVENT_EMITTER_ONCE_LISTENERS_METADATA_KEY,
+                                    ),
+                                );
+                                all
+                            };
+                            for event_name in keys {
+                                self.clear_event_emitter_listener_values(
+                                    receiver,
+                                    &event_name,
+                                    false,
+                                );
+                                self.clear_event_emitter_listener_values(
+                                    receiver,
+                                    &event_name,
+                                    true,
+                                );
+                            }
+                        }
+                        if let Err(error) = stack.push(receiver) {
+                            return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
                     }
